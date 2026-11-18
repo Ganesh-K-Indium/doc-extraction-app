@@ -20,7 +20,6 @@ from typing import Any, Dict, List
 
 from app.services import classify, ocr
 
-EXTRACTORS = {**{d["type"]: d["extractor"] for d in classify.DOC_TYPES}, "blank_or_logo": "skip"}
 
 
 def profile_page(info: Dict[str, Any]) -> Dict[str, Any]:
@@ -49,12 +48,20 @@ def decide_reader(profile: Dict[str, Any], llm_available: bool, tesseract_availa
     return {"reader": "text_layer_unverified", "reasons": reasons + ["no model and no Tesseract available, using the embedded text as is"]}
 
 
-def decide_extractor(doc_type: str) -> Dict[str, Any]:
-    kind = EXTRACTORS.get(doc_type, "kv")
-    out: Dict[str, Any] = {"extractor": kind, "reasons": [f"document type '{doc_type}' is registered for {kind}"]}
-    if doc_type not in EXTRACTORS:
-        out["reasons"] = [f"type '{doc_type}' is not registered, using generic label/value reading"]
-    return out
+def decide_extractor(doc_type: str, llm_available: bool = True) -> Dict[str, Any]:
+    """template_form | discover | kv | skip, with reasons.
+
+    A registered type uses its template. A type nobody registered is not an error: with a model available its
+    fields are discovered from the page itself; without one it falls back to plain 'Label: value' reading."""
+    if doc_type == "blank_or_logo":
+        return {"extractor": "skip", "reasons": ["blank or logo-only page"]}
+    reg = {d["type"]: d for d in classify.all_types()}
+    if doc_type in reg:
+        kind = reg[doc_type]["extractor"]
+        return {"extractor": kind, "reasons": [f"document type '{doc_type}' is registered for {kind}"]}
+    if llm_available:
+        return {"extractor": "discover", "reasons": [f"no template for '{doc_type}', so its fields, checkboxes and tables are discovered from the page"]}
+    return {"extractor": "kv", "reasons": [f"no template for '{doc_type}' and no model available, using generic label/value reading"]}
 
 
 READERS = [

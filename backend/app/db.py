@@ -23,6 +23,7 @@ class Extraction(Base):
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=lambda: dt.datetime.now(dt.timezone.utc).replace(tzinfo=None))
     result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    template_choice: Mapped[str] = mapped_column(String(64), default="auto")  # auto | discover | a registered type
     sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     # reviewer edits: "{doc_index}:{field key}" -> value
     corrections: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -46,6 +47,8 @@ def _add_missing_columns() -> None:
     from sqlalchemy import inspect, text
     have = {c["name"] for c in inspect(_engine).get_columns("extractions")}
     with _engine.begin() as conn:
+        if "template_choice" not in have:
+            conn.execute(text("ALTER TABLE extractions ADD COLUMN template_choice VARCHAR(64) DEFAULT 'auto'"))
         if "sha256" not in have:
             conn.execute(text("ALTER TABLE extractions ADD COLUMN sha256 VARCHAR(64)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_extractions_sha256 ON extractions (sha256)"))

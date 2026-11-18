@@ -21,6 +21,23 @@ DOC_TYPES: List[Dict[str, Any]] = [
 MIN_CONTENT_CHARS = 40
 
 
+def custom_types() -> List[Dict[str, Any]]:
+    """Document types users added (drafted from a blank form or promoted from an extraction). Read on every call so a
+    type saved a second ago is used by the next upload; the file is tiny."""
+    import json
+    from app import config
+    try:
+        data = json.loads(config.custom_types_file().read_text())
+        return [d for d in data if isinstance(d, dict) and d.get("type")]
+    except (OSError, ValueError):
+        return []
+
+
+def all_types() -> List[Dict[str, Any]]:
+    built_in = {d["type"] for d in DOC_TYPES}
+    return DOC_TYPES + [dict(d, custom=True) for d in custom_types() if d["type"] not in built_in]
+
+
 def _matches(rule: Dict[str, Any], text: str) -> bool:
     if "all" in rule and not all(re.search(p, text, re.I) for p in rule["all"]):
         return False
@@ -36,22 +53,26 @@ def classify_text(text: str) -> Dict[str, Any]:
         return {"type": "blank_or_logo", "label": "Blank or logo-only page", "confidence": 0.9}
     # Only the top of the page names its form; a mention further down must not reclassify a continuation page.
     head = text[:600]
-    hits = [r for r in DOC_TYPES if _matches(r, head)]
+    hits = [r for r in all_types() if _matches(r, head)]
     if not hits:
         return {"type": "unknown", "label": "Unclassified", "confidence": 0.0}
     best = max(hits, key=lambda r: r["score"])
     return {"type": best["type"], "label": best["label"], "confidence": 0.9 if len(hits) == 1 else 0.6}
 
 
-async def classify_with_model(text: str, models: List[str], ask=None) -> Dict[str, Any]:
+async def classify_with_model(text: str, models: List[str], ask=None, previous_text: str = "") -> Dict[str, Any]:
     """Second opinion for a page the rules could not name. The model may only choose a REGISTERED type (or 'unknown'),
-    so its answer is always routable. `ask(model, prompt) -> str` is injectable for tests."""
+    so its answer is always routable, and it says whether the page continues the previous page's document or starts a
+    new one (with a short title). `ask(model, prompt) -> str` is injectable for tests."""
     import json
     from app.services import ocr
-    choices = {d["type"]: d["label"] for d in DOC_TYPES}
-    prompt = ("Classify this page from a fax packet. Answer with JSON {\"type\": <one of "
-              + ", ".join(f'"{t}" ({l})' for t, l in choices.items())
-              + ' or "unknown">}.\n\nPage text (top):\n' + (text or "")[:1200])
+    choices = {d["type"]: d["label"] for d in all_types()}
+    prompt = ("Classify one page from a PDF that may hold several documents. Answer with JSON "
+              '{"type": <one of ' + ", ".join(f'"{t}" ({l})' for t, l in choices.items())
+              + ' or "unknown">, "title": "<short title of this page\'s document, or null>", '
+              '"continues_previous": <true if this page is a continuation of the previous page\'s document, else false>}.\n\n'
+              + (f"Previous page (top):\n{previous_text[:400]}\n\n" if previous_text else "")
+              + "This page (top):\n" + (text or "")[:1200])
 
     async def default_ask(model: str, prompt: str) -> str:
         resp = await ocr._get_client().chat.completions.create(
@@ -59,14 +80,19 @@ async def classify_with_model(text: str, models: List[str], ask=None) -> Dict[st
         return resp.choices[0].message.content
 
     ask = ask or default_ask
+    unknown = {"type": "unknown", "label": "Unclassified", "confidence": 0.0}
     try:
-        raw = await ask(models[-1], prompt)  # the smaller model: this is a cheap, short call
-        t = json.loads(raw).get("type")
+        data = json.loads(await ask(models[-1], prompt))  # the smaller model: this is a cheap, short call
     except Exception:
-        return {"type": "unknown", "label": "Unclassified", "confidence": 0.0}
+        return unknown
+    if not isinstance(data, dict):
+        return unknown
+    t = data.get("type")
+    title = data.get("title") if isinstance(data.get("title"), str) and data["title"].strip() else None
     if t in choices:
         return {"type": t, "label": choices[t], "confidence": 0.7, "by": "model"}
-    return {"type": "unknown", "label": "Unclassified", "confidence": 0.0}
+    return {**unknown, "label": title or "Unclassified", "title": title, "by": "model",
+            "continuation": bool(data.get("continues_previous"))}
 
 
 def segment(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -78,7 +104,9 @@ def segment(pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     docs: List[Dict[str, Any]] = []
     for p in pages:
         t = p["classification"]["type"]
-        cont = t in ("blank_or_logo", "unknown") and docs
+        # An unknown page continues the document before it, unless a model said it starts a new one.
+        starts_new = t == "unknown" and p["classification"].get("continuation") is False
+        cont = t in ("blank_or_logo", "unknown") and docs and not starts_new
         if cont:
             docs[-1]["pages"].append(p["page"])
             continue

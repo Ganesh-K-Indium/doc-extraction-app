@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from app.services import checkboxes, classify, cross, form_extractor, kv, locate, normalize as N, ocr, pdf_pages, pipeline, router, validation
+from app.services import checkboxes, classify, cross, discover, form_extractor, kv, locate, template_draft, normalize as N, ocr, pdf_pages, pipeline, router, validation
 from app.services.tess import available as tess_available
 from tests.make_packet import build
 
@@ -169,7 +169,8 @@ def test_extractor_decisions():
     assert router.decide_extractor("daily_note")["extractor"] == "template_form"
     assert router.decide_extractor("fax_cover")["extractor"] == "skip"
     assert router.decide_extractor("blank_or_logo")["extractor"] == "skip"
-    assert router.decide_extractor("something_new")["extractor"] == "kv"  # unregistered: generic label/value reading
+    assert router.decide_extractor("something_new")["extractor"] == "discover"          # unregistered: fields are discovered
+    assert router.decide_extractor("something_new", llm_available=False)["extractor"] == "kv"  # no model: plain label/value reading
 
 
 def test_routes_are_recorded(result):
@@ -267,3 +268,142 @@ def test_third_opinion_flags_shared_misread():
     absent = {"value": "SOMETHING LONG", "status": "agreed", "alternatives": []}
     form_extractor._third_opinion(absent, None)
     assert absent["status"] == "agreed"          # Tesseract not finding it is not evidence of an error
+
+
+def test_line_merge_ignores_layout_but_keeps_real_differences():
+    a = ["Patient Name: Morgan Taylor", "Date of Initial Examination: 08/12/2026", "Testville NJ 00001-1718"]
+    b = ["Patient Name: Morgan Taylor Date of Initial Examination: 08/12/2026", "Testville NJ 07001-1718"]
+    lines = ocr.merge_readings(a, b)
+    by = {l.text: l for l in lines}
+    assert by["Patient Name: Morgan Taylor"].status == "agreed"                 # same content, different line breaks
+    assert by["Date of Initial Examination: 08/12/2026"].status == "agreed"
+    assert by["Testville NJ 00001-1718"].status == "review"                     # a real digit difference survives
+    assert by["Testville NJ 00001-1718"].alternatives == ["Testville NJ 07001-1718"]
+    assert all(l.text != "Patient Name: Morgan Taylor Date of Initial Examination: 08/12/2026" for l in lines)
+
+
+# ---- template-free discovery ---------------------------------------------------------------------------------------------
+
+def test_discover_parse_is_defensive():
+    assert discover.parse("not json")["fields"] == []
+    d = discover.parse('{"title": "Invoice", "fields": [{"label": "Invoice No.", "value": " 42 "}, {"label": ""}, "junk"], '
+                       '"tables": [{"columns": ["Item", "Qty"], "rows": [["Bolt", "2"], ["Nut", null]]}, {"columns": []}]}')
+    assert d["title"] == "Invoice" and d["fields"][0]["value"] == "42" and len(d["fields"]) == 1
+    assert len(d["tables"]) == 1 and d["tables"][0]["rows"][1] == ["Nut", None]
+
+
+def test_discover_merges_two_readers_by_label():
+    a = discover.parse({"fields": [{"label": "Invoice No.", "value": "1001", "section": None}, {"label": "Total", "value": "$215.00"},
+                                   {"label": "Notes", "value": "see attached"}]})["fields"]
+    b = discover.parse({"fields": [{"label": "Invoice No", "value": "1001"}, {"label": "Total", "value": "$215.80"},
+                                   {"label": "PO Number", "value": "77"}]})["fields"]
+    got = discover.merge_fields(a, b)
+    assert got["invoice_no"]["status"] == "agreed"                                  # label punctuation does not matter
+    assert got["total"]["status"] == "review" and got["total"]["alternatives"] == ["$215.80"]
+    assert got["notes"]["status"] == "review" and "one reader" in got["notes"]["reason"]   # only the first reader listed it
+    assert got["po_number"]["value"] == "77" and got["po_number"]["status"] == "review"
+
+
+def test_discover_tables_compare_cell_by_cell():
+    a = [{"title": "Items", "columns": ["Item", "Qty"], "rows": [["Bolt", "2"], ["Nut", "5"]]}]
+    b = [{"title": "Items", "columns": ["Item", "Qty"], "rows": [["Bolt", "2"], ["Nut", "6"]]}]
+    tables, cols = discover.merge_tables(a, b)
+    assert cols == {"items": ["Item", "Qty"]}
+    assert tables["items"][0]["qty"]["status"] == "agreed" and tables["items"][1]["qty"]["status"] == "review"
+    one_sided, _ = discover.merge_tables(a, [])
+    assert all(c["status"] == "review" for r in one_sided["items"] for c in r.values())
+
+
+def _invoice_pdf(path):
+    import pymupdf as fitz
+    d = fitz.open()
+    p = d.new_page(width=612, height=792)
+    p.insert_text((50, 60), "INVOICE", fontsize=18)
+    for y, t in [(100, "Invoice No: 1001"), (120, "Total Due: $215.00"), (140, "Customer: Acme Corp")]:
+        p.insert_text((50, y), t, fontsize=11)
+    d.save(path)
+
+
+async def fake_discover(model, jpeg, prompt):
+    return {"title": "Invoice", "fields": [{"label": "Invoice No", "value": "1001", "type": "id"},
+                                           {"label": "Total Due", "value": "$215.00" if not model.endswith("mini") else "$215.80", "type": "currency"},
+                                           {"label": "Customer", "value": "Acme Corp"}],
+            "checkboxes": [], "tables": []}
+
+
+def test_unregistered_document_is_discovered_not_dropped(tmp_path):
+    pdf = str(tmp_path / "inv.pdf")
+    _invoice_pdf(pdf)
+    r = asyncio.run(pipeline.process(pdf, form_reader=fake_discover, model_ask=fake_ask))
+    assert [d["route"]["extractor"] for d in r["documents"]] == ["discover"]
+    form = r["forms"][0]
+    assert form["discovered"] and form["label"] == "Invoice"
+    f = form["fields"]
+    assert f["invoice_no"]["status"] == "agreed" and f["invoice_no"]["bbox"] is not None       # highlighted on the page
+    assert f["total_due"]["status"] == "review" and f["total_due"]["label"] == "Total Due"
+    assert any(v["rule"] == "needs_review" for v in r["validation"])
+
+
+def test_user_choice_forces_how_a_file_is_read(tmp_path, pdf):
+    inv = str(tmp_path / "inv.pdf")
+    _invoice_pdf(inv)
+    forced = asyncio.run(pipeline.process(inv, form_reader=fake_form, template_choice="daily_note"))
+    assert [d["type"] for d in forced["documents"]] == ["daily_note"]                      # user said so; no guessing
+    assert forced["pages"][0]["classification"]["by"] == "user"
+    free = asyncio.run(pipeline.process(inv, form_reader=fake_discover, template_choice="discover"))
+    assert free["forms"][0]["discovered"] and free["documents"][0]["type"] == "unknown"
+    assert pipeline.valid_choice("auto") and pipeline.valid_choice("discover") and pipeline.valid_choice("prior_auth_form")
+    assert not pipeline.valid_choice("no_such_type")
+
+
+# ---- templates drafted from examples -------------------------------------------------------------------------------
+
+def test_draft_template_from_blank_form_reply():
+    reply = {"title": "Vendor Application", "fields": [
+        {"label": "Company Name", "section": "Applicant", "type": "text", "required": True},
+        {"label": "Date Founded", "section": "Applicant", "type": "date", "required": False},
+        {"label": "Company Name", "section": "Billing", "type": "text"}],
+        "choice_groups": [{"label": "Entity type", "section": "Applicant", "options": ["LLC", "Corp"], "multiple": False, "required": True}],
+        "tables": [{"title": "References", "columns": [{"label": "Name", "required": True}, {"label": "Phone"}]}]}
+    got = discover.parse(reply)
+    tpl = template_draft.build(got["title"], got["fields"], got["choice_groups"],
+                               [{"title": t["title"], "columns": [{"label": c, "required": False} for c in t["columns"]]} for t in got["tables"]], True)
+    keys = [f["key"] for s in tpl["sections"] for f in s["fields"]]
+    assert keys == ["applicant.company_name", "applicant.date_founded", "applicant.entity_type", "billing.company_name"]
+    assert tpl["doc_type"] == "vendor_application" and tpl["sections"][0]["header"] == "Applicant"
+    assert template_draft.validate_template(tpl) == []
+    assert [c["key"] for c in tpl["tables"][0]["columns"]] == ["name", "phone"]
+
+
+def test_template_validation_blocks_unsafe_or_broken_templates():
+    ok = {"doc_type": "my_form", "title": "My form", "sections": [{"id": "main", "header": None, "fields": [{"key": "a", "label": "A", "type": "text"}]}], "tables": []}
+    assert template_draft.validate_template(ok) == []
+    assert template_draft.validate_template({**ok, "doc_type": "prior_auth_form"})                 # clashes with a built-in
+    assert template_draft.validate_template({**ok, "doc_type": "../evil"})                         # path-like names
+    dup = {**ok, "sections": [{"id": "m", "header": None, "fields": [{"key": "a", "label": "A", "type": "text"}, {"key": "a", "label": "B", "type": "text"}]}]}
+    assert any("Duplicate" in e for e in template_draft.validate_template(dup))
+    pat = {**ok, "sections": [{"id": "m", "header": None, "fields": [{"key": "a", "label": "A", "type": "text", "pattern": "(a+)+$"}]}]}
+    assert template_draft.validate_template(pat)                                                    # no user regexes (ReDoS)
+    assert template_draft.validate_template({**ok, "sections": [], "tables": []})                   # empty
+
+
+def test_grid_as_table_in_one_reader_and_flat_fields_in_the_other_agree():
+    table_reader = discover.parse({"tables": [{"title": "Shoulder AROM", "columns": ["", "Right", "Left"],
+                                               "rows": [["Flexion", "170°", "Not Tested"], ["Abduction", "160°", "Not Tested"]]}]})
+    field_reader = discover.parse({"fields": [{"label": "Flexion Right", "value": "170°", "section": "Shoulder AROM"},
+                                              {"label": "Flexion Left", "value": "Not Tested"},
+                                              {"label": "Abduction Right", "value": "165°"}]})   # a genuine disagreement
+    conf_a, conf_b = discover.reconcile(table_reader, field_reader)
+    assert [f["label"] for f in field_reader["fields"]] == ["Abduction Right"]      # the confirmed ones live in the table now
+    tables, _ = discover.merge_tables(table_reader["tables"], [], conf_a, conf_b)
+    row = tables["shoulder_arom"][0]
+    assert row["right"]["status"] == "agreed" and row["left"]["status"] == "agreed"
+    assert row["col_1"]["status"] == "agreed"                                      # the row label ("Flexion") rides on its values
+    assert tables["shoulder_arom"][1]["right"]["status"] == "review"              # 160 vs 165 was never confirmed
+
+
+def test_blank_one_sided_fields_are_not_flagged():
+    a = discover.parse({"fields": [{"label": "Notes", "value": None}, {"label": "Name", "value": "Ann"}]})["fields"]
+    b = discover.parse({"fields": [{"label": "Name", "value": "Ann"}]})["fields"]
+    got = discover.merge_fields(a, b)
+    assert got["notes"]["status"] == "empty" and got["name"]["status"] == "agreed"

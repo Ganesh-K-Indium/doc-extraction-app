@@ -3,12 +3,12 @@ import hashlib
 import logging
 from typing import Any, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import config, db
-from app.services import export, ocr, pipeline
+from app.services import export, ocr, pipeline, template_draft
 
 logger = logging.getLogger("app.api.extractions")
 
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/extractions", tags=["extractions"], dependencies
 def _summary(ex) -> dict:
     return {"id": ex.id, "filename": ex.filename, "status": ex.status, "stage": ex.stage,
             "progress": {"done": ex.progress_done, "total": ex.progress_total}, "error": ex.error,
-            "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
+            "template_choice": ex.template_choice, "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
 
 
 def _get(s, extraction_id: str):
@@ -50,7 +50,9 @@ async def run_extraction(extraction_id: str) -> None:
         ex.status = "processing"
         s.commit()
     try:
-        result = await pipeline.process(str(pdf_file(extraction_id)), progress)
+        with db.session() as s:
+            choice = s.get(db.Extraction, extraction_id).template_choice or "auto"
+        result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice)
         status, error = "done", None
     except ocr.OcrError as e:
         result, status, error = None, "failed", str(e)
@@ -64,19 +66,21 @@ async def run_extraction(extraction_id: str) -> None:
 
 
 @router.post("", status_code=202)
-async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
+async def upload(background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto")):
     data = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"The file is larger than {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     if not data.startswith(b"%PDF"):
         raise HTTPException(415, "Upload a PDF file.")
+    if not pipeline.valid_choice(template):
+        raise HTTPException(422, f"Unknown document type '{template}'. Choose 'auto', 'discover' or a type from the document types list.")
     digest = hashlib.sha256(data).hexdigest()
     with db.session() as s:
         # Same bytes already read successfully: reuse that result instead of paying for the same OCR again.
-        prior = s.query(db.Extraction).filter_by(sha256=digest, status="done").order_by(db.Extraction.created_at.desc()).first()
+        prior = s.query(db.Extraction).filter_by(sha256=digest, status="done", template_choice=template).order_by(db.Extraction.created_at.desc()).first()
         if prior and pdf_file(prior.id).is_file():
             return {"id": prior.id, "status": "done", "reused": True}
-        ex = db.Extraction(filename=(file.filename or "document.pdf")[:255], sha256=digest)
+        ex = db.Extraction(filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template)
         s.add(ex)
         s.commit()
         extraction_id = ex.id
@@ -151,3 +155,34 @@ def delete_extraction(extraction_id: str):
         s.commit()
     pdf_file(extraction_id).unlink(missing_ok=True)
     pdf_file(extraction_id).with_suffix(".work.pdf").unlink(missing_ok=True)
+
+
+class Promote(BaseModel):
+    title: str = ""
+
+
+@router.post("/{extraction_id}/forms/{doc_index}/promote")
+def promote(extraction_id: str, doc_index: int, body: Promote):
+    """Turn a reviewed, untemplated extraction into a registered document type, so the next file of that kind is
+    recognised, validated and cross-checked."""
+    with db.session() as s:
+        ex = _get(s, extraction_id)
+        form = next((f for f in (ex.result or {}).get("forms", []) if f["doc_index"] == doc_index), None)
+        if not form:
+            raise HTTPException(404, "No such document.")
+        if not form.get("discovered"):
+            raise HTTPException(409, "This document already uses a template.")
+        draft = template_draft.from_discovery(form, body.title.strip() or None)
+        try:
+            doc_type = template_draft.save_custom_type(draft["template"], draft["entry"])
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        return {"doc_type": doc_type, "title": draft["template"]["title"], "fields": sum(len(x["fields"]) for x in draft["template"]["sections"])}
+
+
+@router.get("/{extraction_id}/truth.json")
+def download_truth(extraction_id: str):
+    """The current (reviewed) values as an answer key for eval/score.py. Review the extraction first: what you
+    download is only as right as your corrections."""
+    with db.session() as s:
+        return export.truth_json(_get(s, extraction_id))

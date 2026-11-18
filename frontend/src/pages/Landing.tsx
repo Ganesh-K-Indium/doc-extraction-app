@@ -36,9 +36,9 @@ function Sheet({ kind, n }: { kind: Kind; n: number }) {
 
 const STEPS = [
     { t: 'Profile each page', d: 'Is there embedded text, or does a picture cover the page? Fax scans usually carry only a picture.', note: 'Decides the reader' },
-    { t: 'Read the text', d: 'Digital pages use their own text. Scans go to two vision models, and every line is compared between them.', note: 'Disagreements are kept, not hidden' },
+    { t: 'Read the text', d: 'Digital pages use their own text. Scans get a Tesseract text layer for positions, and two vision models transcribe them and are compared.', note: 'Disagreements are kept, not hidden' },
     { t: 'Sort into documents', d: 'Fax stamps are split off as metadata. Pages are classified and grouped, so a 9-page packet becomes four documents.', note: 'Blank and cover pages are kept, not dropped' },
-    { t: 'Extract and check', d: 'The authorization form is read field by field against its template. Rules then compare it with the clinical notes.', note: 'Required fields, formats, cross-document facts' },
+    { t: 'Extract and check', d: 'Each document is read field by field against its template. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
 ];
 
 export default function Landing() {
@@ -57,8 +57,8 @@ export default function Landing() {
             <main>
                 <section className="lp-hero">
                     <div className="lp-wrap">
-                        <h1>Read the whole fax packet. Check only what’s in doubt.</h1>
-                        <p className="lp-lede">Upload a PDF. {APP_NAME} reads every page, sorts the packet into its documents, fills in the form’s fields, and flags the values its two readers didn’t agree on.</p>
+                        <h1>Read the whole packet. Check only what’s in doubt.</h1>
+                        <p className="lp-lede">Upload any PDF: a scanned form, a fax, a statement, an application. {APP_NAME} reads every page, sorts the file into its documents, fills in the fields of each document type it knows, and flags the values its readers didn’t agree on.</p>
                         <div className="lp-cta">
                             <Link to="/app" className="btn btn--primary btn--lg">Open workspace</Link>
                             <a href="#output" className="btn btn--lg">See the output</a>
@@ -71,7 +71,7 @@ export default function Landing() {
                                     <span>{g.label}</span><small>{g.extract ? `Page ${g.pages}, fields extracted` : `Pages ${g.pages}`}</small>
                                 </div>))}
                             </div>
-                            <figcaption>A real packet shape: one 9-page fax, four documents.</figcaption>
+                            <figcaption>One 9-page fax packet, read as four documents. Your own document types work the same way.</figcaption>
                         </figure>
                     </div>
                 </section>
@@ -88,7 +88,7 @@ export default function Landing() {
                 <section id="output" className="lp-sec lp-sec--tint">
                     <div className="lp-wrap">
                         <h2>Two files, built to be loaded</h2>
-                        <p className="lp-sub">Page-by-page content in one, the form’s key–value data in the other. Download both from any document.</p>
+                        <p className="lp-sub">Page-by-page content in one, each document’s key–value data in the other. Download both from any extraction.</p>
                         <div className="lp-code2">
                             <figure className="lp-code">
                                 <figcaption>pages.json</figcaption>
@@ -131,7 +131,7 @@ export default function Landing() {
                             <div className="lp-points">
                                 <div><h3>Two readers, compared</h3><p>A value both readers agree on stays quiet. A disagreement keeps both readings, and one click takes the other.</p></div>
                                 <div><h3>A queue, not a hunt</h3><p>Step through flagged values with <kbd>j</kbd> and <kbd>k</kbd>. Each one is highlighted on the source page.</p></div>
-                                <div><h3>Rules that read across documents</h3><p>The form says one birth date, the exam says another. That becomes a finding, not something a person has to notice.</p></div>
+                                <div><h3>Rules that read across documents</h3><p>One document says one date, another says a different one. That becomes a finding, not something a person has to notice.</p></div>
                             </div>
                         </div>
                         <figure className="lp-spec" aria-label="Example of the review panel">
@@ -140,7 +140,7 @@ export default function Landing() {
                             <div className="field field--flag"><span className="field__label">npi</span><span className="field__input">199999999</span><span className="field__state">Check</span>
                                 <span className="field__alt">The second reader saw <span className="link">use “1999999990”</span></span></div>
                             <div className="field field--done"><span className="field__label">review type</span><span className="field__input">ROUTINE</span><span className="field__state">Read from checkbox</span></div>
-                            <div className="finding finding--error"><span className="finding__sev">Error</span><span>Date of birth is 1970-07-01 on the form but 1975-01-15 in the daily note.</span></div>
+                            <div className="finding finding--error"><span className="finding__sev">Error</span><span>Date of birth is 1970-07-01 in the form but 1975-01-15 in the daily note.</span></div>
                             <div className="finding finding--warn"><span className="finding__sev">Warning</span><span>Requested on the form but not in the daily note: 97112.</span></div>
                         </figure>
                     </div>
@@ -174,7 +174,7 @@ export default function Landing() {
             <footer className="lp-foot">
                 <div className="lp-wrap">
                     <span>{APP_NAME}</span>
-                    <p>Uploaded files and results are stored on the server running this app. Page images are sent to the model provider you configure. Use a provider agreement that covers patient health information before processing real patient records.</p>
+                    <p>Uploaded files and results are stored on the server running this app. Page images are sent to the model provider you configure; without a key, scans are read locally by Tesseract and nothing leaves the server. Use a provider agreement that fits the sensitivity of your documents before processing real ones.</p>
                 </div>
             </footer>
         </div>

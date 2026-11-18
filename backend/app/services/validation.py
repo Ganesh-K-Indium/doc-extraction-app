@@ -70,3 +70,17 @@ def validate_form(template: Dict[str, Any], fields: Dict[str, Dict[str, Any]], t
                 if col.get("required") and not (row.get(col["key"], {}).get("value") or "").strip():
                     out.append(_f("required_missing", "error", f"Row {i}: '{col['label']}' is empty.", f"{tbl['key']}[{i}].{col['key']}"))
     return out
+
+
+def review_notes(fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Findings for an untemplated extraction. With no template there are no required fields or formats to check, so
+    the only honest findings are the places the readers were not sure."""
+    out = []
+    for key, c in fields.items():
+        if c.get("status") in ("review", "undetermined"):
+            out.append(_f("needs_review", "info", f"Check '{c.get('label') or key}': {c.get('reason') or 'readers disagree or are unsure'}.", key))
+    for tkey, rows in tables.items():
+        n = sum(1 for r in rows for c in r.values() if c.get("status") == "review")
+        if n:
+            out.append(_f("needs_review", "info", f"{n} cell{'s' if n != 1 else ''} in the {tkey.replace('_', ' ')} table need a check."))
+    return out

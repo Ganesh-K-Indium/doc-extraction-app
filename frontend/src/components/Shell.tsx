@@ -4,11 +4,11 @@ import { meta } from '../api';
 import { APP_NAME } from '../brand';
 
 export default function Shell() {
-    const [health, setHealth] = useState<'checking' | 'full' | 'limited' | 'offline'>('checking');
+    const [health, setHealth] = useState<'checking' | 'full' | 'local' | 'limited' | 'offline'>('checking');
     useEffect(() => {
-        meta.health().then(h => setHealth(h.llm ? 'full' : 'limited')).catch(() => setHealth('offline'));
+        meta.health().then(h => setHealth(h.llm ? 'full' : h.tesseract ? 'local' : 'limited')).catch(() => setHealth('offline'));
     }, []);
-    const label = { checking: 'Checking server', full: 'Vision readers on', limited: 'Embedded text only', offline: 'Server offline' }[health];
+    const label = { checking: 'Checking server', full: 'Vision readers on', local: 'Local OCR only', limited: 'Embedded text only', offline: 'Server offline' }[health];
     return (
         <div className="app">
             <header className="topbar">
@@ -17,7 +17,7 @@ export default function Shell() {
                     <NavLink to="/app" end>Documents</NavLink>
                     <NavLink to="/app/types">Document types</NavLink>
                 </nav>
-                <span className={`health health--${health}`} title={health === 'limited' ? 'No OPENAI_API_KEY is set, so scanned pages are not transcribed.' : undefined}>{label}</span>
+                <span className={`health health--${health}`} title={health === 'limited' ? 'No model key and no Tesseract: scanned pages are not read.' : health === 'local' ? 'No OPENAI_API_KEY: scans are read by Tesseract on this machine, as a single unverified reader.' : undefined}>{label}</span>
             </header>
             <Outlet />
         </div>

@@ -14,6 +14,14 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_PAGES = int(os.getenv("MAX_PAGES", "200"))
 
 
+def templates_dir() -> Path:
+    return Path(os.getenv("DATA_DIR", "./data")).resolve() / "templates"
+
+
+def custom_types_file() -> Path:
+    return Path(os.getenv("DATA_DIR", "./data")).resolve() / "custom_types.json"
+
+
 def llm_enabled() -> bool:
     return os.getenv("LLM_ENABLED", "1").lower() not in ("0", "false", "no") and bool(os.getenv("OPENAI_API_KEY"))
 
@@ -25,3 +33,4 @@ def extraction_models() -> list:
 
 def ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    templates_dir().mkdir(parents=True, exist_ok=True)

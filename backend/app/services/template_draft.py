@@ -1,0 +1,157 @@
+"""
+Templates from examples, so nobody writes JSON by hand:
+
+  draft_from_blank   a scan or PDF of an empty form -> a draft template (fields, types, required marks, choice groups,
+                     tables) and the registry entry that makes the app recognise that form
+  from_discovery     an extraction that was reviewed -> the same, built from the discovered fields
+
+Drafts are returned for a person to correct; nothing is registered until it is saved (validate_template guards that).
+"""
+import asyncio
+import re
+import json
+from typing import Any, Dict, List, Optional
+
+from app import config
+from app.services import classify, discover, pdf_pages, ocr
+
+FIELD_TYPES = {"text", "date", "phone", "state", "zip", "npi", "tax_id", "icd10", "number", "currency", "email", "id",
+               "enum", "multi_enum", "checkbox"}
+MODEL_TYPE = {"id": "text", "number": "text", "currency": "text", "email": "text"}
+MAX_FIELDS = 400
+
+
+def _entry(doc_type: str, title: str) -> Dict[str, Any]:
+    words = [w for w in re.split(r"\s+", title.strip().lower()) if w]
+    return {"type": doc_type, "label": title.strip() or doc_type, "score": 3,
+            "any": [r"\s+".join(re.escape(w) for w in words)] if words else [], "template": doc_type, "extractor": "template_form"}
+
+
+def build(title: str, fields: List[Dict[str, Any]], groups: List[Dict[str, Any]], tables: List[Dict[str, Any]], single_page: bool) -> Dict[str, Any]:
+    """Assemble a template dict from normalised draft pieces."""
+    title = title or "Untitled document"
+    doc_type = discover.slug(title) or "custom_document"
+    sections: Dict[str, Dict[str, Any]] = {}
+    used: Dict[str, int] = {}
+
+    def add(section: Optional[str], f: Dict[str, Any]) -> None:
+        sid = discover.slug(section) or "main"
+        sec = sections.setdefault(sid, {"id": sid, "header": section if sid != "main" else None, "fields": []})
+        base = (f"{sid}." if sid != "main" else "") + (discover.slug(f["label"]) or "field")
+        used[base] = used.get(base, 0) + 1
+        sec["fields"].append({**f, "key": base if used[base] == 1 else f"{base}_{used[base]}"})
+
+    for f in fields:
+        add(f.get("section"), {"label": f["label"], "type": MODEL_TYPE.get(f.get("type", "text"), f.get("type", "text")) if f.get("type", "text") in FIELD_TYPES else "text",
+                               **({"required": True} if f.get("required") else {})})
+    for g in groups:
+        add(g.get("section"), {"label": g["label"], "type": "multi_enum" if g.get("multiple") else "enum", "options": g["options"],
+                               **({"required": True} if g.get("required") else {})})
+    tbls = []
+    for n, t in enumerate(tables):
+        cols = discover._unique([discover.slug(c["label"]) or f"col_{i + 1}" for i, c in enumerate(t["columns"])])
+        tbls.append({"key": discover.slug(t.get("title")) or f"table_{n + 1}", "header": t.get("title"),
+                     "columns": [{"key": k, "label": c["label"], **({"required": True} if c.get("required") else {})} for k, c in zip(cols, t["columns"])]})
+    return {"template_id": f"custom-{doc_type}", "doc_type": doc_type, "title": title, "single_page": single_page,
+            "sections": list(sections.values()), "tables": tbls, "canonical": {}, "rules": []}
+
+
+async def draft_from_blank(path: str, models: List[str], reader=None) -> Dict[str, Any]:
+    """Read every page of a blank form with the first (stronger) model and draft a template."""
+    n = await asyncio.to_thread(pdf_pages.page_count, path)
+    reader = reader or discover._read
+    fields: List[Dict[str, Any]] = []
+    groups: List[Dict[str, Any]] = []
+    tables: List[Dict[str, Any]] = []
+    title = None
+    for page in range(1, n + 1):
+        jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page)
+        got = discover.parse(await asyncio.wait_for(reader(models[0], jpeg, discover.BLANK_PROMPT), ocr.ENGINE_TIMEOUT_SECONDS + 5))
+        title = title or got["title"]
+        fields += got["fields"]
+        groups += got["choice_groups"]
+        tables += [{"title": t["title"], "columns": [{"label": c, "required": False} for c in t["columns"]]} for t in got["tables"]]
+    tpl = build(title or "Untitled document", fields, groups, tables, single_page=(n == 1))
+    return {"template": tpl, "entry": _entry(tpl["doc_type"], tpl["title"])}
+
+
+def from_discovery(form: Dict[str, Any], title: Optional[str]) -> Dict[str, Any]:
+    """Promote a discovered extraction to a template. Checkbox fields become single-box checkboxes (no way to know the
+    original grouping); types are carried over from what was discovered."""
+    fields, tables = [], []
+    for key, c in form["fields"].items():
+        is_box = c.get("method") in ("pixel", "model") or isinstance(c.get("value"), bool)
+        fields.append({"label": c.get("label") or key, "section": c.get("section"),
+                       "type": "checkbox" if is_box else ("date" if re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", str(c.get("value") or "")) else "text")})
+    for key, cols in (form.get("table_columns") or {}).items():
+        tables.append({"title": key.replace("_", " "), "columns": [{"label": c, "required": False} for c in cols]})
+    tpl = build(title or form.get("label") or "Untitled document", fields, [], tables, single_page=len(form.get("pages", [])) <= 1)
+    return {"template": tpl, "entry": _entry(tpl["doc_type"], tpl["title"])}
+
+
+def validate_template(t: Any) -> List[str]:
+    """Reasons a template must not be saved (empty list when fine)."""
+    errs: List[str] = []
+    if not isinstance(t, dict):
+        return ["Template must be an object."]
+    doc_type = t.get("doc_type")
+    if not isinstance(doc_type, str) or not re.fullmatch(r"[a-z0-9_]{2,48}", doc_type):
+        errs.append("doc_type must be 2-48 lowercase letters, digits or underscores.")
+    elif doc_type in {d["type"] for d in classify.DOC_TYPES} | {"unknown", "blank_or_logo"}:
+        errs.append(f"'{doc_type}' is a built-in type; choose another name.")
+    if not str(t.get("title") or "").strip():
+        errs.append("A title is required.")
+    keys, count = set(), 0
+    for sec in t.get("sections") or []:
+        for f in sec.get("fields") or []:
+            count += 1
+            k = f.get("key")
+            if not isinstance(k, str) or not re.fullmatch(r"[a-z0-9_.]{1,100}", k):
+                errs.append(f"Bad field key {k!r}.")
+            elif k in keys:
+                errs.append(f"Duplicate field key '{k}'.")
+            keys.add(k)
+            if f.get("type") not in FIELD_TYPES:
+                errs.append(f"Field '{k}' has unknown type {f.get('type')!r}.")
+            if f.get("type") in ("enum", "multi_enum") and not f.get("options"):
+                errs.append(f"Field '{k}' needs options.")
+    if count == 0 and not t.get("tables"):
+        errs.append("Add at least one field or table.")
+    if count > MAX_FIELDS:
+        errs.append(f"At most {MAX_FIELDS} fields.")
+    for tbl in t.get("tables") or []:
+        for c in tbl.get("columns") or []:
+            if c.get("pattern") is not None:
+                errs.append("Column patterns cannot be set through the API.")
+    for sec in t.get("sections") or []:
+        for f in sec.get("fields") or []:
+            if f.get("pattern") is not None:
+                errs.append("Field patterns cannot be set through the API.")
+    return errs
+
+
+def save_custom_type(template: Dict[str, Any], entry: Dict[str, Any]) -> str:
+    """Write the template and register its type. Raises ValueError with the reasons when the template is not valid."""
+    errs = validate_template(template)
+    if errs:
+        raise ValueError("; ".join(errs))
+    config.templates_dir().mkdir(parents=True, exist_ok=True)
+    doc_type = template["doc_type"]
+    # defaults the pipeline relies on; a template saved through the API may omit them
+    template = {"single_page": False, "canonical": {}, "rules": [], "tables": [], **template, "template_id": f"custom-{doc_type}"}
+    template["sections"] = [{"header": None, **s} for s in template["sections"]]
+    (config.templates_dir() / f"{doc_type}.json").write_text(json.dumps(template, indent=2))
+    # the registry entry is rebuilt from the template: callers cannot inject patterns
+    entry = _entry(doc_type, template["title"])
+    types = [d for d in classify.custom_types() if d["type"] != doc_type] + [entry]
+    config.custom_types_file().write_text(json.dumps(types, indent=2))
+    return doc_type
+
+
+def delete_custom_type(doc_type: str) -> bool:
+    types = classify.custom_types()
+    if not any(d["type"] == doc_type for d in types):
+        return False
+    config.custom_types_file().write_text(json.dumps([d for d in types if d["type"] != doc_type], indent=2))
+    (config.templates_dir() / f"{doc_type}.json").unlink(missing_ok=True)
+    return True

@@ -1,7 +1,7 @@
 """
 Score extraction against a hand-made answer key.
 
-    python eval/score.py <pdf> <truth.json> [--out result.json]
+    python eval/score.py <pdf> <truth.json> [--template auto|discover|<type>] [--out result.json]
 
 Reports, per field and overall:
   accuracy        share of fields whose value equals the key (after normalisation)
@@ -36,38 +36,49 @@ def same(got, want):
     return norm(got) == norm(want)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("pdf"), ap.add_argument("truth"), ap.add_argument("--out")
-    a = ap.parse_args()
-    truth = json.loads(Path(a.truth).read_text())
-    result = asyncio.run(pipeline.process(a.pdf))
-    if a.out:
-        Path(a.out).write_text(json.dumps(result, indent=1))
-    form = next((f for f in result["forms"] if f["doc_type"] == truth["doc_type"]), None)
-    if not form:
-        sys.exit(f"no {truth['doc_type']} found; documents: {[d['type'] for d in result['documents']]}")
-
+def score_document(form, doc):
     rows = []
-    for key, want in truth["fields"].items():
+    for key, want in doc["fields"].items():
         cell = form["fields"].get(key, {"value": None, "status": "missing"})
         rows.append((key, same(cell.get("value"), want), cell.get("status") in FLAGGED, cell.get("value"), want, cell.get("status")))
-    for tkey, trows in truth.get("tables", {}).items():
+    for tkey, trows in doc.get("tables", {}).items():
         got_rows = form["tables"].get(tkey, [])
         for i, trow in enumerate(trows):
             for col, want in trow.items():
                 cell = got_rows[i][col] if i < len(got_rows) and col in got_rows[i] else {"value": None, "status": "missing"}
                 rows.append((f"{tkey}[{i + 1}].{col}", same(cell.get("value"), want), cell.get("status") in FLAGGED,
                              cell.get("value"), want, cell.get("status")))
+    return rows
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("pdf"), ap.add_argument("truth"), ap.add_argument("--out")
+    ap.add_argument("--template", default="auto", help="auto | discover | a registered type")
+    a = ap.parse_args()
+    truth = json.loads(Path(a.truth).read_text())
+    docs = truth["documents"] if "documents" in truth else [truth]  # one key, or an exported answer key with many
+    result = asyncio.run(pipeline.process(a.pdf, template_choice=a.template))
+    if a.out:
+        Path(a.out).write_text(json.dumps(result, indent=1))
+
+    rows, grounded, nonblank = [], 0, 0
+    for doc in docs:
+        form = next((f for f in result["forms"] if f["doc_type"] == doc["doc_type"] or f.get("label") == doc["doc_type"]), None)
+        if not form:
+            print(f"! no '{doc['doc_type']}' found; documents: {[d['type'] for d in result['documents']]}")
+            rows += [(f"[{doc['doc_type']}] {k}", False, False, None, v, "missing") for k, v in doc["fields"].items()]
+            continue
+        rows += [(f"{r[0]}",) + r[1:] for r in score_document(form, doc)]
+        grounded += sum(1 for c in form["fields"].values() if c.get("bbox"))
+        nonblank += sum(1 for c in form["fields"].values() if c.get("value") not in (None, "", [], False))
     n = len(rows)
     right = sum(1 for r in rows if r[1])
     silent = [r for r in rows if not r[1] and not r[2]]
     caught = [r for r in rows if not r[1] and r[2]]
     wasted = [r for r in rows if r[1] and r[2]]
-    grounded = sum(1 for k, c in form["fields"].items() if c.get("bbox"))
-    nonblank = sum(1 for c in form["fields"].values() if c.get("value") not in (None, "", [], False))
     print(f"\nfields scored: {n}")
-    print(f"accuracy:      {right}/{n} = {right / n:.1%}")
+    print(f"accuracy:      {right}/{n} = {right / max(n, 1):.1%}")
     print(f"silent errors: {len(silent)}   (wrong and NOT flagged)")
     print(f"caught errors: {len(caught)}   (wrong but flagged for review)")
     print(f"flagged right: {len(wasted)}   (correct but sent to review)")

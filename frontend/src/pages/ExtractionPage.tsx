@@ -36,7 +36,7 @@ function FieldRow({ doc, name, cell, selected, onSelect, onSave }: {
     const st = stateOf(cell);
     return (
         <div id={rowId(doc, name)} className={`field field--${st.key}${selected ? ' field--on' : ''}`} onClick={onSelect}>
-            <label className="field__label" htmlFor={`in-${doc}-${name}`}>{name.split('.').pop()?.replace(/_/g, ' ')}</label>
+            <label className="field__label" htmlFor={`in-${doc}-${name}`}>{cell.label ?? name.split('.').pop()?.replace(/_/g, ' ')}</label>
             <input id={`in-${doc}-${name}`} className="field__input" value={draft} readOnly={readOnly} onFocus={onSelect}
                 onChange={e => setEdit(e.target.value)}
                 onBlur={() => { if (draft !== display(cell.value)) onSave(draft); setEdit(null); }}
@@ -58,6 +58,7 @@ export default function ExtractionPage() {
     const [highlight, setHighlight] = useState<{ page: number; bbox: BBox } | null>(null);
     const [visible, setVisible] = useState(1);
     const [sel, setSel] = useState<QItem | null>(null);
+    const [saved, setSaved] = useState<Record<number, string>>({});
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
@@ -172,6 +173,7 @@ export default function ExtractionPage() {
                             <span className="tabs__spacer" />
                             <button className="btn btn--quiet" onClick={() => api.download(id, 'pages', data.filename)}>Download pages JSON</button>
                             <button className="btn btn--quiet" onClick={() => api.download(id, 'fields', data.filename)}>Download fields JSON</button>
+                            <button className="btn btn--quiet" title="The values as they are now, including your corrections, as an answer key for accuracy scoring" onClick={() => api.download(id, 'truth', data.filename)}>Download answer key</button>
                         </div>
                         <div className="panel__body">
                             {tab === 'fields' && (forms.length === 0 ? <p className="empty">No form with a known template was found in this file. The Pages tab shows what was read.</p> : (
@@ -179,7 +181,19 @@ export default function ExtractionPage() {
                                     {queue.length > 0 && <p className="hint">Press <kbd>j</kbd> and <kbd>k</kbd> to move between the {queue.length} values to check, <kbd>Enter</kbd> to confirm one.</p>}
                                     {forms.map(f => (
                                         <div key={f.doc_index}>
-                                            <h2 className="form-title">{f.template_id} <span className="muted">pages {f.pages.join(', ')}</span></h2>
+                                            <h2 className="form-title">{f.discovered ? (f.label || 'Untitled document') : f.template_id} <span className="muted">pages {f.pages.join(', ')}</span></h2>
+                                            {f.discovered && (
+                                                <div className="banner">
+                                                    <p>No template matched, so these fields were found by reading the page. Check the highlighted values, then save this as a document type to validate and recognise the next one automatically.</p>
+                                                    {saved[f.doc_index]
+                                                        ? <p className="banner__ok">Saved as “{saved[f.doc_index]}”. New uploads of this kind will use it.</p>
+                                                        : <button className="btn" onClick={async () => {
+                                                            const title = window.prompt('Name this document type', f.label || '');
+                                                            if (!title) return;
+                                                            try { const r = await api.promote(id, f.doc_index, title.trim()); setSaved(x => ({ ...x, [f.doc_index]: r.title })); }
+                                                            catch (e) { setError((e as Error).message); }
+                                                        }}>Save as document type</button>}
+                                                </div>)}
                                             {sections(f).map(([g, keys]) => (
                                                 <fieldset key={g} className="group"><legend>{g.replace(/_/g, ' ')}</legend>
                                                     {keys.map(k => <FieldRow key={k} doc={f.doc_index} name={k} cell={f.fields[k]}
@@ -187,10 +201,10 @@ export default function ExtractionPage() {
                                                         onSelect={() => select({ doc: f.doc_index, key: k }, f.fields[k])} onSave={v => save(f.doc_index, k, v)} />)}
                                                 </fieldset>))}
                                             {Object.entries(f.tables).map(([name, rows]) => (
-                                                <fieldset key={name} className="group"><legend>{name === 'cpt' ? 'CPT / HCPCS services' : name}</legend>
+                                                <fieldset key={name} className="group"><legend>{name === 'cpt' ? 'CPT / HCPCS services' : name.replace(/_/g, ' ')}</legend>
                                                     {rows.length === 0 ? <p className="empty">No rows were found.</p> : (
                                                         <table className="grid">
-                                                            <thead><tr>{Object.keys(rows[0]).map(c => <th key={c} scope="col">{c}</th>)}</tr></thead>
+                                                            <thead><tr>{Object.keys(rows[0]).map((c, i) => <th key={c} scope="col">{f.table_columns?.[name]?.[i] ?? c}</th>)}</tr></thead>
                                                             <tbody>{rows.map((r, i) => <tr key={i}>{Object.entries(r).map(([c, cell]) => (
                                                                 <td key={c} className={FLAGGED.has(cell.status) ? 'is-flag' : ''}>{display(cell.value)}
                                                                     {cell.alternatives.length > 0 && <div className="field__alt">second reader: {cell.alternatives.join(' / ')}</div>}</td>))}</tr>)}</tbody>

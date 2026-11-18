@@ -35,3 +35,14 @@ def fields_json(ex) -> Dict[str, Any]:
     return {"extraction_id": ex.id, "filename": ex.filename, "forms": forms,
             "other_documents": r.get("other_documents", []), "validation": r.get("validation", []),
             "stats": r.get("stats", {})}
+
+
+def truth_json(ex) -> Dict[str, Any]:
+    """Answer-key shape consumed by eval/score.py: one entry per extracted document, plain values only."""
+    out = []
+    for f in fields_json(ex)["forms"]:
+        out.append({"doc_type": f["doc_type"] if not f.get("discovered") else (f.get("label") or f["doc_type"]),
+                    "pages": f["pages"], "discovered": bool(f.get("discovered")),
+                    "fields": {k: c.get("value") for k, c in f["fields"].items()},
+                    "tables": {t: [{col: cell.get("value") for col, cell in row.items()} for row in rows] for t, rows in f["tables"].items()}})
+    return {"note": f"Answer key from {ex.filename}; verify before trusting.", "documents": out}

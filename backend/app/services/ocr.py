@@ -184,7 +184,28 @@ def merge_readings(primary: List[str], secondary: Optional[List[str]]) -> List[O
                 out.extend(OcrLine(l, "review", [], "second reader did not see this line") for l in a_group)
             else:
                 out.extend(OcrLine(l, "review", [], "only the second reader saw this line") for l in b_group)
-    return out
+    return _settle_layout(out, primary, secondary)
+
+
+def _settle_layout(out: List[OcrLine], primary: List[str], secondary: List[str]) -> List[OcrLine]:
+    """Line pairing fails when the readers break the page differently (a two-column header read as one line by one
+    model and two by the other). Compare content instead: a flagged line whose text appears intact anywhere in the
+    other reader's page is not a disagreement, and a line only the second reader produced that the primary already
+    contains is dropped. A genuinely different digit still fails this test and stays flagged."""
+    full_a = _canon(" ".join(primary))
+    full_b = _canon(" ".join(secondary))
+    primary_set = {_canon(l) for l in primary}
+    settled: List[OcrLine] = []
+    for line in out:
+        if line.status == "review" and line.reason in ("numbers differ", "wording differs", "second reader did not see this line"):
+            if _canon(line.text) and _canon(line.text) in full_b and "[?]" not in line.text:
+                settled.append(OcrLine(line.text))
+                continue
+        if line.status == "review" and line.reason == "only the second reader saw this line":
+            if _canon(line.text) in full_a:
+                continue  # the primary reading already holds this text
+        settled.append(line)
+    return settled
 
 
 # ---------------------------------------------------------------------------

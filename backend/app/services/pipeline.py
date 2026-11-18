@@ -20,19 +20,33 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app import config
-from app.services import classify, cross, form_extractor, kv, ocr, pdf_pages, router, tess, validation
+from app.services import classify, cross, discover, form_extractor, kv, ocr, pdf_pages, router, tess, validation
 
 logger = logging.getLogger("app.services.pipeline")
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
 PAGE_CONCURRENCY = 4
-TYPE_TEMPLATES = {d["type"]: d["template"] for d in classify.DOC_TYPES if d.get("template")}
+AUTO, DISCOVER = "auto", "discover"
 
 Progress = Callable[[str, int, int], None]
 
 
 def load_template(name: str) -> Dict[str, Any]:
-    return json.loads((TEMPLATE_DIR / f"{name}.json").read_text())
+    """Built-in templates ship with the app; custom ones (drafted from a blank form or promoted) live in DATA_DIR."""
+    for folder in (TEMPLATE_DIR, config.templates_dir()):
+        f = folder / f"{name}.json"
+        if f.is_file():
+            return json.loads(f.read_text())
+    raise FileNotFoundError(f"No template named {name!r}")
+
+
+def type_templates() -> Dict[str, str]:
+    return {d["type"]: d["template"] for d in classify.all_types() if d.get("template")}
+
+
+def valid_choice(choice: str) -> bool:
+    """'auto' (detect), 'discover' (read as one document with no template) or any registered type with a template."""
+    return choice in (AUTO, DISCOVER) or choice in type_templates()
 
 
 def work_path(path: str) -> str:
@@ -79,7 +93,8 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     "text": "", "lines": [], "blocks": [], "tables": [], "form_widgets": [], "route": None, "error": msg}
 
 
-async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None) -> Dict[str, Any]:
+async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None,
+                  template_choice: str = AUTO) -> Dict[str, Any]:
     progress = progress or (lambda *_: None)
     n_pages = await asyncio.to_thread(pdf_pages.page_count, path)
     if n_pages > config.MAX_PAGES:
@@ -113,21 +128,31 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
     for p in pages:
         if p["page"] in layer_errors:
             p["text_layer_error"] = layer_errors[p["page"]]
-    if use_llm and ocr_models:
-        for p in pages:  # rules could not name a non-trivial page: ask a small model, restricted to registered types
+    if template_choice != AUTO:
+        # The user said what this file is. Every page that has content becomes that document; no guessing.
+        reg = {d["type"]: d for d in classify.all_types()}
+        forced = ({"type": template_choice, "label": reg[template_choice]["label"], "confidence": 1.0, "by": "user"}
+                  if template_choice in reg else {"type": "unknown", "label": "Untemplated document", "confidence": 1.0, "by": "user"})
+        for p in pages:
+            if p["classification"]["type"] != "blank_or_logo" and p["source"] != "failed":
+                p["classification"] = dict(forced)
+    elif use_llm and ocr_models:
+        for i, p in enumerate(pages):  # rules could not name a non-trivial page: ask a small model, restricted to registered types
             if p["classification"]["type"] == "unknown" and p["text"].strip():
-                p["classification"] = await classify.classify_with_model(p["text"], ocr_models, model_ask)
+                prev = pages[i - 1]["text"] if i else ""
+                p["classification"] = await classify.classify_with_model(p["text"], ocr_models, model_ask, prev)
     documents = classify.segment(pages)
     by_num = {p["page"]: p for p in pages}
 
     forms, others = [], []
+    templates = type_templates()
     for i, doc in enumerate(documents):
         progress("documents", i, len(documents))
         doc_pages = [by_num[n] for n in doc["pages"]]
         texts = {p["page"]: p["text"] for p in doc_pages}
-        decision = router.decide_extractor(doc["type"])
+        decision = router.decide_extractor(doc["type"], llm_available=bool(form_models))
         doc["route"] = decision
-        tpl_name = TYPE_TEMPLATES.get(doc["type"]) if decision["extractor"] == "template_form" else None
+        tpl_name = templates.get(doc["type"]) if decision["extractor"] == "template_form" else None
         if tpl_name:
             tpl = load_template(tpl_name)
             usable = [p["page"] for p in doc_pages if p["classification"]["type"] == doc["type"]] or doc["pages"]
@@ -136,6 +161,16 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
                           "pages": doc["pages"], "readers": res["readers"], "fields": res["fields"], "tables": res["tables"],
                           "validation": validation.validate_form(tpl, res["fields"], res["tables"]),
                           "_template": tpl, "_text": "\n".join(texts.values())})
+        elif decision["extractor"] == "discover":
+            usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
+            res = await discover.discover_document(work, usable, form_models, form_reader)
+            if res["title"] and doc["type"] == "unknown":
+                doc["label"] = res["title"]
+            forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
+                          "label": res["title"] or doc["label"], "pages": doc["pages"], "readers": res["readers"],
+                          "fields": res["fields"], "tables": res["tables"], "table_columns": res["table_columns"],
+                          "validation": validation.review_notes(res["fields"], res["tables"]),
+                          "_template": {"canonical": {}}, "_text": "\n".join(texts.values())})
         elif decision["extractor"] == "kv":
             lines = [l["text"] for p in doc_pages for l in p["lines"]]
             pairs = kv.parse_kv(lines)

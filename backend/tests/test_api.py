@@ -63,3 +63,60 @@ def test_registry(client):
     by = {t["type"]: t for t in body["types"]}
     assert by["prior_auth_form"]["extractor"] == "template_form" and by["prior_auth_form"]["required"] > 10
     assert by["fax_cover"]["extractor"] == "skip" and {r["id"] for r in body["readers"]} >= {"text_layer", "ocr_dual"}
+
+
+def test_template_choice_at_upload(client, tmp_path):
+    pdf = tmp_path / "p.pdf"
+    build(str(pdf))
+    h = {"X-API-Key": "secret"}
+    files = {"file": ("p.pdf", pdf.read_bytes(), "application/pdf")}
+    assert client.post("/api/extractions", files=files, data={"template": "no_such_type"}, headers=h).status_code == 422
+    r = client.post("/api/extractions", files=files, data={"template": "prior_auth_form"}, headers=h)
+    assert r.status_code == 202
+    got = client.get(f"/api/extractions/{r.json()['id']}", headers=h).json()
+    assert got["template_choice"] == "prior_auth_form"
+    # the same bytes with a different choice are a different extraction, not a cached one
+    other = client.post("/api/extractions", files=files, data={"template": "auto"}, headers=h).json()
+    assert other["id"] != r.json()["id"]
+
+
+def test_custom_types_save_list_delete(client):
+    h = {"X-API-Key": "secret"}
+    tpl = {"doc_type": "vendor_form", "title": "Vendor form", "single_page": True, "canonical": {}, "rules": [], "tables": [],
+           "sections": [{"id": "main", "header": None, "fields": [{"key": "company", "label": "Company", "type": "text", "required": True}]}]}
+    assert client.post("/api/templates", json={"template": {**tpl, "doc_type": "prior_auth_form"}}, headers=h).status_code == 422
+    assert client.post("/api/templates", json={"template": tpl}, headers=h).status_code == 201
+    types = {t["type"]: t for t in client.get("/api/registry", headers=h).json()["types"]}
+    assert types["vendor_form"]["custom"] is True and types["vendor_form"]["required"] == 1
+    assert types["prior_auth_form"]["custom"] is False
+    # a saved type is now a valid choice at upload
+    from app.services import pipeline
+    assert pipeline.valid_choice("vendor_form")
+    assert client.delete("/api/templates/vendor_form", headers=h).status_code == 204
+    assert client.delete("/api/templates/vendor_form", headers=h).status_code == 404
+    assert client.delete("/api/templates/prior_auth_form", headers=h).status_code == 404   # built-ins are not deletable
+
+
+def test_draft_needs_a_model_key(client, tmp_path):
+    h = {"X-API-Key": "secret"}
+    pdf = tmp_path / "blank.pdf"
+    build(str(pdf))
+    r = client.post("/api/templates/draft", files={"file": ("blank.pdf", pdf.read_bytes(), "application/pdf")}, headers=h)
+    assert r.status_code == 503 and "OPENAI_API_KEY" in r.json()["detail"]
+
+
+def test_answer_key_export(client, tmp_path):
+    pdf = tmp_path / "p.pdf"
+    build(str(pdf))
+    h = {"X-API-Key": "secret"}
+    eid = client.post("/api/extractions", files={"file": ("p.pdf", pdf.read_bytes(), "application/pdf")}, headers=h).json()["id"]
+    for _ in range(100):
+        if client.get(f"/api/extractions/{eid}", headers=h).json()["status"] in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    form = client.get(f"/api/extractions/{eid}/fields.json", headers=h).json()["forms"][0]
+    client.patch(f"/api/extractions/{eid}/fields", json={"doc_index": form["doc_index"], "key": "member.last_name", "value": "Reviewed"}, headers=h)
+    key = client.get(f"/api/extractions/{eid}/truth.json", headers=h).json()
+    doc = next(d for d in key["documents"] if d["doc_type"] == "prior_auth_form")
+    assert doc["fields"]["member.last_name"] == "Reviewed"          # corrections are what makes it an answer key
+    assert client.post(f"/api/extractions/{eid}/forms/{form['doc_index']}/promote", json={}, headers=h).status_code == 409  # templated already

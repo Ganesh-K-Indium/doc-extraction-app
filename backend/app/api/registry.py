@@ -9,13 +9,16 @@ router = APIRouter(prefix="/api/registry", tags=["registry"], dependencies=[Depe
 @router.get("")
 def registry():
     types = []
-    for d in classify.DOC_TYPES:
-        item = {"type": d["type"], "label": d["label"], "extractor": d["extractor"], "template": None, "fields": 0, "required": 0}
+    for d in classify.all_types():
+        item = {"type": d["type"], "label": d["label"], "extractor": d["extractor"], "template": None, "fields": 0, "required": 0, "custom": bool(d.get("custom"))}
         if d.get("template"):
-            tpl = pipeline.load_template(d["template"])
-            fields = [f for s in tpl["sections"] for f in s["fields"]]
-            cols = [c for t in tpl.get("tables", []) for c in t["columns"]]
-            item.update({"template": tpl["template_id"], "fields": len(fields) + len(cols),
-                         "required": sum(1 for f in fields + cols if f.get("required"))})
+            try:  # one broken custom template must not take the whole list down
+                tpl = pipeline.load_template(d["template"])
+                fields = [f for s in tpl["sections"] for f in s["fields"]]
+                cols = [c for t in tpl.get("tables", []) for c in t["columns"]]
+                item.update({"template": tpl.get("template_id", d["template"]), "fields": len(fields) + len(cols),
+                             "required": sum(1 for f in fields + cols if f.get("required"))})
+            except Exception:
+                item.update({"template": d["template"], "broken": True})
         types.append(item)
     return {"types": types, "readers": pipeline_router.READERS}
