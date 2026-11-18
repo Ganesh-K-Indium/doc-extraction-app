@@ -81,7 +81,11 @@ Three ways to get a type, none of which involves writing JSON:
 2. **Promote an extraction.** After reviewing a discovered document, "Save as document type" turns it into a type; the next file of that kind is recognised, validated and cross-checked.
 3. **Hand-write a template** (below) for rules and cross-document checks the drafts cannot infer.
 
-Saved types live in `DATA_DIR/templates` and `DATA_DIR/custom_types.json`. Saving rejects built-in names, duplicate keys, unknown types, and user-supplied regex patterns (a ReDoS risk), which only hand-written, built-in templates may use.
+A type you add beats a built-in type with the same title in that workspace (someone who uploads their own template means to use it). Saving rejects built-in names, duplicate keys, unknown types, and user-supplied regex patterns (a ReDoS risk), which only hand-written, built-in templates may use.
+
+A drafted template has **no links to other documents** yet (the `canonical` section below): the draft cannot know that a field is the same person's date of birth as in another document. Without links, cross-document checks (for example, a date of birth that differs between a form and a clinical note) are skipped for that type. Add them by hand until the screen can set them. The links are validated on save (kinds and field names are checked; regex patterns are refused).
+
+Checkboxes on scans are judged from the pixels, never from the `☑`/`☐` characters in a model's transcript: those are the model's own guess. Only born-digital pages use text glyphs.
 
 ## Hand-written templates
 

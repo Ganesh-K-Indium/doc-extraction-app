@@ -77,15 +77,17 @@ def classify_text(text: str) -> Dict[str, Any]:
     for rule in all_types():
         if rule.get("match") == "head":
             if _matches(rule, text[:600]):
-                found.append((len(lines), -rule.get("score", 1), rule))  # sorts after any real title
+                found.append((len(lines), -rule.get("score", 1), 0 if rule.get("custom") else 1, rule))  # sorts after any real title
             continue
         pos = _title_position(rule, lines)
         if pos is not None:
-            found.append((pos, -rule.get("score", 1), rule))
+            found.append((pos, -rule.get("score", 1), 0 if rule.get("custom") else 1, rule))
     if not found:
         return {"type": "unknown", "label": "Unclassified", "confidence": 0.0}
-    found.sort(key=lambda f: (f[0], f[1]))
-    best = found[0][2]
+    # Topmost title wins; then the higher score; then the workspace's own type over a built-in one with the same title
+    # (someone who added their own template for a form means to use it).
+    found.sort(key=lambda f: f[:3])
+    best = found[0][3]
     return {"type": best["type"], "label": best["label"], "confidence": 0.9 if len(found) == 1 else 0.6}
 
 

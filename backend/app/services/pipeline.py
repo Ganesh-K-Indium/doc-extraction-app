@@ -166,7 +166,10 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
         if tpl_name:
             tpl = load_template(tpl_name)
             usable = [p["page"] for p in doc_pages if p["classification"]["type"] == doc["type"]] or doc["pages"]
-            res = await form_extractor.extract_document(work, usable, texts, tpl, form_models, form_reader)
+            # Box glyphs (☑ ☐) are only evidence on a born-digital page. In a vision model's transcript they are the model's
+            # own guess about the box, so on scans the boxes are judged from the pixels instead.
+            glyph_texts = {p["page"]: (p["text"] if p["source"] == "text-layer" else "") for p in doc_pages}
+            res = await form_extractor.extract_document(work, usable, glyph_texts, tpl, form_models, form_reader)
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": tpl["template_id"],
                           "pages": doc["pages"], "readers": res["readers"], "fields": res["fields"], "tables": res["tables"],
                           "validation": validation.validate_form(tpl, res["fields"], res["tables"]),

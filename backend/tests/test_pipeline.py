@@ -504,3 +504,58 @@ def test_form_below_other_text_is_a_form_and_the_rest_is_read_separately(tmp_pat
     assert [c["label"] for c in rest["fields"].values()] == ["Reference number"]        # not Last Name etc., not the empty blank
     assert full["rest_checked"] == [full["forms"][0]["doc_index"]]
     assert full["forms"][0]["fields"]["member.last_name"]["value"] == "Morgan"            # the form itself is untouched
+
+
+def test_a_workspaces_own_type_beats_a_builtin_with_the_same_title():
+    from app.services import workspace_types
+    page = "Provider Prior Authorization Request Form\nMEMBER INFORMATION\nLast Name: Morgan"
+    assert classify.classify_text(page)["type"] == "prior_auth_form"                    # nothing custom: the built-in
+    mine = {"type": "my_prior_auth", "label": "My prior auth", "score": 3, "template": "my_prior_auth", "extractor": "template_form",
+            "any": [r"provider\s+prior\s+authorization\s+request\s+form"]}
+    token = workspace_types._ITEMS.set([{"entry": mine, "template": {"doc_type": "my_prior_auth"}}])
+    try:
+        assert classify.classify_text(page)["type"] == "my_prior_auth"                  # the uploaded template is used
+    finally:
+        workspace_types._ITEMS.reset(token)
+    assert classify.classify_text(page)["type"] == "prior_auth_form"
+
+
+def test_template_links_are_validated_and_cannot_carry_regexes():
+    base = {"doc_type": "linked_form", "title": "Linked form", "tables": [{"key": "items", "columns": [{"key": "sku", "label": "SKU"}]}],
+            "sections": [{"id": "m", "header": None, "fields": [{"key": "dob", "label": "DOB", "type": "date"}, {"key": "start", "label": "Start", "type": "date"}, {"key": "end", "label": "End", "type": "date"}]}]}
+    good = {**base, "canonical": {"person.dob": {"kind": "date", "label": "Date of birth", "fields": ["dob"]},
+                                  "codes": {"kind": "set", "label": "Item codes", "table": "items", "column": "sku"}},
+            "rules": [{"type": "date_order", "start": "start", "end": "end"}]}
+    assert template_draft.validate_template(good) == []
+    evil = {**good, "canonical": {"codes": {"kind": "set", "table": "items", "column": "sku", "pattern": "(a+)+$"}}}
+    assert any("patterns cannot" in e for e in template_draft.validate_template(evil))
+    assert template_draft.validate_template({**good, "canonical": {"x": {"kind": "date", "fields": ["nope"]}}})
+    assert template_draft.validate_template({**good, "canonical": {"x": {"kind": "whatever", "fields": ["dob"]}}})
+    assert template_draft.validate_template({**good, "canonical": {"x": {"kind": "set", "table": "items", "column": "missing"}}})
+    assert template_draft.validate_template({**good, "rules": [{"type": "date_order", "start": "start", "end": "nope"}]})
+
+
+# ---- checkboxes on scans are read from pixels, not from a transcript's glyphs --------------------------------------------
+
+@pytest.mark.skipif(not tess_available(), reason="Tesseract not installed")
+def test_scanned_checkboxes_ignore_glyphs_in_the_ocr_transcript(tmp_path):
+    import pymupdf as fitz
+    from tests.make_packet import box
+    src = fitz.open()
+    p = src.new_page(width=612, height=792)
+    p.insert_text((50, 60), "Provider Prior Authorization Request Form", fontsize=14)
+    for x, label, on in [(50, "ROUTINE", True), (170, "URGENT", False), (290, "TRANSPLANT", False)]:
+        box(p, x, 100, on)
+        p.insert_text((x + 14, 100), label, fontsize=11)
+    png = p.get_pixmap(dpi=220).tobytes("png")
+    scan = fitz.open()
+    q = scan.new_page(width=612, height=792)
+    q.insert_image(q.rect, stream=png)                       # a scan: the page is only a picture
+    pdf = str(tmp_path / "scan.pdf")
+    scan.save(pdf)
+
+    async def lying_ocr(model, jpeg):                        # the transcript puts the tick on the WRONG option
+        return ["Provider Prior Authorization Request Form", "☐ ROUTINE  ☑ URGENT  ☐ TRANSPLANT"]
+    out = asyncio.run(pipeline.process(pdf, ocr_reader=lying_ocr, model_ask=fake_ask))
+    cell = out["forms"][0]["fields"]["review_type"]
+    assert cell["value"] == "ROUTINE" and cell["method"] == "pixel"      # the pixels win; the transcript's glyphs are ignored

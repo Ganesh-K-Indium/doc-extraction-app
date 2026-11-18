@@ -17,6 +17,7 @@ FIELD_TYPES = {"text", "date", "phone", "state", "zip", "npi", "tax_id", "icd10"
                "enum", "multi_enum", "checkbox"}
 MODEL_TYPE = {"id": "text", "number": "text", "currency": "text", "email": "text"}
 MAX_FIELDS = 400
+CANONICAL_KINDS = {"name", "date", "text", "set", "mentioned"}
 
 
 def _entry(doc_type: str, title: str) -> Dict[str, Any]:
@@ -125,6 +126,21 @@ def validate_template(t: Any) -> List[str]:
         for f in sec.get("fields") or []:
             if f.get("pattern") is not None:
                 errs.append("Field patterns cannot be set through the API.")
+    tables = {tbl.get("key"): {c.get("key") for c in tbl.get("columns") or []} for tbl in t.get("tables") or []}
+    for name, spec in (t.get("canonical") or {}).items():       # links to other documents: structure checked, no regexes
+        if not isinstance(spec, dict) or spec.get("kind") not in CANONICAL_KINDS:
+            errs.append(f"Link '{name}' needs a kind: one of {', '.join(sorted(CANONICAL_KINDS))}.")
+            continue
+        if "pattern" in spec:
+            errs.append(f"Link '{name}': patterns cannot be set through the API.")
+        if spec["kind"] == "set":
+            if spec.get("column") not in tables.get(spec.get("table"), set()):
+                errs.append(f"Link '{name}' points at a table column that does not exist.")
+        elif not spec.get("fields") or not set(spec["fields"]) <= keys:
+            errs.append(f"Link '{name}' points at fields that do not exist.")
+    for rule in t.get("rules") or []:
+        if not isinstance(rule, dict) or rule.get("type") != "date_order" or not {rule.get("start"), rule.get("end")} <= keys:
+            errs.append("A rule must be a date_order between two existing fields.")
     return errs
 
 
