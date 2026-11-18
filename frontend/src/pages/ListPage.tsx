@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, meta, type RegistryType, type Summary } from '../api';
+import { useWorkspace } from '../workspaceContext';
 
 const STATE_LABEL: Record<Summary['status'], string> = { queued: 'Waiting', processing: 'Reading', done: 'Ready to review', failed: 'Failed' };
 
@@ -13,9 +14,11 @@ export default function ListPage() {
     const [types, setTypes] = useState<RegistryType[]>([]);
     const input = useRef<HTMLInputElement>(null);
     const nav = useNavigate();
+    const { wid = '' } = useParams();
+    const { reload } = useWorkspace();
 
-    useEffect(() => { meta.registry().then(r => setTypes(r.types.filter(t => t.template))).catch(() => undefined); }, []);
-    const load = useCallback(() => api.list().then(setItems).catch(e => setError(e.message)), []);
+    useEffect(() => { meta.registry(wid).then(r => setTypes(r.types.filter(t => t.template))).catch(() => undefined); }, [wid]);
+    const load = useCallback(() => api.list(wid).then(setItems).catch(e => setError(e.message)), [wid]);
     useEffect(() => {
         load();
         const t = setInterval(load, 3000);
@@ -25,7 +28,7 @@ export default function ListPage() {
     const upload = async (file?: File) => {
         if (!file) return;
         setBusy(true); setError('');
-        try { nav(`/app/e/${(await api.upload(file, choice)).id}`); }
+        try { const r = await api.upload(wid, file, choice); reload(); nav(`/app/w/${wid}/e/${r.id}`); }
         catch (e) { setError((e as Error).message); }
         finally { setBusy(false); if (input.current) input.current.value = ''; }
     };
@@ -53,20 +56,20 @@ export default function ListPage() {
             </div>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {items === null ? <p className="muted">Loading documents</p> : items.length === 0 ? (
-                <p className="empty">No documents yet. Drop a PDF above to read its pages and fields.</p>
+                <p className="empty">No documents in this workspace yet. Drop a PDF above to read its pages and fields.</p>
             ) : (
                 <table className="ledger">
                     <thead><tr><th scope="col">Document</th><th scope="col">State</th><th scope="col" className="num">Pages</th><th scope="col" className="num">To check</th><th scope="col" className="num">Errors</th><th scope="col">Uploaded</th><td /></tr></thead>
                     <tbody>{items.map(x => (
                         <tr key={x.id}>
-                            <th scope="row"><Link to={`/app/e/${x.id}`}>{x.filename}</Link></th>
+                            <th scope="row"><Link to={`/app/w/${wid}/e/${x.id}`}>{x.filename}</Link></th>
                             <td><span className={`state state--${x.status}`}>{STATE_LABEL[x.status]}{x.status === 'processing' && x.progress.total ? ` ${x.progress.done} of ${x.progress.total}` : ''}</span></td>
                             <td className="num">{x.stats?.pages ?? ''}</td>
                             <td className="num">{x.stats ? <span className={x.stats.needs_review ? 'flagtext' : ''}>{x.stats.needs_review}</span> : ''}</td>
                             <td className="num">{x.stats ? <span className={x.stats.errors ? 'flagtext' : ''}>{x.stats.errors}</span> : ''}</td>
                             <td className="muted">{new Date(x.created_at + 'Z').toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</td>
                             <td><button className="btn btn--quiet" aria-label={`Delete ${x.filename}`}
-                                onClick={async () => { if (confirm(`Delete “${x.filename}” and its extraction? This cannot be undone.`)) { await api.remove(x.id); load(); } }}>Delete</button></td>
+                                onClick={async () => { if (confirm(`Delete “${x.filename}” and its extraction? This cannot be undone.`)) { await api.remove(wid, x.id); load(); reload(); } }}>Delete</button></td>
                         </tr>))}
                     </tbody>
                 </table>

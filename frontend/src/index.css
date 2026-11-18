@@ -138,3 +138,31 @@ select, .draft input[type='text'] { font: inherit; color: var(--ink); background
 .draft__actions { display: flex; gap: 8px; margin-top: 14px; }
 .tag--custom { font-size: 11px; color: var(--teal); margin-left: 6px; }
 @media (max-width: 900px) { .intake__actions { width: 100%; } }
+
+/* Workspaces */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wsbar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px; background: var(--panel); border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.wsbar__crumb { display: flex; align-items: center; gap: 8px; padding: 8px 0; color: var(--ink-2); }
+.wsbar__crumb a { color: var(--ink-2); text-decoration: none; } .wsbar__crumb a:hover { color: var(--ink); text-decoration: underline; }
+.wsbar__sep { color: var(--rule); }
+.wsbar__switch select { font-weight: 600; border-color: transparent; background: none; padding: 4px 24px 4px 6px; max-width: 280px; text-overflow: ellipsis; }
+.wsbar__switch select:hover { border-color: var(--rule); }
+.wsbar__tabs { display: flex; gap: 2px; align-self: stretch; }
+.wsbar__tabs a { display: flex; align-items: center; padding: 0 12px; color: var(--ink-2); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.wsbar__tabs a:hover { color: var(--ink); } .wsbar__tabs a.active { color: var(--ink); border-bottom-color: var(--ink); }
+
+.wscontinue { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 20px 24px; margin-bottom: 28px; background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--teal); border-radius: 0 10px 10px 0; flex-wrap: wrap; }
+.wscontinue__label { font-size: 12px; color: var(--teal); font-weight: 600; }
+.wscontinue h2 { font-size: 20px; letter-spacing: -.01em; margin: 2px 0 2px; } .wscontinue p { margin: 0; }
+.wsname { font-weight: 600; color: var(--ink); text-decoration: none; } .wsname:hover { text-decoration: underline; }
+.wsdesc { display: block; font-weight: 400; color: var(--ink-2); font-size: 13px; margin-top: 1px; }
+.wsactions { text-align: right; white-space: nowrap; }
+.wsedit { display: grid; gap: 6px; max-width: 460px; font-weight: 400; } .wsedit input { width: 100%; }
+.wsedit__actions { display: flex; gap: 6px; }
+.wscreate { display: grid; grid-template-columns: minmax(0, 420px) auto; gap: 8px 12px; align-items: end; }
+.wscreate label { display: grid; gap: 4px; font-size: 12px; color: var(--ink-2); } .wscreate input { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); padding: 8px 10px; min-width: 0; }
+.wscreate__desc { grid-column: 1 / -1; max-width: 420px; } .wscreate__more { grid-column: 1 / -1; justify-self: start; padding-left: 0; font-size: 13px; }
+.wscreate__err { grid-column: 1 / -1; margin: 0; max-width: 560px; }
+.wsempty { max-width: 560px; padding: 28px 0 8px; } .wsempty h2 { font-size: 22px; letter-spacing: -.015em; margin-bottom: 6px; } .wsempty .muted { margin: 0 0 20px; line-height: 1.55; }
+.wscreate--hero { grid-template-columns: minmax(0, 1fr) auto; } .wscreate--hero input { padding: 11px 12px; font-size: 15px; }
+@media (max-width: 900px) { .wscreate, .wscreate--hero { grid-template-columns: 1fr; } .wsbar { padding: 0 12px; } }

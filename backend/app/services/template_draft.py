@@ -9,10 +9,8 @@ Drafts are returned for a person to correct; nothing is registered until it is s
 """
 import asyncio
 import re
-import json
 from typing import Any, Dict, List, Optional
 
-from app import config
 from app.services import classify, discover, pdf_pages, ocr
 
 FIELD_TYPES = {"text", "date", "phone", "state", "zip", "npi", "tax_id", "icd10", "number", "currency", "email", "id",
@@ -130,28 +128,36 @@ def validate_template(t: Any) -> List[str]:
     return errs
 
 
-def save_custom_type(template: Dict[str, Any], entry: Dict[str, Any]) -> str:
-    """Write the template and register its type. Raises ValueError with the reasons when the template is not valid."""
+def save_custom_type(workspace_id: str, template: Dict[str, Any], *, replace: bool = False) -> str:
+    """Add a document type to one workspace. Raises ValueError with the reasons when the template is not valid, and
+    FileExistsError when the workspace already has a type of that name (unless `replace`)."""
+    from app import db
     errs = validate_template(template)
     if errs:
         raise ValueError("; ".join(errs))
-    config.templates_dir().mkdir(parents=True, exist_ok=True)
     doc_type = template["doc_type"]
     # defaults the pipeline relies on; a template saved through the API may omit them
     template = {"single_page": False, "canonical": {}, "rules": [], "tables": [], **template, "template_id": f"custom-{doc_type}"}
     template["sections"] = [{"header": None, **s} for s in template["sections"]]
-    (config.templates_dir() / f"{doc_type}.json").write_text(json.dumps(template, indent=2))
-    # the registry entry is rebuilt from the template: callers cannot inject patterns
-    entry = _entry(doc_type, template["title"])
-    types = [d for d in classify.custom_types() if d["type"] != doc_type] + [entry]
-    config.custom_types_file().write_text(json.dumps(types, indent=2))
+    entry = _entry(doc_type, template["title"])  # rebuilt from the template: callers cannot inject patterns
+    with db.session() as s:
+        row = s.query(db.CustomType).filter_by(workspace_id=workspace_id, doc_type=doc_type).first()
+        if row and not replace:
+            raise FileExistsError(f"This workspace already has a document type named '{template['title']}'. Choose another name.")
+        if row:
+            row.title, row.template, row.entry = template["title"], template, entry
+        else:
+            s.add(db.CustomType(workspace_id=workspace_id, doc_type=doc_type, title=template["title"], template=template, entry=entry))
+        s.commit()
     return doc_type
 
 
-def delete_custom_type(doc_type: str) -> bool:
-    types = classify.custom_types()
-    if not any(d["type"] == doc_type for d in types):
-        return False
-    config.custom_types_file().write_text(json.dumps([d for d in types if d["type"] != doc_type], indent=2))
-    (config.templates_dir() / f"{doc_type}.json").unlink(missing_ok=True)
-    return True
+def delete_custom_type(workspace_id: str, doc_type: str) -> bool:
+    from app import db
+    with db.session() as s:
+        row = s.query(db.CustomType).filter_by(workspace_id=workspace_id, doc_type=doc_type).first()
+        if not row:
+            return False
+        s.delete(row)
+        s.commit()
+        return True

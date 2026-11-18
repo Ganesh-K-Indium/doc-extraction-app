@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import config, db
 from app.services import tess
-from app.api import extractions, registry, templates
+from app.api import extractions, registry, templates, workspaces
 
 
 @asynccontextmanager
@@ -16,6 +16,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Document Extraction", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.include_router(workspaces.router)
 app.include_router(extractions.router)
 app.include_router(registry.router)
 app.include_router(templates.router)

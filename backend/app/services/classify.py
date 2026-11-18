@@ -22,15 +22,9 @@ MIN_CONTENT_CHARS = 40
 
 
 def custom_types() -> List[Dict[str, Any]]:
-    """Document types users added (drafted from a blank form or promoted from an extraction). Read on every call so a
-    type saved a second ago is used by the next upload; the file is tiny."""
-    import json
-    from app import config
-    try:
-        data = json.loads(config.custom_types_file().read_text())
-        return [d for d in data if isinstance(d, dict) and d.get("type")]
-    except (OSError, ValueError):
-        return []
+    """The custom document types of the workspace in force (see workspace_types)."""
+    from app.services import workspace_types
+    return [d for d in workspace_types.entries() if isinstance(d, dict) and d.get("type")]
 
 
 def all_types() -> List[Dict[str, Any]]:

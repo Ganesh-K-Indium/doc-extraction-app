@@ -21,6 +21,16 @@ pytest -q                            # offline, no network
 cd frontend && npm install && cp .env.example .env && npm run dev
 ```
 
+## Workspaces
+
+Everything lives inside a workspace: its documents, results, answer keys and **its own custom document types** (built-in types are shared). The app opens on the workspaces screen; you create one (or continue in the one you last used), then upload and review inside it. A switcher in the workspace bar moves between them.
+
+- Workspace names are unique (ignoring case); rename and delete are on the workspaces screen. Deleting removes the workspace's documents, uploaded files and types, and asks first.
+- API: everything is under `/api/workspaces/{id}/...` (`extractions`, `registry`, `templates`); `/api/workspaces` lists, creates, renames and deletes them. A document is never reachable through another workspace's URL.
+- Uploading the same file twice reuses the result only inside the same workspace.
+- Upgrading from a version without workspaces: existing documents and custom types are moved into a workspace called "My workspace" the first time the server starts. A fresh install starts empty.
+- There are no user accounts yet: workspaces separate work, they do not restrict who can open them. Anyone who can reach the server (and has the API key, if one is set) sees every workspace.
+
 ## How a file is processed
 
 1. **Work PDF.** Scanned pages get a Tesseract text layer (`tess.py`), laid over the original so page size and coordinates are unchanged. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.

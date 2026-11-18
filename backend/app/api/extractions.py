@@ -3,22 +3,18 @@ import hashlib
 import logging
 from typing import Any, List
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import config, db
-from app.services import export, ocr, pipeline, template_draft
+from app.api.deps import require_key, workspace
+from app.services import export, ocr, pipeline, template_draft, workspace_types
 
 logger = logging.getLogger("app.api.extractions")
 
 
-def require_key(x_api_key: str = Header(default="")) -> None:
-    if config.API_KEY and x_api_key != config.API_KEY:
-        raise HTTPException(401, "Missing or invalid API key.")
-
-
-router = APIRouter(prefix="/api/extractions", tags=["extractions"], dependencies=[Depends(require_key)])
+router = APIRouter(prefix="/api/workspaces/{workspace_id}/extractions", tags=["extractions"], dependencies=[Depends(require_key), Depends(workspace)])
 
 
 def _summary(ex) -> dict:
@@ -27,9 +23,9 @@ def _summary(ex) -> dict:
             "template_choice": ex.template_choice, "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
 
 
-def _get(s, extraction_id: str):
+def _get(s, workspace_id: str, extraction_id: str):
     ex = s.get(db.Extraction, extraction_id)
-    if not ex:
+    if not ex or ex.workspace_id != workspace_id:
         raise HTTPException(404, "Extraction not found.")
     return ex
 
@@ -42,17 +38,21 @@ async def run_extraction(extraction_id: str) -> None:
     def progress(stage: str, done: int, total: int) -> None:
         with db.session() as s:
             ex = s.get(db.Extraction, extraction_id)
+            if ex is None:
+                return
             ex.stage, ex.progress_done, ex.progress_total = stage, done, total
             s.commit()
 
     with db.session() as s:
         ex = s.get(db.Extraction, extraction_id)
+        if ex is None:  # the workspace was deleted while this was queued
+            return
         ex.status = "processing"
+        choice, ws_id = ex.template_choice or "auto", ex.workspace_id
         s.commit()
     try:
-        with db.session() as s:
-            choice = s.get(db.Extraction, extraction_id).template_choice or "auto"
-        result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice)
+        with workspace_types.use(ws_id):
+            result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice)
         status, error = "done", None
     except ocr.OcrError as e:
         result, status, error = None, "failed", str(e)
@@ -61,26 +61,30 @@ async def run_extraction(extraction_id: str) -> None:
         result, status, error = None, "failed", "Extraction failed unexpectedly. See server logs."
     with db.session() as s:
         ex = s.get(db.Extraction, extraction_id)
+        if ex is None:
+            return
         ex.status, ex.error, ex.result = status, error, result
         s.commit()
 
 
 @router.post("", status_code=202)
-async def upload(background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto")):
+async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto")):
     data = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"The file is larger than {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
     if not data.startswith(b"%PDF"):
         raise HTTPException(415, "Upload a PDF file.")
-    if not pipeline.valid_choice(template):
+    with workspace_types.use(workspace_id):
+        valid = pipeline.valid_choice(template)
+    if not valid:
         raise HTTPException(422, "That document type is not available. Pick one from the list, or choose automatic detection.")
     digest = hashlib.sha256(data).hexdigest()
     with db.session() as s:
         # Same bytes already read successfully: reuse that result instead of paying for the same OCR again.
-        prior = s.query(db.Extraction).filter_by(sha256=digest, status="done", template_choice=template).order_by(db.Extraction.created_at.desc()).first()
+        prior = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template).order_by(db.Extraction.created_at.desc()).first()
         if prior and pdf_file(prior.id).is_file():
             return {"id": prior.id, "status": "done", "reused": True}
-        ex = db.Extraction(filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template)
+        ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template)
         s.add(ex)
         s.commit()
         extraction_id = ex.id
@@ -90,16 +94,16 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...), temp
 
 
 @router.get("")
-def list_extractions():
+def list_extractions(workspace_id: str):
     with db.session() as s:
-        rows = s.query(db.Extraction).order_by(db.Extraction.created_at.desc()).limit(200).all()
+        rows = s.query(db.Extraction).filter_by(workspace_id=workspace_id).order_by(db.Extraction.created_at.desc()).limit(200).all()
         return [_summary(r) for r in rows]
 
 
 @router.get("/{extraction_id}")
-def get_extraction(extraction_id: str):
+def get_extraction(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        ex = _get(s, extraction_id)
+        ex = _get(s, workspace_id, extraction_id)
         out = _summary(ex)
         if ex.status == "done":
             out["pages"] = export.pages_json(ex)
@@ -108,21 +112,21 @@ def get_extraction(extraction_id: str):
 
 
 @router.get("/{extraction_id}/pages.json")
-def download_pages(extraction_id: str):
+def download_pages(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        return export.pages_json(_get(s, extraction_id))
+        return export.pages_json(_get(s, workspace_id, extraction_id))
 
 
 @router.get("/{extraction_id}/fields.json")
-def download_fields(extraction_id: str):
+def download_fields(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        return export.fields_json(_get(s, extraction_id))
+        return export.fields_json(_get(s, workspace_id, extraction_id))
 
 
 @router.get("/{extraction_id}/pdf")
-def get_pdf(extraction_id: str):
+def get_pdf(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        _get(s, extraction_id)
+        _get(s, workspace_id, extraction_id)
     p = pdf_file(extraction_id)
     if not p.is_file():
         raise HTTPException(404, "PDF is no longer available.")
@@ -136,9 +140,9 @@ class Correction(BaseModel):
 
 
 @router.patch("/{extraction_id}/fields")
-def correct_field(extraction_id: str, body: Correction):
+def correct_field(workspace_id: str, extraction_id: str, body: Correction):
     with db.session() as s:
-        ex = _get(s, extraction_id)
+        ex = _get(s, workspace_id, extraction_id)
         known = any(f["doc_index"] == body.doc_index and body.key in f["fields"] for f in (ex.result or {}).get("forms", []))
         if not known:
             raise HTTPException(404, "No such field.")
@@ -148,9 +152,9 @@ def correct_field(extraction_id: str, body: Correction):
 
 
 @router.delete("/{extraction_id}", status_code=204)
-def delete_extraction(extraction_id: str):
+def delete_extraction(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        ex = _get(s, extraction_id)
+        ex = _get(s, workspace_id, extraction_id)
         s.delete(ex)
         s.commit()
     pdf_file(extraction_id).unlink(missing_ok=True)
@@ -162,11 +166,11 @@ class Promote(BaseModel):
 
 
 @router.post("/{extraction_id}/forms/{doc_index}/promote")
-def promote(extraction_id: str, doc_index: int, body: Promote):
+def promote(workspace_id: str, extraction_id: str, doc_index: int, body: Promote):
     """Turn a reviewed, untemplated extraction into a registered document type, so the next file of that kind is
     recognised, validated and cross-checked."""
     with db.session() as s:
-        ex = _get(s, extraction_id)
+        ex = _get(s, workspace_id, extraction_id)
         form = next((f for f in (ex.result or {}).get("forms", []) if f["doc_index"] == doc_index), None)
         if not form:
             raise HTTPException(404, "No such document.")
@@ -174,15 +178,17 @@ def promote(extraction_id: str, doc_index: int, body: Promote):
             raise HTTPException(409, "This document already uses a template.")
         draft = template_draft.from_discovery(form, body.title.strip() or None)
         try:
-            doc_type = template_draft.save_custom_type(draft["template"], draft["entry"])
+            doc_type = template_draft.save_custom_type(workspace_id, draft["template"])
+        except FileExistsError as e:
+            raise HTTPException(409, str(e))
         except ValueError as e:
             raise HTTPException(422, str(e))
         return {"doc_type": doc_type, "title": draft["template"]["title"], "fields": sum(len(x["fields"]) for x in draft["template"]["sections"])}
 
 
 @router.get("/{extraction_id}/truth.json")
-def download_truth(extraction_id: str):
+def download_truth(workspace_id: str, extraction_id: str):
     """The current (reviewed) values as an answer key for eval/score.py. Review the extraction first: what you
     download is only as right as your corrections."""
     with db.session() as s:
-        return export.truth_json(_get(s, extraction_id))
+        return export.truth_json(_get(s, workspace_id, extraction_id))

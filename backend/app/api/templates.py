@@ -8,15 +8,15 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app import config
-from app.api.extractions import require_key
+from app.api.deps import require_key, workspace
 from app.services import ocr, template_draft
 
 logger = logging.getLogger("app.api.templates")
-router = APIRouter(prefix="/api/templates", tags=["templates"], dependencies=[Depends(require_key)])
+router = APIRouter(prefix="/api/workspaces/{workspace_id}/templates", tags=["templates"], dependencies=[Depends(require_key), Depends(workspace)])
 
 
 @router.post("/draft")
-async def draft(file: UploadFile = File(...)):
+async def draft(workspace_id: str, file: UploadFile = File(...)):
     """Upload a blank form (PDF or scan) and get a draft template back to review. Nothing is saved yet."""
     if not config.llm_enabled():
         raise HTTPException(503, "Drafting a template reads the form with a vision model; set OPENAI_API_KEY first.")
@@ -42,15 +42,17 @@ class Save(BaseModel):
 
 
 @router.post("", status_code=201)
-def save(body: Save):
+def save(workspace_id: str, body: Save):
     try:
-        doc_type = template_draft.save_custom_type(body.template, {})
+        doc_type = template_draft.save_custom_type(workspace_id, body.template)
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"doc_type": doc_type}
 
 
 @router.delete("/{doc_type}", status_code=204)
-def delete(doc_type: str):
-    if not template_draft.delete_custom_type(doc_type):
+def delete(workspace_id: str, doc_type: str):
+    if not template_draft.delete_custom_type(workspace_id, doc_type):
         raise HTTPException(404, "No custom document type with that name.")

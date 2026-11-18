@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useWorkspace } from '../workspaceContext';
 import { api, authHeaders, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
 import { PdfViewer, type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import '../components/textLayer.css';
@@ -64,7 +65,8 @@ function FieldRow({ doc, name, cell, selected, onSelect, onSave }: {
 }
 
 export default function ExtractionPage() {
-    const { id = '' } = useParams();
+    const { wid = '', id = '' } = useParams();
+    const { workspace, reload } = useWorkspace();
     const [data, setData] = useState<Detail | null>(null);
     const [error, setError] = useState('');
     const [tab, setTab] = useState<Tab>('fields');
@@ -75,7 +77,7 @@ export default function ExtractionPage() {
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
-    const load = useCallback(() => api.get(id).then(setData).catch(e => setError(e.message)), [id]);
+    const load = useCallback(() => api.get(wid, id).then(setData).catch(e => setError(e.message)), [wid, id]);
     useEffect(() => { load(); }, [load]);
     useEffect(() => {
         if (!data || data.status === 'done' || data.status === 'failed') return;
@@ -117,8 +119,8 @@ export default function ExtractionPage() {
     }, [jump]);
 
     const save = useCallback(async (doc: number, key: string, value: string | boolean | string[]) => {
-        try { await api.correct(id, doc, key, value); await load(); } catch (e) { setError((e as Error).message); }
-    }, [id, load]);
+        try { await api.correct(wid, id, doc, key, value); await load(); reload(); } catch (e) { setError((e as Error).message); }
+    }, [wid, id, load, reload]);
 
     // j / k step through the review queue; Enter confirms the current value.
     useEffect(() => {
@@ -146,7 +148,7 @@ export default function ExtractionPage() {
         if (cell && f.field) { setTab('fields'); select({ doc: form.doc_index, key: f.field }, cell); }
     };
 
-    if (error && !data) return <main className="list"><p className="notice notice--error" role="alert">{error}</p><Link to="/app">Back to documents</Link></main>;
+    if (error && !data) return <main className="list"><p className="notice notice--error" role="alert">{error}</p><Link to={`/app/w/${wid}`}>Back to documents</Link></main>;
     if (!data) return <main className="list"><p className="muted">Loading document</p></main>;
 
     const errors = findings.filter(f => f.severity === 'error').length;
@@ -159,12 +161,12 @@ export default function ExtractionPage() {
     return (
         <div className="review">
             <section className="review__pdf" aria-label="Source document">
-                <PdfViewer ref={viewer} url={api.pdfUrl(id)} headers={headers} scale={SCALE} overlays={overlays}
+                <PdfViewer ref={viewer} url={api.pdfUrl(wid, id)} headers={headers} scale={SCALE} overlays={overlays}
                     onPageCount={() => undefined} onVisiblePage={setVisible} onError={setError} />
             </section>
             <aside className="review__panel">
                 <header className="panel__head">
-                    <Link to="/app" className="crumb">All documents</Link>
+                    <Link to={`/app/w/${wid}`} className="crumb">{workspace.name} / All documents</Link>
                     <h1 title={data.filename}>{data.filename}</h1>
                     {data.status === 'done' && (
                         <div className="tally" role="status">
@@ -184,9 +186,9 @@ export default function ExtractionPage() {
                             {([['fields', 'Fields'], ['pages', 'Pages'], ['findings', `Findings${findings.filter(f => f.severity !== 'info').length ? ` (${findings.filter(f => f.severity !== 'info').length})` : ''}`]] as [Tab, string][]).map(([t, label]) => (
                                 <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? 'tab tab--on' : 'tab'} onClick={() => setTab(t)}>{label}</button>))}
                             <span className="tabs__spacer" />
-                            <button className="btn btn--quiet" onClick={() => api.download(id, 'pages', data.filename)}>Download pages JSON</button>
-                            <button className="btn btn--quiet" onClick={() => api.download(id, 'fields', data.filename)}>Download fields JSON</button>
-                            <button className="btn btn--quiet" title="The values as they are now, including your corrections, as an answer key for accuracy scoring" onClick={() => api.download(id, 'truth', data.filename)}>Download answer key</button>
+                            <button className="btn btn--quiet" onClick={() => api.download(wid, id, 'pages', data.filename)}>Download pages JSON</button>
+                            <button className="btn btn--quiet" onClick={() => api.download(wid, id, 'fields', data.filename)}>Download fields JSON</button>
+                            <button className="btn btn--quiet" title="The values as they are now, including your corrections, as an answer key for accuracy scoring" onClick={() => api.download(wid, id, 'truth', data.filename)}>Download answer key</button>
                         </div>
                         <div className="panel__body">
                             {tab === 'fields' && (forms.length === 0 ? <p className="empty">No fields were extracted from this file. That happens when no model is configured on this server (fields are read by vision models) or when the file holds only cover or blank pages. The Pages tab shows the text that was read.</p> : (
@@ -203,7 +205,7 @@ export default function ExtractionPage() {
                                                         : <button className="btn" onClick={async () => {
                                                             const title = window.prompt('Name this document type', f.label || '');
                                                             if (!title) return;
-                                                            try { const r = await api.promote(id, f.doc_index, title.trim()); setSaved(x => ({ ...x, [f.doc_index]: r.title })); }
+                                                            try { const r = await api.promote(wid, id, f.doc_index, title.trim()); reload(); setSaved(x => ({ ...x, [f.doc_index]: r.title })); }
                                                             catch (e) { setError((e as Error).message); }
                                                         }}>Save as document type</button>}
                                                 </div>)}

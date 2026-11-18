@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
 import { meta, templates, type DraftTemplate, type Registry } from '../api';
+import { useWorkspace } from '../workspaceContext';
+
+const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48);
 
 const EXTRACTOR: Record<string, string> = { template_form: 'Field template', kv: 'Label and value pairs', skip: 'Not extracted' };
 const FIELD_TYPES = ['text', 'date', 'phone', 'number', 'currency', 'email', 'id', 'state', 'zip', 'tax_id', 'icd10', 'enum', 'multi_enum', 'checkbox'];
@@ -10,14 +14,16 @@ export default function TypesPage() {
     const [busy, setBusy] = useState(false);
     const [draft, setDraft] = useState<DraftTemplate | null>(null);
     const input = useRef<HTMLInputElement>(null);
+    const { wid = '' } = useParams();
+    const { reload } = useWorkspace();
 
-    const load = useCallback(() => meta.registry().then(setReg).catch(e => setError(e.message)), []);
+    const load = useCallback(() => meta.registry(wid).then(setReg).catch(e => setError(e.message)), [wid]);
     useEffect(() => { load(); }, [load]);
 
     const readBlank = async (file?: File) => {
         if (!file) return;
         setBusy(true); setError('');
-        try { setDraft((await templates.draft(file)).template); }
+        try { setDraft((await templates.draft(wid, file)).template); }
         catch (e) { setError((e as Error).message); }
         finally { setBusy(false); if (input.current) input.current.value = ''; }
     };
@@ -28,7 +34,7 @@ export default function TypesPage() {
     const save = async () => {
         if (!draft) return;
         setBusy(true); setError('');
-        try { await templates.save(draft); setDraft(null); await load(); }
+        try { await templates.save(wid, { ...draft, doc_type: slugify(draft.title) || draft.doc_type }); setDraft(null); await load(); reload(); }
         catch (e) { setError((e as Error).message); }
         finally { setBusy(false); }
     };
@@ -36,7 +42,7 @@ export default function TypesPage() {
     return (
         <main className="list">
             <h1 className="page-title">Document types</h1>
-            <p className="lede">A known type is read against its template and validated. Anything else is read without one, and you can save the result as a type afterwards. To add a type before you have an example filled in, upload a blank copy of the form.</p>
+            <p className="lede">A known type is read against its template and validated. Anything else is read without one, and you can save the result as a type afterwards. To add a type before you have an example filled in, upload a blank copy of the form. Types you add belong to this workspace only; the built-in ones are available everywhere.</p>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
 
             <div className="intake">
@@ -84,7 +90,7 @@ export default function TypesPage() {
                                 <td className="muted">{t.template ?? 'None'}</td>
                                 <td className="num">{t.template ? t.fields : ''}</td><td className="num">{t.template ? t.required : ''}</td>
                                 <td>{t.custom && <button className="btn btn--quiet" aria-label={`Delete ${t.label}`}
-                                    onClick={async () => { if (confirm(`Delete the “${t.label}” type? Files already extracted keep their results.`)) { await templates.remove(t.type); load(); } }}>Delete</button>}</td>
+                                    onClick={async () => { if (confirm(`Delete the “${t.label}” type? Files already extracted keep their results.`)) { await templates.remove(wid, t.type); load(); reload(); } }}>Delete</button>}</td>
                             </tr>))}</tbody>
                     </table>
                     <h2 className="section-title">How text is read</h2>

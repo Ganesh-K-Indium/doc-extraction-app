@@ -32,11 +32,14 @@ Progress = Callable[[str, int, int], None]
 
 
 def load_template(name: str) -> Dict[str, Any]:
-    """Built-in templates ship with the app; custom ones (drafted from a blank form or promoted) live in DATA_DIR."""
-    for folder in (TEMPLATE_DIR, config.templates_dir()):
-        f = folder / f"{name}.json"
-        if f.is_file():
-            return json.loads(f.read_text())
+    """Built-in templates ship with the app; custom ones belong to the workspace in force."""
+    from app.services import workspace_types
+    f = TEMPLATE_DIR / f"{name}.json"
+    if f.is_file():
+        return json.loads(f.read_text())
+    custom = workspace_types.template(name)
+    if custom is not None:
+        return custom
     raise FileNotFoundError(f"No template named {name!r}")
 
 

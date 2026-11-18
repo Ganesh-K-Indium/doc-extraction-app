@@ -15,6 +15,7 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", "200"))
 
 
 def templates_dir() -> Path:
+    """Legacy location of custom templates from before workspaces; read only when migrating."""
     return Path(os.getenv("DATA_DIR", "./data")).resolve() / "templates"
 
 
@@ -33,4 +34,3 @@ def extraction_models() -> list:
 
 def ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    templates_dir().mkdir(parents=True, exist_ok=True)

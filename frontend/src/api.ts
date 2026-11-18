@@ -1,6 +1,5 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 const KEY = import.meta.env.VITE_API_KEY || '';
-const BASE = `${API_BASE}/api/extractions`;
 const ROOT = `${API_BASE}`;
 
 export const authHeaders = (): Record<string, string> => (KEY ? { 'X-API-Key': KEY } : {});
@@ -45,30 +44,12 @@ export interface DraftTemplate {
 }
 export interface Registry { types: RegistryType[]; readers: { id: string; label: string; summary: string }[] }
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${BASE}${path}`, { ...init, headers: { ...authHeaders(), ...(init?.headers || {}) } });
-    if (!res.ok) {
-        let detail = `Request failed (${res.status})`;
-        try { const b = await res.json(); if (typeof b.detail === 'string') detail = b.detail; } catch { /* not JSON */ }
-        throw new Error(detail);
-    }
-    return res.status === 204 ? (undefined as T) : res.json();
+export interface Workspace {
+    id: string; name: string; description: string; created_at: string; last_activity: string;
+    documents: number; processing: number; to_check: number; errors: number; custom_types: number;
 }
 
-export const meta = {
-    registry: async (): Promise<Registry> => {
-        const res = await fetch(`${ROOT}/api/registry`, { headers: authHeaders() });
-        if (!res.ok) throw new Error(`Request failed (${res.status})`);
-        return res.json();
-    },
-    health: async (): Promise<{ ok: boolean; llm: boolean; tesseract: boolean }> => {
-        const res = await fetch(`${ROOT}/health`);
-        if (!res.ok) throw new Error('offline');
-        return res.json();
-    },
-};
-
-async function send<T>(url: string, init: RequestInit): Promise<T> {
+async function send<T>(url: string, init: RequestInit = {}): Promise<T> {
     const res = await fetch(url, { ...init, headers: { ...authHeaders(), ...(init.headers || {}) } });
     if (!res.ok) {
         let detail = `Request failed (${res.status})`;
@@ -77,25 +58,43 @@ async function send<T>(url: string, init: RequestInit): Promise<T> {
     }
     return res.status === 204 ? (undefined as T) : res.json();
 }
+const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const ws = (wid: string) => `${ROOT}/api/workspaces/${encodeURIComponent(wid)}`;
+
+export const workspaces = {
+    list: () => send<Workspace[]>(`${ROOT}/api/workspaces`),
+    get: (wid: string) => send<Workspace>(ws(wid)),
+    create: (name: string, description?: string) => send<Workspace>(`${ROOT}/api/workspaces`, json('POST', { name, description })),
+    rename: (wid: string, name: string, description?: string) => send<Workspace>(ws(wid), json('PATCH', { name, description })),
+    remove: (wid: string) => send<void>(ws(wid), { method: 'DELETE' }),
+};
+
+export const meta = {
+    registry: (wid: string) => send<Registry>(`${ws(wid)}/registry`),
+    health: async (): Promise<{ ok: boolean; llm: boolean; tesseract: boolean }> => {
+        const res = await fetch(`${ROOT}/health`);
+        if (!res.ok) throw new Error('offline');
+        return res.json();
+    },
+};
 
 export const templates = {
-    draft: (file: File) => { const f = new FormData(); f.append('file', file); return send<{ template: DraftTemplate }>(`${ROOT}/api/templates/draft`, { method: 'POST', body: f }); },
-    save: (template: DraftTemplate) => send<{ doc_type: string }>(`${ROOT}/api/templates`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ template }) }),
-    remove: (docType: string) => send<void>(`${ROOT}/api/templates/${encodeURIComponent(docType)}`, { method: 'DELETE' }),
+    draft: (wid: string, file: File) => { const f = new FormData(); f.append('file', file); return send<{ template: DraftTemplate }>(`${ws(wid)}/templates/draft`, { method: 'POST', body: f }); },
+    save: (wid: string, template: DraftTemplate) => send<{ doc_type: string }>(`${ws(wid)}/templates`, json('POST', { template })),
+    remove: (wid: string, docType: string) => send<void>(`${ws(wid)}/templates/${encodeURIComponent(docType)}`, { method: 'DELETE' }),
 };
 
 export const api = {
-    list: () => req<Summary[]>(''),
-    get: (id: string) => req<Detail>(`/${id}`),
-    upload: (file: File, template = 'auto') => { const f = new FormData(); f.append('file', file); f.append('template', template); return req<{ id: string }>('', { method: 'POST', body: f }); },
-    promote: (id: string, docIndex: number, title: string) => req<{ doc_type: string; title: string; fields: number }>(`/${id}/forms/${docIndex}/promote`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) }),
-    correct: (id: string, doc_index: number, key: string, value: unknown) =>
-        req<{ ok: boolean }>(`/${id}/fields`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc_index, key, value }) }),
-    remove: (id: string) => req<void>(`/${id}`, { method: 'DELETE' }),
-    pdfUrl: (id: string) => `${BASE}/${id}/pdf`,
+    list: (wid: string) => send<Summary[]>(`${ws(wid)}/extractions`),
+    get: (wid: string, id: string) => send<Detail>(`${ws(wid)}/extractions/${id}`),
+    upload: (wid: string, file: File, template = 'auto') => { const f = new FormData(); f.append('file', file); f.append('template', template); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
+    promote: (wid: string, id: string, docIndex: number, title: string) => send<{ doc_type: string; title: string; fields: number }>(`${ws(wid)}/extractions/${id}/forms/${docIndex}/promote`, json('POST', { title })),
+    correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
+    remove: (wid: string, id: string) => send<void>(`${ws(wid)}/extractions/${id}`, { method: 'DELETE' }),
+    pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
     /** Download a JSON file (fetch + blob so the API key header is sent). */
-    download: async (id: string, kind: 'pages' | 'fields' | 'truth', name: string) => {
-        const res = await fetch(`${BASE}/${id}/${kind}.json`, { headers: authHeaders() });
+    download: async (wid: string, id: string, kind: 'pages' | 'fields' | 'truth', name: string) => {
+        const res = await fetch(`${ws(wid)}/extractions/${id}/${kind}.json`, { headers: authHeaders() });
         if (!res.ok) throw new Error(`Download failed (${res.status})`);
         const url = URL.createObjectURL(await res.blob());
         const a = document.createElement('a');

@@ -50,7 +50,7 @@ export default function Landing() {
                     <nav className="lp-nav" aria-label="Page sections">
                         <a href="#how">How it works</a><a href="#output">Output</a><a href="#review">Review</a><a href="#types">Document types</a>
                     </nav>
-                    <Link to="/app" className="btn btn--primary">Open workspace</Link>
+                    <Link to="/app" className="btn btn--primary">Open workspaces</Link>
                 </div>
             </header>
 
@@ -60,7 +60,7 @@ export default function Landing() {
                         <h1>Read the whole packet. Check only what’s in doubt.</h1>
                         <p className="lp-lede">Upload any PDF: a scanned form, a fax, a statement, an application. {APP_NAME} reads every page, sorts the file into its documents, fills in the fields of each document type it knows, and flags the values its readers didn’t agree on.</p>
                         <div className="lp-cta">
-                            <Link to="/app" className="btn btn--primary btn--lg">Open workspace</Link>
+                            <Link to="/app" className="btn btn--primary btn--lg">Open workspaces</Link>
                             <a href="#output" className="btn btn--lg">See the output</a>
                         </div>
 
@@ -166,7 +166,7 @@ export default function Landing() {
                 <section className="lp-close">
                     <div className="lp-wrap">
                         <h2>Start with a packet you already have</h2>
-                        <Link to="/app" className="btn btn--lg lp-close__btn">Open workspace</Link>
+                        <Link to="/app" className="btn btn--lg lp-close__btn">Open workspaces</Link>
                     </div>
                 </section>
             </main>

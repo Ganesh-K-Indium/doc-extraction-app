@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, Outlet } from 'react-router-dom';
 import { meta } from '../api';
 import { APP_NAME } from '../brand';
 
@@ -13,10 +13,6 @@ export default function Shell() {
         <div className="app">
             <header className="topbar">
                 <Link to="/" className="brand"><span className="brand__mark" aria-hidden="true" />{APP_NAME}</Link>
-                <nav className="topnav" aria-label="Workspace">
-                    <NavLink to="/app" end>Documents</NavLink>
-                    <NavLink to="/app/types">Document types</NavLink>
-                </nav>
                 <span className={`health health--${health}`} title={health === 'limited' ? 'No model key and no Tesseract: scanned pages are not read.' : health === 'local' ? 'No OPENAI_API_KEY: scans are read by Tesseract on this machine, as a single unverified reader.' : undefined}>{label}</span>
             </header>
             <Outlet />
