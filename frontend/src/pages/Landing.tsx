@@ -88,7 +88,7 @@ export default function Landing() {
                 <section id="output" className="lp-sec lp-sec--tint">
                     <div className="lp-wrap">
                         <h2>Two files, built to be loaded</h2>
-                        <p className="lp-sub">Page-by-page content in one, each document’s key–value data in the other. Download both from any extraction.</p>
+                        <p className="lp-sub">Page-by-page content in one, each document’s key–value data in the other. View them in the app, with your corrections applied, or download both from any extraction.</p>
                         <div className="lp-code2">
                             <figure className="lp-code">
                                 <figcaption>pages.json</figcaption>
@@ -130,7 +130,7 @@ export default function Landing() {
                             <h2>Reviewers see the doubtful values first</h2>
                             <div className="lp-points">
                                 <div><h3>Two readers, compared</h3><p>A value both readers agree on stays quiet. A disagreement keeps both readings, and one click takes the other.</p></div>
-                                <div><h3>A queue, not a hunt</h3><p>Step through flagged values with <kbd>j</kbd> and <kbd>k</kbd>. Each one is highlighted on the source page.</p></div>
+                                <div><h3>A queue, not a hunt</h3><p>Filter to what needs checking, edit values and table cells in place, and step through flagged values with <kbd>j</kbd> and <kbd>k</kbd>. Each one is highlighted on the source page.</p></div>
                                 <div><h3>Rules that read across documents</h3><p>One document says one date, another says a different one. That becomes a finding, not something a person has to notice.</p></div>
                             </div>
                         </div>
@@ -150,13 +150,13 @@ export default function Landing() {
                     <div className="lp-wrap lp-split">
                         <div>
                             <h2>One pipeline, chosen per document</h2>
-                            <p className="lp-sub">A router profiles each page and picks how to read it, then picks how to extract each document. Every choice is recorded with its reason. A document with no template is read by discovery. To make a type permanent, upload a blank form to draft its template, or save a reviewed result as a type.</p>
-                            <Link to="/app/types" className="btn">See document types</Link>
+                            <p className="lp-sub">A router profiles each page and picks how to read it, then picks how to extract each document. Every choice is recorded with its reason. A document with no template is read by discovery. To make a type permanent, upload a blank form to draft its template, or save a reviewed result as a type. Types belong to a workspace, and a form sitting inside a longer document is found wherever its title appears.</p>
+                            <Link to="/app" className="btn">Open workspaces</Link>
                         </div>
                         <ul className="lp-types">
                             <li><span>Prior authorization form</span><small>Field template</small></li>
-                            <li><span>PT initial exam</span><small>Label and value pairs</small></li>
-                            <li><span>Daily note and billing sheet</span><small>Label and value pairs</small></li>
+                            <li><span>PT initial exam</span><small>Field template</small></li>
+                            <li><span>Daily note and billing sheet</span><small>Field template</small></li>
                             <li><span>Fax cover sheet</span><small>Not extracted</small></li>
                             <li className="lp-types__next"><span>Any other document</span><small>Discovered, then saved as a type</small></li>
                         </ul>
