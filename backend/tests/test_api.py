@@ -120,3 +120,23 @@ def test_answer_key_export(client, tmp_path):
     doc = next(d for d in key["documents"] if d["doc_type"] == "prior_auth_form")
     assert doc["fields"]["member.last_name"] == "Reviewed"          # corrections are what makes it an answer key
     assert client.post(f"/api/extractions/{eid}/forms/{form['doc_index']}/promote", json={}, headers=h).status_code == 409  # templated already
+
+
+def test_typed_corrections_keep_their_type(client, tmp_path):
+    pdf = tmp_path / "p.pdf"
+    build(str(pdf))
+    h = {"X-API-Key": "secret"}
+    eid = client.post("/api/extractions", files={"file": ("p.pdf", pdf.read_bytes(), "application/pdf")}, headers=h).json()["id"]
+    for _ in range(100):
+        if client.get(f"/api/extractions/{eid}", headers=h).json()["status"] in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    form = client.get(f"/api/extractions/{eid}/fields.json", headers=h).json()["forms"][0]
+    di = form["doc_index"]
+    for key, value in (("transition_of_care", True), ("member.place_of_service", ["Office", "Home"])):
+        assert client.patch(f"/api/extractions/{eid}/fields", json={"doc_index": di, "key": key, "value": value}, headers=h).status_code == 200
+    got = client.get(f"/api/extractions/{eid}/fields.json", headers=h).json()["forms"][0]
+    assert got["values"]["transition_of_care"] is True and got["fields"]["transition_of_care"]["status"] == "corrected"
+    assert got["values"]["member.place_of_service"] == ["Office", "Home"]
+    doc = next(d for d in client.get(f"/api/extractions/{eid}/truth.json", headers=h).json()["documents"] if d["doc_type"] == "prior_auth_form")
+    assert doc["fields"]["transition_of_care"] is True and doc["fields"]["member.place_of_service"] == ["Office", "Home"]

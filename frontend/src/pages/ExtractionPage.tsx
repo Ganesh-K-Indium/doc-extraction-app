@@ -7,6 +7,8 @@ import '../components/textLayer.css';
 type Tab = 'fields' | 'pages' | 'findings';
 const SCALE = 1.1;
 const FLAGGED = new Set(['review', 'undetermined']);
+const EXTRACT_LABEL: Record<string, string> = { template_form: 'Read against a template', discover: 'Discovered without a template', kv: 'Read as label and value pairs', skip: 'Not extracted' };
+const READER_LABEL: Record<string, string> = { text_layer: 'embedded text', ocr_dual: 'two vision readers', ocr_local: 'Tesseract on this server', text_layer_unverified: 'the scanner’s own text (unverified)' };
 
 const display = (v: Cell['value']): string =>
     v === null || v === undefined ? '' : typeof v === 'boolean' ? (v ? 'Yes' : 'No') : Array.isArray(v) ? v.join(', ') : String(v);
@@ -27,8 +29,19 @@ const Tick = () => <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="
 interface QItem { doc: number; key: string }
 const rowId = (doc: number, key: string) => `row-${doc}-${key.replace(/\W/g, '_')}`;
 
+/** An alternative reading arrives as text; a yes/no or multi-choice field must be corrected with its own type. */
+function typedLike(cell: Cell, text: string): string | boolean | string[] {
+    if (typeof cell.value === 'boolean') return /^(true|yes)$/i.test(text.trim());
+    if (Array.isArray(cell.value)) return text.trim() === '(none)' ? [] : text.split(',').map(x => x.trim()).filter(Boolean);
+    return text;
+}
+/** Where the other reading came from decides how to describe it. */
+const altIntro = (cell: Cell) =>
+    /scanned text/.test(cell.reason ?? '') ? 'The scanned text reads' : /pixels/.test(cell.reason ?? '') ? 'A model read it as' : 'The second reader saw';
+const altText = (cell: Cell, a: string) => (typeof cell.value === 'boolean' ? (/^(true|yes)$/i.test(a.trim()) ? 'Yes' : 'No') : a);
+
 function FieldRow({ doc, name, cell, selected, onSelect, onSave }: {
-    doc: number; name: string; cell: Cell; selected: boolean; onSelect: () => void; onSave: (v: string) => void;
+    doc: number; name: string; cell: Cell; selected: boolean; onSelect: () => void; onSave: (v: string | boolean | string[]) => void;
 }) {
     const [edit, setEdit] = useState<string | null>(null); // null = show the stored value
     const draft = edit ?? display(cell.value);
@@ -43,8 +56,8 @@ function FieldRow({ doc, name, cell, selected, onSelect, onSave }: {
                 onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setEdit(null); e.currentTarget.blur(); } }} />
             <span className="field__state" title={cell.reason}>{st.key === 'done' && <Tick />}{st.text}</span>
             {cell.alternatives.length > 0 && (
-                <span className="field__alt">The second reader saw{' '}
-                    {cell.alternatives.map(a => <button key={a} className="link" onClick={e => { e.stopPropagation(); onSave(a); }}>use “{a}”</button>)}
+                <span className="field__alt">{altIntro(cell)}{' '}
+                    {cell.alternatives.map(a => <button key={a} className="link" onClick={e => { e.stopPropagation(); onSave(typedLike(cell, a)); }}>use “{altText(cell, a)}”</button>)}
                 </span>)}
         </div>
     );
@@ -103,7 +116,7 @@ export default function ExtractionPage() {
         document.getElementById(rowId(q.doc, q.key))?.scrollIntoView({ block: 'nearest' });
     }, [jump]);
 
-    const save = useCallback(async (doc: number, key: string, value: string) => {
+    const save = useCallback(async (doc: number, key: string, value: string | boolean | string[]) => {
         try { await api.correct(id, doc, key, value); await load(); } catch (e) { setError((e as Error).message); }
     }, [id, load]);
 
@@ -119,7 +132,7 @@ export default function ExtractionPage() {
                 e.preventDefault();
             } else if (e.key === 'Enter' && sel && at >= 0) {
                 const c = cellOf(sel);
-                if (c && typeof c.value === 'string') { save(sel.doc, sel.key, c.value); e.preventDefault(); }
+                if (c && c.value !== null && c.value !== undefined) { save(sel.doc, sel.key, c.value as string | boolean | string[]); e.preventDefault(); }
             }
         };
         window.addEventListener('keydown', onKey);
@@ -164,7 +177,7 @@ export default function ExtractionPage() {
                 {error && <p className="notice notice--error" role="alert">{error}</p>}
                 {data.status !== 'done' ? (
                     data.status === 'failed' ? <p className="notice notice--error" role="alert">{data.error}</p> :
-                        <p className="notice" role="status">Reading page {data.progress.done} of {data.progress.total || '…'}. This view updates when it finishes.</p>
+                        <p className="notice" role="status">{data.stage === 'preparing' ? 'Preparing the pages: adding a text layer to scans.' : data.stage === 'documents' ? 'Extracting fields from each document.' : `Reading page ${data.progress.done} of ${data.progress.total || '…'}.`} This view updates when it finishes.</p>
                 ) : (
                     <>
                         <div className="tabs" role="tablist">
@@ -176,7 +189,7 @@ export default function ExtractionPage() {
                             <button className="btn btn--quiet" title="The values as they are now, including your corrections, as an answer key for accuracy scoring" onClick={() => api.download(id, 'truth', data.filename)}>Download answer key</button>
                         </div>
                         <div className="panel__body">
-                            {tab === 'fields' && (forms.length === 0 ? <p className="empty">No form with a known template was found in this file. The Pages tab shows what was read.</p> : (
+                            {tab === 'fields' && (forms.length === 0 ? <p className="empty">No fields were extracted from this file. That happens when no model is configured on this server (fields are read by vision models) or when the file holds only cover or blank pages. The Pages tab shows the text that was read.</p> : (
                                 <>
                                     {queue.length > 0 && <p className="hint">Press <kbd>j</kbd> and <kbd>k</kbd> to move between the {queue.length} values to check, <kbd>Enter</kbd> to confirm one.</p>}
                                     {forms.map(f => (
@@ -184,7 +197,7 @@ export default function ExtractionPage() {
                                             <h2 className="form-title">{f.discovered ? (f.label || 'Untitled document') : f.template_id} <span className="muted">pages {f.pages.join(', ')}</span></h2>
                                             {f.discovered && (
                                                 <div className="banner">
-                                                    <p>No template matched, so these fields were found by reading the page. Check the highlighted values, then save this as a document type to validate and recognise the next one automatically.</p>
+                                                    <p>No template matched, so these fields were found by reading the page. Check the values marked “Check”, then save this as a document type to have the next file of this kind recognised and validated.</p>
                                                     {saved[f.doc_index]
                                                         ? <p className="banner__ok">Saved as “{saved[f.doc_index]}”. New uploads of this kind will use it.</p>
                                                         : <button className="btn" onClick={async () => {
@@ -214,7 +227,7 @@ export default function ExtractionPage() {
                                 </>))}
                             {tab === 'pages' && data.pages?.documents.map(d => (
                                 <section key={d.doc_index} className="group"><legend className="legend">{d.label} <span className="muted">pages {d.pages.join(', ')}</span></legend>
-                                    {d.route && <p className="route">Extracted as <b>{d.route.extractor?.replace('_', ' ')}</b>. {d.route.reasons[0]}.</p>}
+                                    {d.route && <p className="route"><b>{EXTRACT_LABEL[d.route.extractor ?? ''] ?? d.route.extractor}</b>. {d.route.reasons[0]}.</p>}
                                     {d.pages.map(n => {
                                         const p = data.pages!.pages.find(x => x.page === n)!;
                                         const flagged = p.lines.filter(l => l.status === 'review');
@@ -222,7 +235,8 @@ export default function ExtractionPage() {
                                             <details key={n} className="pagecard" onToggle={e => (e.currentTarget as HTMLDetailsElement).open && jump(n)}>
                                                 <summary><b>Page {n}</b> {p.classification.label}
                                                     <span className={p.verified ? 'tag' : 'tag tag--flag'}>{p.verified ? 'verified' : 'unverified'}</span></summary>
-                                                <p className="route">Read by <b>{p.route?.reader?.replace(/_/g, ' ') ?? p.source}</b>: {p.route?.reasons.join('; ')}.</p>
+                                                <p className="route">Read by <b>{READER_LABEL[p.route?.reader ?? ''] ?? p.source}</b>: {p.route?.reasons.join('; ')}.</p>
+                                                {p.error && <p className="field__alt">This page could not be read: {p.error}</p>}
                                                 {flagged.map((l, i) => <p key={i} className="field__alt">{l.text}{l.alternatives.length ? ` (second reader: ${l.alternatives.join(' / ')})` : ''}</p>)}
                                             </details>);
                                     })}

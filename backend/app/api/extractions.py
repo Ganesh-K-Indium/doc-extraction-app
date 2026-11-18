@@ -73,7 +73,7 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...), temp
     if not data.startswith(b"%PDF"):
         raise HTTPException(415, "Upload a PDF file.")
     if not pipeline.valid_choice(template):
-        raise HTTPException(422, f"Unknown document type '{template}'. Choose 'auto', 'discover' or a type from the document types list.")
+        raise HTTPException(422, "That document type is not available. Pick one from the list, or choose automatic detection.")
     digest = hashlib.sha256(data).hexdigest()
     with db.session() as s:
         # Same bytes already read successfully: reuse that result instead of paying for the same OCR again.

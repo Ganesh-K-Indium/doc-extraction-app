@@ -1,17 +1,14 @@
 """
-Handwritten / scanned note -> reviewable text, for analyst notes (see app/services/analyst_notes.py).
+Page transcription by two independent vision models, compared line by line.
 
-Why two readers: vision LLMs read handwriting better than classic OCR, but they fail silently (a misread digit comes
-back with full confidence, and token log-probs do not separate right from wrong). So every page is transcribed
-independently by two different models and the lines are compared:
+Vision models read handwriting and poor scans better than classic OCR, but they fail silently: a misread digit comes
+back with full confidence, and token log-probs do not separate right from wrong. So every page is transcribed
+independently by two different models and the lines are compared by content:
 
     both agree (same text, same numbers)  -> status "agreed"
     anything else, or a [?] marker        -> status "review"   (with the other reader's version as an alternative)
 
-Nothing here is indexed. The caller shows the draft to the user, who fixes the flagged lines and then saves it as an
-ordinary note, so unverified text never reaches the knowledge base.
-
-PDFs with a real text layer skip OCR entirely; only image-only pages (scans) and image uploads are sent to the models.
+PDF pages with a real text layer skip this entirely; only scans and image-only pages are sent to the models.
 """
 import asyncio
 import base64
@@ -39,11 +36,11 @@ MIN_TEXT_LAYER_CHARS = 40  # a PDF page with at least this much text is "typed",
 SCAN_IMAGE_COVERAGE = 0.5  # ...unless a picture covers this share of the page: then the text is a scanner's OCR layer
 ENGINE_TIMEOUT_SECONDS = 120
 
-PROMPT = """You are transcribing a handwritten or scanned note for a financial analyst's records.
+PROMPT = """You are transcribing one scanned or handwritten page.
 
 Rules:
 - Transcribe exactly what is written, line by line, in reading order. Keep the original line breaks.
-- Do NOT correct, complete, summarise, translate or calculate. Keep spelling, abbreviations, symbols and units exactly as written (for example $215, 6%, 94.9B, YoY).
+- Do NOT correct, complete, summarise, translate or calculate. Keep spelling, abbreviations, symbols and units exactly as written (for example $215, 6%, 94.9B, 10/12/2026).
 - Digits are critical: copy every digit exactly as written. If you cannot read a character or number with certainty, write [?] in its place. Never guess.
 - Include printed text as well as handwriting.
 - For a table, put each row on one line with the cells separated by " | ".
@@ -78,33 +75,6 @@ class OcrPage:
     lines: List[OcrLine]
     cross_checked: bool = True  # False when only one reader produced this page
 
-
-@dataclass
-class OcrResult:
-    pages: List[OcrPage]
-    engines: List[str]
-    verified: bool  # False when only one reader was available, so nothing was cross-checked
-
-    @property
-    def text(self) -> str:
-        return "\n\n".join("\n".join(l.text for l in p.lines) for p in self.pages if p.lines)
-
-    @property
-    def needs_review(self) -> int:
-        return sum(l.status == "review" for p in self.pages for l in p.lines)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "text": self.text, "engines": self.engines, "verified": self.verified, "needs_review": self.needs_review,
-            "pages": [{"page": p.page, "source": p.source,
-                       "lines": [{"text": l.text, "status": l.status, "alternatives": l.alternatives, "reason": l.reason}
-                                 for l in p.lines]} for p in self.pages],
-        }
-
-
-# ---------------------------------------------------------------------------
-# Comparing two transcriptions
-# ---------------------------------------------------------------------------
 
 _PUNCT_RE = re.compile(r"(?<!\d)[^\w\s]|[^\w\s](?!\d)")  # keeps 9.5 and 10/12/2026, drops stars, colons, specks
 
@@ -212,20 +182,6 @@ def _settle_layout(out: List[OcrLine], primary: List[str], secondary: List[str])
 # Input handling
 # ---------------------------------------------------------------------------
 
-def _sniff(data: bytes) -> str:
-    if data.startswith(b"%PDF"):
-        return "pdf"
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png"
-    if data.startswith(b"\xff\xd8\xff"):
-        return "jpeg"
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "webp"
-    if data[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1", b"ftypheif"):
-        raise OcrError("HEIC photos are not supported. Export the photo as JPG or PNG and try again.", 415)
-    raise OcrError("Unsupported file. Upload a JPG, PNG, WEBP image or a PDF.", 415)
-
-
 def normalize_image(data: bytes) -> bytes:
     """Upright (EXIF), RGB, longest side <= MAX_SIDE_PX, re-encoded as JPEG."""
     from PIL import Image, ImageOps
@@ -265,32 +221,6 @@ def fitz_rect_area(bbox, page_rect) -> float:
     return w * h
 
 
-def split_pages(data: bytes) -> List[Dict[str, Any]]:
-    """[{"page": n, "text": str | None, "image": jpeg bytes | None}]: typed PDF pages carry text, everything else an image."""
-    kind = _sniff(data)
-    if kind != "pdf":
-        return [{"page": 1, "text": None, "image": normalize_image(data)}]
-    import pymupdf as fitz
-    try:
-        pdf = fitz.open(stream=data, filetype="pdf")
-    except Exception as e:
-        raise OcrError("That PDF could not be read.", 422) from e
-    with pdf:
-        if pdf.needs_pass:
-            raise OcrError("Password-protected PDFs are not supported.", 422)
-        if pdf.page_count > MAX_PAGES:
-            raise OcrError(f"PDF has {pdf.page_count} pages; the limit is {MAX_PAGES}. Split it and upload in parts.", 413)
-        pages = []
-        for i, page in enumerate(pdf, 1):
-            text = page.get_text().strip()
-            if len(text) >= MIN_TEXT_LAYER_CHARS and not _is_scanned_page(page):
-                pages.append({"page": i, "text": text, "image": None})
-            else:
-                png = page.get_pixmap(dpi=RENDER_DPI).tobytes("png")
-                pages.append({"page": i, "text": None, "image": normalize_image(png)})
-        return pages
-
-
 # ---------------------------------------------------------------------------
 # Readers
 # ---------------------------------------------------------------------------
@@ -309,10 +239,6 @@ def _get_client():
 def configured_models() -> List[str]:
     raw = os.getenv("HANDWRITING_OCR_MODELS", DEFAULT_MODELS)
     return [m.strip() for m in raw.split(",") if m.strip()][:2]
-
-
-def is_enabled() -> bool:
-    return os.getenv("HANDWRITING_OCR_ENABLED", "1").lower() not in ("0", "false", "no") and bool(os.getenv("OPENAI_API_KEY"))
 
 
 def parse_lines(raw: str) -> List[str]:
@@ -359,28 +285,9 @@ async def read_page(jpeg: bytes, models: List[str], reader=None) -> OcrPage:
         if isinstance(r, BaseException):
             logger.warning("Handwriting reader %s failed: %s", m, r)
     if not ok:
-        raise OcrError("The transcription service is unavailable right now. Please try again, or type the note.", 502)
+        raise OcrError("The transcription service is unavailable right now. Try again in a minute.", 502)
     primary = results[0] if not isinstance(results[0], BaseException) else ok[0][1]
     secondary = next((r for m, r in ok if r is not primary), None) if len(ok) > 1 else None
     return OcrPage(page=0, source="ocr", lines=merge_readings(primary, secondary), cross_checked=secondary is not None)
 
 
-async def transcribe_upload(data: bytes, reader=None) -> OcrResult:
-    if not data:
-        raise OcrError("The file is empty.", 400)
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise OcrError(f"The file is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.", 413)
-    models = configured_models()
-    if not models:
-        raise OcrError("Handwriting transcription is not configured.", 503)
-    pages = await asyncio.to_thread(split_pages, data)
-
-    async def one(p: Dict[str, Any]) -> OcrPage:
-        if p["text"] is not None:  # typed PDF page: exact text, nothing to verify
-            return OcrPage(p["page"], "text-layer", [OcrLine(l.strip()) for l in p["text"].splitlines() if l.strip()])
-        page = await read_page(p["image"], models, reader)
-        page.page = p["page"]
-        return page
-
-    out = await asyncio.gather(*[one(p) for p in pages])
-    return OcrResult(pages=list(out), engines=models, verified=all(p.cross_checked for p in out))

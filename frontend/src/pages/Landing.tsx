@@ -38,7 +38,7 @@ const STEPS = [
     { t: 'Profile each page', d: 'Is there embedded text, or does a picture cover the page? Fax scans usually carry only a picture.', note: 'Decides the reader' },
     { t: 'Read the text', d: 'Digital pages use their own text. Scans get a Tesseract text layer for positions, and two vision models transcribe them and are compared.', note: 'Disagreements are kept, not hidden' },
     { t: 'Sort into documents', d: 'Fax stamps are split off as metadata. Pages are classified and grouped, so a 9-page packet becomes four documents.', note: 'Blank and cover pages are kept, not dropped' },
-    { t: 'Extract and check', d: 'Each document is read field by field against its template. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
+    { t: 'Extract and check', d: 'Each document is read field by field against its template, or discovered from the page when it has none. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
 ];
 
 export default function Landing() {
@@ -150,7 +150,7 @@ export default function Landing() {
                     <div className="lp-wrap lp-split">
                         <div>
                             <h2>One pipeline, chosen per document</h2>
-                            <p className="lp-sub">A router profiles each page and picks how to read it, then picks how to extract each document. Every choice is recorded with its reason. Supporting a new kind of document means adding a registry entry and, for a fixed form, a template.</p>
+                            <p className="lp-sub">A router profiles each page and picks how to read it, then picks how to extract each document. Every choice is recorded with its reason. A document with no template is read by discovery. To make a type permanent, upload a blank form to draft its template, or save a reviewed result as a type.</p>
                             <Link to="/app/types" className="btn">See document types</Link>
                         </div>
                         <ul className="lp-types">
@@ -158,7 +158,7 @@ export default function Landing() {
                             <li><span>PT initial exam</span><small>Label and value pairs</small></li>
                             <li><span>Daily note and billing sheet</span><small>Label and value pairs</small></li>
                             <li><span>Fax cover sheet</span><small>Not extracted</small></li>
-                            <li className="lp-types__next"><span>Your next document type</span><small>Registry entry</small></li>
+                            <li className="lp-types__next"><span>Any other document</span><small>Discovered, then saved as a type</small></li>
                         </ul>
                     </div>
                 </section>

@@ -58,15 +58,17 @@ def decide_extractor(doc_type: str, llm_available: bool = True) -> Dict[str, Any
     reg = {d["type"]: d for d in classify.all_types()}
     if doc_type in reg:
         kind = reg[doc_type]["extractor"]
-        return {"extractor": kind, "reasons": [f"document type '{doc_type}' is registered for {kind}"]}
+        why = {"template_form": f"{reg[doc_type]['label']} is a known document type with a template",
+               "kv": f"{reg[doc_type]['label']} is read as label and value pairs", "skip": f"{reg[doc_type]['label']} carries no data to extract"}
+        return {"extractor": kind, "reasons": [why.get(kind, f"{reg[doc_type]['label']} is a known document type")]}
     if llm_available:
-        return {"extractor": "discover", "reasons": [f"no template for '{doc_type}', so its fields, checkboxes and tables are discovered from the page"]}
-    return {"extractor": "kv", "reasons": [f"no template for '{doc_type}' and no model available, using generic label/value reading"]}
+        return {"extractor": "discover", "reasons": ["no template matches this document, so its fields, checkboxes and tables are read from the page itself"]}
+    return {"extractor": "kv", "reasons": ["no template matches this document and no model is configured, so only plain label and value lines are read"]}
 
 
 READERS = [
     {"id": "text_layer", "label": "Embedded text", "summary": "Digital page: the PDF's own text is exact, no model needed."},
-    {"id": "ocr_dual", "label": "Two vision readers", "summary": "Scan or image-only page: two models transcribe it and every line is compared."},
+    {"id": "ocr_dual", "label": "Two vision readers", "summary": "Scan or image-only page: two models transcribe it and their readings are compared by content. A Tesseract layer supplies positions for highlighting."},
     {"id": "ocr_local", "label": "Tesseract on this machine", "summary": "Scan with no model configured: read locally, nothing leaves the server. Single reader, so unverified."},
-    {"id": "text_layer_unverified", "label": "Scanner text, unverified", "summary": "Scan with no model configured: the scanner's own text is used and marked unverified."},
+    {"id": "text_layer_unverified", "label": "Scanner text, unverified", "summary": "Scan with neither a model nor Tesseract available: only the scanner's own text, if it has any, is used."},
 ]
