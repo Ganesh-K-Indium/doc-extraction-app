@@ -5,7 +5,7 @@ import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
 import { useWorkspace } from '../workspaceContext';
 import { FieldRow } from '../review/FieldRow';
-import { allCells, cellAt, FLAGGED, matches, rowId, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
+import { allCells, cellAt, FLAGGED, matches, revealInPane, rowId, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
 import { JsonView } from '../review/JsonView';
 import { PdfPane } from '../review/PdfPane';
 import { TableGrid } from '../review/TableGrid';
@@ -77,7 +77,7 @@ export default function ExtractionPage() {
         setSel(q); setActiveDoc(q.doc);
         if (cell) jump(cell.page, cell.bbox);
     }, [jump]);
-    useEffect(() => { if (sel && tab === 'fields') document.getElementById(rowId(sel.doc, sel.key))?.scrollIntoView({ block: 'nearest' }); }, [sel, activeIdx, tab]);
+    useEffect(() => { if (sel && tab === 'fields') revealInPane(document.getElementById(rowId(sel.doc, sel.key))); }, [sel, activeIdx, tab]);
 
     // Edits show immediately; the server confirms in the background and the list's "to check" count follows.
     const save = useCallback(async (doc: number, key: string, value: Value) => {

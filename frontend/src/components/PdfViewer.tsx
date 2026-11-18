@@ -131,7 +131,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(({ url, headers, sca
 
     const pageEl = (n: number) => scroller.current?.querySelector<HTMLElement>(`[data-page="${n}"]`) || null;
     useImperativeHandle(ref, () => ({
-        scrollToPage: (n, smooth) => pageEl(n)?.scrollIntoView({ block: 'start', behavior: smooth ? 'smooth' : 'auto' }),
+        // scrollTo on OUR scroller only: element.scrollIntoView would also scroll every ancestor, including the window.
+        scrollToPage: (n, smooth) => {
+            const el = pageEl(n), sc = scroller.current;
+            if (el && sc) sc.scrollTo({ top: Math.max(0, el.offsetTop - 8), behavior: smooth ? 'smooth' : 'auto' });
+        },
         scrollToRect: (n, r) => {
             const el = pageEl(n), sc = scroller.current;
             if (el && sc) sc.scrollTo({ top: el.offsetTop + r[1] * scale - sc.clientHeight / 3, behavior: 'smooth' });

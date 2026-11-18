@@ -13,7 +13,9 @@
     --action: #9db8d6; --action-ink: #0f1a26; --hl: rgba(255, 213, 0, .4); --stage: #0c1014; }
 }
 * { box-sizing: border-box; }
-html, body, #root, .app { height: 100%; }
+/* The window never scrolls: every screen has its own scroll area, so nothing can slide under the layout. */
+html, body, #root { height: 100%; overflow: hidden; overscroll-behavior: none; }
+.app { height: 100%; height: 100dvh; overflow: hidden; }
 body { margin: 0; background: var(--paper); }
 a { color: var(--action); } h1, h2 { font-weight: 600; margin: 0; }
 :focus-visible { outline: 2px solid var(--action); outline-offset: 2px; }
@@ -74,7 +76,7 @@ kbd { font: inherit; font-size: 12px; padding: 0 5px; border: 1px solid var(--ru
 .finding__sev { color: var(--ink-2); }
 
 /* PDF stage */
-.pdfv-scroll { height: 100%; overflow: auto; } .pdfv-pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px; }
+.pdfv-scroll { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; } .pdfv-pages { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px; }
 .pdfv-page { position: relative; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.45); flex: none; } .pdfv-page canvas { display: block; }
 .pdfv-num { position: absolute; top: 4px; right: 8px; font-size: 11px; color: #777; }
 .pdfv-overlays { position: absolute; inset: 0; pointer-events: none; z-index: 2; } .pdfv-ov { position: absolute; }
@@ -283,3 +285,10 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sunk); border: 1px solid var(--rule); }
 .chip button { font: inherit; background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 0 2px; } .chip button:hover { color: var(--pink); }
 @media (max-width: 900px) { .tpl__row { grid-template-columns: 1fr 1fr; } }
+
+
+/* ===== Scrolling: each area scrolls on its own and never hands the wheel on to the page beneath ===== */
+.pdfpane { min-height: 0; } .pdfpane__scroll { position: relative; }
+.split { overflow: hidden; }
+.panel__body, .editor__panel, .editor__wide, .list, .jt, .jsonview__raw, .docs, .lp { overscroll-behavior: contain; }
+.lp { height: 100vh; height: 100dvh; }

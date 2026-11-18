@@ -75,3 +75,15 @@ export function withEdit(form: Form, key: string, value: Value): Form {
         values: { ...form.values, [t]: flat.map((row, i) => (i === Number(r) ? { ...row, [c]: value } : row)) },
     };
 }
+
+/** Bring a row into view inside its own scrolling pane and nowhere else. (element.scrollIntoView scrolls every ancestor,
+ *  including the window, which is what made the whole screen jump.) */
+export function revealInPane(el: HTMLElement | null, paneSelector = '.panel__body'): void {
+    const pane = el?.closest<HTMLElement>(paneSelector);
+    if (!el || !pane) return;
+    const e = el.getBoundingClientRect();
+    const p = pane.getBoundingClientRect();
+    const top = p.top + 44;                        // a sticky section heading covers the first rows
+    if (e.top < top) pane.scrollTop -= top - e.top;
+    else if (e.bottom > p.bottom - 8) pane.scrollTop += e.bottom - p.bottom + 8;
+}
