@@ -154,7 +154,9 @@ def save_custom_type(workspace_id: str, template: Dict[str, Any], *, replace: bo
     doc_type = template["doc_type"]
     # defaults the pipeline relies on; a template saved through the API may omit them
     template = {"single_page": False, "canonical": {}, "rules": [], "tables": [], **template, "template_id": f"custom-{doc_type}"}
-    template["sections"] = [{"header": None, **s} for s in template["sections"]]
+    # where a field sits on the blank form is for the draft screen only; it does not belong in the stored template
+    template["sections"] = [{"header": None, **s, "fields": [{k: v for k, v in f.items() if k not in ("bbox", "page")} for f in s["fields"]]}
+                            for s in template["sections"]]
     entry = _entry(doc_type, template["title"])  # rebuilt from the template: callers cannot inject patterns
     with db.session() as s:
         row = s.query(db.CustomType).filter_by(workspace_id=workspace_id, doc_type=doc_type).first()
@@ -177,3 +179,28 @@ def delete_custom_type(workspace_id: str, doc_type: str) -> bool:
         s.delete(row)
         s.commit()
         return True
+
+
+def locate_fields(path: str, template: Dict[str, Any]) -> None:
+    """Add `page` and `bbox` (where its label sits on the blank form) to each drafted field, so the draft screen can show
+    exactly what was found. Section headings narrow the search, so "First Name" in the member block and in the provider
+    block land in their own places. Fields it cannot place are left without a location."""
+    import tempfile
+    from pathlib import Path
+    from app.services import form_extractor, locate
+
+    n = pdf_pages.page_count(path)
+    with tempfile.TemporaryDirectory() as tmp:
+        work = str(Path(tmp) / "blank.work.pdf")
+        pdf_pages.build_work_pdf(path, work, pdf_pages.scanned_pages(path))
+        bands = {p: form_extractor._bands(work, p, template) for p in range(1, n + 1)}
+        for sec in template["sections"]:
+            for f in sec["fields"]:
+                for page in range(1, n + 1):
+                    if sec.get("header") and sec["id"] not in bands[page]:
+                        continue                                  # this section's heading is not on this page
+                    band = bands[page].get(sec["id"], (0.0, 1e9))
+                    hit = locate.find_with_text(work, page, f["label"], None, band)
+                    if hit and hit[2] >= 0.85:
+                        f["page"], f["bbox"] = page, hit[0]
+                        break

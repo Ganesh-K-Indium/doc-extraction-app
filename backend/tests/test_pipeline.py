@@ -559,3 +559,41 @@ def test_scanned_checkboxes_ignore_glyphs_in_the_ocr_transcript(tmp_path):
     out = asyncio.run(pipeline.process(pdf, ocr_reader=lying_ocr, model_ask=fake_ask))
     cell = out["forms"][0]["fields"]["review_type"]
     assert cell["value"] == "ROUTINE" and cell["method"] == "pixel"      # the pixels win; the transcript's glyphs are ignored
+
+
+def test_drafted_fields_are_located_on_the_blank_form(tmp_path):
+    import pymupdf as fitz
+    d = fitz.open()
+    p = d.new_page(width=612, height=792)
+    p.insert_text((50, 60), "MEMBER INFORMATION", fontsize=11)
+    p.insert_text((50, 90), "First Name:", fontsize=10)
+    p.insert_text((50, 160), "PROVIDER INFORMATION", fontsize=11)
+    p.insert_text((50, 190), "First Name:", fontsize=10)
+    p.insert_text((50, 220), "Fax Number:", fontsize=10)
+    pdf = str(tmp_path / "blank.pdf")
+    d.save(pdf)
+    tpl = template_draft.build("Test form", [
+        {"label": "First Name", "section": "MEMBER INFORMATION", "type": "text"},
+        {"label": "First Name", "section": "PROVIDER INFORMATION", "type": "text"},
+        {"label": "Fax Number", "section": "PROVIDER INFORMATION", "type": "text"},
+        {"label": "Something absent", "section": "PROVIDER INFORMATION", "type": "text"}], [], [], True)
+    template_draft.locate_fields(pdf, tpl)
+    fields = {f["key"]: f for s in tpl["sections"] for f in s["fields"]}
+    member, provider = fields["member_information.first_name"], fields["provider_information.first_name"]
+    assert member["page"] == 1 and member["bbox"][1] < 100 < provider["bbox"][1]          # same label, each in its own block
+    assert fields["provider_information.fax_number"]["bbox"][1] > provider["bbox"][1]
+    assert "bbox" not in fields["provider_information.something_absent"]                   # not on the form: no location, no crash
+
+
+def test_cells_carry_type_and_options_for_the_ui(pdf=None):
+    form = asyncio.run(pipeline.process(_make_packet_path(), form_reader=fake_form))["forms"][0]
+    assert form["fields"]["review_type"]["type"] == "enum" and form["fields"]["review_type"]["options"] == ["ROUTINE", "URGENT", "TRANSPLANT"]
+    assert form["fields"]["member.last_name"]["type"] == "text" and "options" not in form["fields"]["member.last_name"]
+
+
+def _make_packet_path():
+    import tempfile, os
+    p = os.path.join(tempfile.mkdtemp(), "p.pdf")
+    from tests.make_packet import build
+    build(p)
+    return p

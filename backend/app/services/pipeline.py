@@ -216,7 +216,8 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
         "pages": pages, "documents": documents, "forms": forms, "other_documents": others, "validation": findings,
         "rest_checked": rest_checked,
         "stats": {"pages": n_pages, "forms": len(forms),
-                  "needs_review": sum(1 for f in forms for c in f["fields"].values() if c.get("status") in ("review", "undetermined")),
+                  "needs_review": sum(1 for f in forms for c in list(f["fields"].values()) + [x for rows in f["tables"].values() for r in rows for x in r.values()]
+                                      if c.get("status") in ("review", "undetermined")),
                   "errors": sum(1 for v in findings if v["severity"] == "error"),
                   "failed_pages": sum(1 for p in pages if p["source"] == "failed")},
     }

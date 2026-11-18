@@ -9,14 +9,30 @@ def pages_json(ex) -> Dict[str, Any]:
 
 
 def apply_corrections(form: Dict[str, Any], corrections: Dict[str, Any]) -> Dict[str, Any]:
-    fields = {}
-    for key, cell in form["fields"].items():
+    """Overlay a reviewer's edits. Keys are "<doc_index>:<field key>" for a field and "<doc_index>:<table>[<row>].<column>"
+    for a table cell (row counted from 0)."""
+    di = form["doc_index"]
+
+    def corrected(cell: Dict[str, Any], key: str) -> Dict[str, Any]:
         c = dict(cell)
-        ck = f"{form['doc_index']}:{key}"
-        if ck in corrections:
-            c.update({"original": cell.get("value"), "value": corrections[ck], "status": "corrected"})
-        fields[key] = c
-    return {**form, "fields": fields}
+        if key in corrections:
+            c.update({"original": cell.get("value"), "value": corrections[key], "status": "corrected"})
+        return c
+
+    fields = {k: corrected(c, f"{di}:{k}") for k, c in form["fields"].items()}
+    tables = {t: [{col: corrected(cell, f"{di}:{t}[{ri}].{col}") for col, cell in row.items()} for ri, row in enumerate(rows)]
+              for t, rows in form["tables"].items()}
+    return {**form, "fields": fields, "tables": tables}
+
+
+def review_count(result: Dict[str, Any], corrections: Dict[str, Any]) -> int:
+    """Values still waiting for a human: flagged fields and table cells that have not been confirmed or edited."""
+    n = 0
+    for f in (result or {}).get("forms", []):
+        f = apply_corrections(f, corrections or {})
+        cells = list(f["fields"].values()) + [c for rows in f["tables"].values() for r in rows for c in r.values()]
+        n += sum(1 for c in cells if c.get("status") in ("review", "undetermined"))
+    return n
 
 
 def _flat(form: Dict[str, Any]) -> Dict[str, Any]:
@@ -26,11 +42,25 @@ def _flat(form: Dict[str, Any]) -> Dict[str, Any]:
     return values
 
 
-def fields_json(ex) -> Dict[str, Any]:
+def _enrich(form: Dict[str, Any], template: Dict[str, Any]) -> Dict[str, Any]:
+    """Give cells their field type and choices from the template. Extractions made before cells carried them (and any
+    whose template was edited since) then still get the right controls on screen."""
+    fields = dict(form["fields"])
+    for sec in template.get("sections", []):
+        for f in sec.get("fields", []):
+            cell = fields.get(f["key"])
+            if cell is not None and "type" not in cell:
+                fields[f["key"]] = {**cell, "type": f["type"], **({"options": f["options"]} if f.get("options") else {})}
+    return {**form, "fields": fields}
+
+
+def fields_json(ex, templates: Dict[str, Dict[str, Any]] | None = None) -> Dict[str, Any]:
     r = ex.result or {}
     forms = []
     for f in r.get("forms", []):
         f = apply_corrections(f, ex.corrections or {})
+        if templates and not f.get("discovered") and f.get("doc_type") in templates:
+            f = _enrich(f, templates[f["doc_type"]])
         forms.append({**f, "values": _flat(f)})
     return {"extraction_id": ex.id, "filename": ex.filename, "forms": forms,
             "other_documents": r.get("other_documents", []), "validation": r.get("validation", []),

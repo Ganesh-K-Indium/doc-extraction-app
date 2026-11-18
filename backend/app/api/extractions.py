@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Any, List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
@@ -28,6 +29,18 @@ def _get(s, workspace_id: str, extraction_id: str):
     if not ex or ex.workspace_id != workspace_id:
         raise HTTPException(404, "Extraction not found.")
     return ex
+
+
+def _templates(workspace_id: str) -> dict:
+    """Every template this workspace can use, by document type (built-in and its own)."""
+    out = {}
+    with workspace_types.use(workspace_id):
+        for doc_type, name in pipeline.type_templates().items():
+            try:
+                out[doc_type] = pipeline.load_template(name)
+            except FileNotFoundError:
+                pass
+    return out
 
 
 def pdf_file(extraction_id: str):
@@ -108,7 +121,7 @@ def get_extraction(workspace_id: str, extraction_id: str):
         out = _summary(ex)
         if ex.status == "done":
             out["pages"] = export.pages_json(ex)
-            out["fields"] = export.fields_json(ex)
+            out["fields"] = export.fields_json(ex, _templates(workspace_id))
         return out
 
 
@@ -121,7 +134,7 @@ def download_pages(workspace_id: str, extraction_id: str):
 @router.get("/{extraction_id}/fields.json")
 def download_fields(workspace_id: str, extraction_id: str):
     with db.session() as s:
-        return export.fields_json(_get(s, workspace_id, extraction_id))
+        return export.fields_json(_get(s, workspace_id, extraction_id), _templates(workspace_id))
 
 
 @router.get("/{extraction_id}/pdf")
@@ -140,16 +153,32 @@ class Correction(BaseModel):
     value: Any = None
 
 
+_CELL = re.compile(r"^(?P<t>[^\[\]]+)\[(?P<r>\d+)\]\.(?P<c>.+)$")
+
+
+def _has_cell(form: dict, key: str) -> bool:
+    """A field key, or `table[row].column` (row from 0) naming a cell that exists."""
+    if key in form["fields"]:
+        return True
+    m = _CELL.match(key)
+    rows = form["tables"].get(m["t"]) if m else None
+    return bool(m) and rows is not None and int(m["r"]) < len(rows) and m["c"] in rows[int(m["r"])]
+
+
 @router.patch("/{extraction_id}/fields")
 def correct_field(workspace_id: str, extraction_id: str, body: Correction):
+    """Edit or confirm one value (a field, or a table cell as `table[row].column`). Also refreshes the workspace's
+    "to check" count so it falls as values are settled."""
     with db.session() as s:
         ex = _get(s, workspace_id, extraction_id)
-        known = any(f["doc_index"] == body.doc_index and body.key in f["fields"] for f in (ex.result or {}).get("forms", []))
-        if not known:
+        result = ex.result or {}
+        if not any(f["doc_index"] == body.doc_index and _has_cell(f, body.key) for f in result.get("forms", [])):
             raise HTTPException(404, "No such field.")
-        ex.corrections = {**(ex.corrections or {}), f"{body.doc_index}:{body.key}": body.value}
+        corrections = {**(ex.corrections or {}), f"{body.doc_index}:{body.key}": body.value}
+        ex.corrections = corrections
+        ex.result = {**result, "stats": {**result.get("stats", {}), "needs_review": export.review_count(result, corrections)}}
         s.commit()
-        return {"ok": True}
+        return {"ok": True, "needs_review": ex.result["stats"]["needs_review"]}
 
 
 @router.delete("/{extraction_id}", status_code=204)
@@ -234,9 +263,7 @@ async def read_the_rest(workspace_id: str, extraction_id: str, doc_index: int):
             result["forms"] = [*result["forms"], extra]
             result["validation"] = [*result["validation"], *({**v, "doc_index": idx} for v in extra["validation"])]
             added = len(extra["fields"]) + sum(len(r) for r in extra["tables"].values())
-            st = dict(result.get("stats", {}))
-            st["needs_review"] = sum(1 for f in result["forms"] for c in f["fields"].values() if c.get("status") in ("review", "undetermined"))
-            result["stats"] = st
+            result["stats"] = {**result.get("stats", {}), "needs_review": export.review_count(result, ex.corrections or {})}
         ex.result = result
         s.commit()
     return {"added": bool(extra), "doc_index": extra["doc_index"] if extra else None, "items": added}

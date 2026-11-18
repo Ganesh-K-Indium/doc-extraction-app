@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.services import ocr, template_draft
+from app.services import classify, ocr, pipeline, template_draft, workspace_types
 
 logger = logging.getLogger("app.api.templates")
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/templates", tags=["templates"], dependencies=[Depends(require_key), Depends(workspace)])
@@ -29,7 +29,12 @@ async def draft(workspace_id: str, file: UploadFile = File(...)):
         path = Path(tmp) / "blank.pdf"
         path.write_bytes(data)
         try:
-            return await template_draft.draft_from_blank(str(path), config.extraction_models())
+            drafted = await template_draft.draft_from_blank(str(path), config.extraction_models())
+            try:  # best effort: a draft without locations is still a draft
+                await asyncio.to_thread(template_draft.locate_fields, str(path), drafted["template"])
+            except Exception:
+                logger.exception("Could not locate the drafted fields on the blank form")
+            return drafted
         except ocr.OcrError as e:
             raise HTTPException(e.status_code, str(e))
         except Exception:
@@ -47,6 +52,32 @@ def save(workspace_id: str, body: Save):
         doc_type = template_draft.save_custom_type(workspace_id, body.template)
     except FileExistsError as e:
         raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"doc_type": doc_type}
+
+
+@router.get("/{doc_type}")
+def get_template(workspace_id: str, doc_type: str):
+    """A document type's template: built-in ones are read-only, the workspace's own can be edited."""
+    with workspace_types.use(workspace_id):
+        name = pipeline.type_templates().get(doc_type)
+        if name is None:
+            raise HTTPException(404, "No document type with that name.")
+        template = pipeline.load_template(name)
+    return {"template": template, "builtin": doc_type in {d["type"] for d in classify.DOC_TYPES}}
+
+
+@router.put("/{doc_type}")
+def replace(workspace_id: str, doc_type: str, body: Save):
+    """Replace one of this workspace's own types (its name stays the same). Documents already extracted keep their results."""
+    if body.template.get("doc_type") != doc_type:
+        raise HTTPException(422, "The template's name does not match the type being edited.")
+    with workspace_types.use(workspace_id):
+        if doc_type not in {d["type"] for d in classify.custom_types()}:
+            raise HTTPException(404, "No custom document type with that name. Built-in types cannot be edited.")
+    try:
+        template_draft.save_custom_type(workspace_id, body.template, replace=True)
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"doc_type": doc_type}

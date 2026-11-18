@@ -136,10 +136,10 @@ export default function Landing() {
                         </div>
                         <figure className="lp-spec" aria-label="Example of the review panel">
                             <div className="tally"><span className="tally__item"><b>31</b> verified</span><span className="tally__item tally__item--flag"><b>2</b> to check</span><span className="tally__item tally__item--flag"><b>2</b> errors</span></div>
-                            <div className="field field--done"><span className="field__label">member id</span><span className="field__input">9000001234</span><span className="field__state">Both readers agree</span></div>
-                            <div className="field field--flag"><span className="field__label">npi</span><span className="field__input">199999999</span><span className="field__state">Check</span>
-                                <span className="field__alt">The second reader saw <span className="link">use “1999999990”</span></span></div>
-                            <div className="field field--done"><span className="field__label">review type</span><span className="field__input">ROUTINE</span><span className="field__state">Read from checkbox</span></div>
+                            <div className="field field--done"><label className="field__label">member id</label><div className="field__control"><span className="field__input">9000001234</span></div><div className="field__meta"><span className="field__state">Both readers agree</span></div></div>
+                            <div className="field field--flag"><label className="field__label">npi</label><div className="field__control"><span className="field__input">199999999</span></div><div className="field__meta"><span className="field__state">Check</span>
+                                <span className="field__alt">The second reader saw <span className="link">use “1999999990”</span></span></div></div>
+                            <div className="field field--done"><label className="field__label">review type</label><div className="field__control"><span className="field__input">ROUTINE</span></div><div className="field__meta"><span className="field__state">Read from checkbox</span></div></div>
                             <div className="finding finding--error"><span className="finding__sev">Error</span><span>Date of birth is 1970-07-01 in the form but 1975-01-15 in the daily note.</span></div>
                             <div className="finding finding--warn"><span className="finding__sev">Warning</span><span>Requested on the form but not in the daily note: 97112.</span></div>
                         </figure>

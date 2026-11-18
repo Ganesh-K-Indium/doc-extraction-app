@@ -192,7 +192,7 @@ def merge_fields(a: List[Dict[str, Any]], b: Optional[List[Dict[str, Any]]]) -> 
             else:
                 cell["status"] = "review"
                 cell["reason"] = "only one reader found this field"
-        cell.update({"label": src["label"], "section": src.get("section"), "normalized": N.normalize(cell["value"], ftype)})
+        cell.update({"label": src["label"], "section": src.get("section"), "type": src["type"], "normalized": N.normalize(cell["value"], ftype)})
         out[key] = cell
     return out
 
@@ -328,7 +328,7 @@ def merge_checkboxes(path: str, page_num: int, a: List[Dict[str, Any]], b: Optio
             cell = fx.model_checkbox("checkbox", ma, mb, two) or {"value": None, "status": "undetermined", "alternatives": [], "method": None}
             if two and (ca is None or cb is None):
                 cell["status"], cell["reason"] = "review", "only one reader found this box"
-        cell.update({"label": src["label"], "section": src.get("group")})
+        cell.update({"label": src["label"], "section": src.get("group"), "type": "checkbox"})
         out[key] = cell
     return out
 

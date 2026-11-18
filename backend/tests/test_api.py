@@ -300,3 +300,85 @@ def test_read_rest_is_part_of_the_upload_identity(client, pdf):
     wait(client, wid, first["id"])
     plain = up(client, wid, pdf).json()
     assert plain["id"] != first["id"] and plain.get("reused") is not True                  # same bytes, different options: a new run
+
+
+# ---- reviewing: table cells, live counts ---------------------------------------------------------------------------
+
+def test_table_cells_can_be_corrected_and_the_workspace_count_falls(client, pdf, monkeypatch):
+    from app import config
+    from app.services import form_extractor, ocr
+    from tests import test_pipeline as tp
+    monkeypatch.setattr(config, "llm_enabled", lambda: True)          # stubbed readers, so there are rows and flagged values to edit
+    monkeypatch.setattr(form_extractor, "_read", tp.fake_form)
+    monkeypatch.setattr(ocr, "read_image", tp.fake_ocr)
+    wid = mk(client)
+    base = f"/api/workspaces/{wid}/extractions"
+    eid = up(client, wid, pdf).json()["id"]
+    done = wait(client, wid, eid)
+    form = client.get(f"{base}/{eid}/fields.json", headers=H).json()["forms"][0]
+    di = form["doc_index"]
+    cpt = form["tables"]["cpt"]
+    assert len(cpt) >= 2 and "code" in cpt[1]
+    for bad in ("cpt[99].code", "cpt[0].nope", "nope[0].code", "cpt[x].code"):
+        assert client.patch(f"{base}/{eid}/fields", json={"doc_index": di, "key": bad, "value": "1"}, headers=H).status_code == 404, bad
+    r = client.patch(f"{base}/{eid}/fields", json={"doc_index": di, "key": "cpt[1].code", "value": "97999"}, headers=H)
+    assert r.status_code == 200
+    after = client.get(f"{base}/{eid}/fields.json", headers=H).json()["forms"][0]
+    cell = after["tables"]["cpt"][1]["code"]
+    assert cell["value"] == "97999" and cell["status"] == "corrected" and cell["original"] == cpt[1]["code"]["value"]
+    assert after["values"]["cpt"][1]["code"] == "97999"                       # the flat JSON follows the edit
+    key = client.get(f"{base}/{eid}/truth.json", headers=H).json()["documents"][0]
+    assert key["tables"]["cpt"][1]["code"] == "97999"                         # and so does the answer key
+
+    # confirming flagged values lowers the "to check" count shown on the workspaces screen
+    before = client.get(f"/api/workspaces/{wid}", headers=H).json()["to_check"]
+    flagged = [(k, c["value"]) for k, c in after["fields"].items() if c["status"] == "review"]
+    assert flagged, "the sample packet is expected to leave something to check"
+    k, v = flagged[0]
+    n = client.patch(f"{base}/{eid}/fields", json={"doc_index": di, "key": k, "value": v}, headers=H).json()["needs_review"]
+    assert n == before - 1 == client.get(f"/api/workspaces/{wid}", headers=H).json()["to_check"]
+    assert client.get(f"{base}/{eid}", headers=H).json()["stats"]["needs_review"] == n
+
+
+def test_a_templates_can_be_read_and_edited(client):
+    wid = mk(client)
+    base = f"/api/workspaces/{wid}/templates"
+    built_in = client.get(f"{base}/prior_auth_form", headers=H).json()
+    assert built_in["builtin"] is True and built_in["template"]["doc_type"] == "prior_auth_form"
+    assert client.get(f"{base}/nope", headers=H).status_code == 404
+    tpl = {"doc_type": "edit_me", "title": "Edit me", "sections": [{"id": "m", "header": None, "fields": [
+        {"key": "a", "label": "A", "type": "text", "bbox": [1, 2, 3, 4], "page": 1}]}], "tables": []}
+    assert client.post(base, json={"template": tpl}, headers=H).status_code == 201
+    mine = client.get(f"{base}/edit_me", headers=H).json()
+    assert mine["builtin"] is False and "bbox" not in mine["template"]["sections"][0]["fields"][0]     # draft-only locations are not stored
+    edited = {**mine["template"], "title": "Edit me v2", "sections": [{"id": "m", "header": None, "fields": [
+        {"key": "a", "label": "A", "type": "text", "required": True}, {"key": "b", "label": "B", "type": "date"}]}]}
+    assert client.put(f"{base}/edit_me", json={"template": edited}, headers=H).status_code == 200
+    again = client.get(f"{base}/edit_me", headers=H).json()["template"]
+    assert again["title"] == "Edit me v2" and [f["key"] for f in again["sections"][0]["fields"]] == ["a", "b"]
+    assert client.put(f"{base}/edit_me", json={"template": {**edited, "doc_type": "other"}}, headers=H).status_code == 422   # the name cannot change here
+    assert client.put(f"{base}/prior_auth_form", json={"template": {**edited, "doc_type": "prior_auth_form"}}, headers=H).status_code == 404  # built-ins are read-only
+    assert client.put(f"{base}/edit_me", json={"template": {**edited, "sections": []}}, headers=H).status_code == 422          # still validated
+    other = mk(client, "Other")
+    assert client.get(f"/api/workspaces/{other}/templates/edit_me", headers=H).status_code == 404                              # per workspace
+
+
+def test_older_extractions_get_field_types_and_choices_from_the_template(client, pdf):
+    wid = mk(client)
+    base = f"/api/workspaces/{wid}/extractions"
+    eid = up(client, wid, pdf).json()["id"]
+    wait(client, wid, eid)
+    from app import db
+    with db.session() as s:                     # an extraction from before cells carried their type and choices
+        ex = s.get(db.Extraction, eid)
+        result = ex.result
+        for f in result["forms"]:
+            for c in f["fields"].values():
+                c.pop("type", None), c.pop("options", None)
+        ex.result = {**result}
+        s.commit()
+    form = client.get(f"{base}/{eid}", headers=H).json()["fields"]["forms"][0]
+    assert form["fields"]["review_type"]["type"] == "enum" and form["fields"]["review_type"]["options"] == ["ROUTINE", "URGENT", "TRANSPLANT"]
+    assert len(form["fields"]["member.place_of_service"]["options"]) == 11
+    assert "options" not in form["fields"]["member.last_name"] and form["fields"]["member.last_name"]["type"] == "text"
+    assert client.get(f"{base}/{eid}/fields.json", headers=H).json()["forms"][0]["fields"]["review_type"]["type"] == "enum"

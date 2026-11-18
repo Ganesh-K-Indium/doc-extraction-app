@@ -328,6 +328,12 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
                         cell["bbox"] = hit[0] if hit else None
                         _third_opinion(cell, hit)
     await asyncio.to_thread(ground_all)
+    for sec in template["sections"]:
+        for f in sec["fields"]:
+            if f["key"] in fields:                     # the UI picks a control from this: text, tick box, choice list
+                fields[f["key"]]["type"] = f["type"]
+                if f.get("options"):
+                    fields[f["key"]]["options"] = f["options"]
     for got in fields.values():
         got.pop("partial", None)
         got.setdefault("bbox", None)

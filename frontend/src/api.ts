@@ -22,6 +22,7 @@ export interface Doc { doc_index: number; type: string; label: string; pages: nu
 export interface Cell {
     value: string | string[] | boolean | null; status: Status; alternatives: string[]; reason?: string;
     method?: string | null; bbox: BBox | null; page: number; original?: unknown; label?: string; section?: string | null;
+    type?: string; options?: string[];
 }
 export interface Form {
     doc_index: number; doc_type: string; template_id: string; pages: number[]; readers: string[];
@@ -36,13 +37,19 @@ export interface Detail extends Summary {
 }
 
 export interface RegistryType { type: string; label: string; extractor: 'template_form' | 'kv' | 'skip'; template: string | null; fields: number; required: number; custom?: boolean }
-export interface DraftField { key: string; label: string; type: string; required?: boolean; options?: string[] }
-export interface DraftTemplate {
-    doc_type: string; title: string; single_page: boolean;
-    sections: { id: string; header: string | null; fields: DraftField[] }[];
-    tables: { key: string; header: string | null; columns: { key: string; label: string; required?: boolean }[] }[];
+export interface TemplateField { key: string; label: string; type: string; required?: boolean; options?: string[]; pattern?: string; page?: number; bbox?: BBox }
+export interface TemplateSection { id: string; header: string | null; fields: TemplateField[] }
+export interface TemplateTable { key: string; header: string | null; required?: boolean; columns: { key: string; label: string; required?: boolean; pattern?: string }[] }
+export type LinkKind = 'name' | 'date' | 'text' | 'set' | 'mentioned';
+export interface TemplateLink { kind: LinkKind; label?: string; fields?: string[]; table?: string; column?: string; pattern?: string }
+export interface TemplateRule { type: 'date_order'; start: string; end: string; label?: string }
+export interface TemplateDoc {
+    doc_type: string; title: string; single_page: boolean; template_id?: string;
+    sections: TemplateSection[]; tables: TemplateTable[];
+    canonical?: Record<string, TemplateLink>; rules?: TemplateRule[];
     [k: string]: unknown;
 }
+export type DraftTemplate = TemplateDoc;
 export interface Registry { types: RegistryType[]; readers: { id: string; label: string; summary: string }[] }
 
 export interface Workspace {
@@ -81,7 +88,9 @@ export const meta = {
 
 export const templates = {
     draft: (wid: string, file: File) => { const f = new FormData(); f.append('file', file); return send<{ template: DraftTemplate }>(`${ws(wid)}/templates/draft`, { method: 'POST', body: f }); },
-    save: (wid: string, template: DraftTemplate) => send<{ doc_type: string }>(`${ws(wid)}/templates`, json('POST', { template })),
+    save: (wid: string, template: TemplateDoc) => send<{ doc_type: string }>(`${ws(wid)}/templates`, json('POST', { template })),
+    get: (wid: string, docType: string) => send<{ template: TemplateDoc; builtin: boolean }>(`${ws(wid)}/templates/${encodeURIComponent(docType)}`),
+    replace: (wid: string, template: TemplateDoc) => send<{ doc_type: string }>(`${ws(wid)}/templates/${encodeURIComponent(template.doc_type)}`, json('PUT', { template })),
     remove: (wid: string, docType: string) => send<void>(`${ws(wid)}/templates/${encodeURIComponent(docType)}`, { method: 'DELETE' }),
 };
 
@@ -90,7 +99,7 @@ export const api = {
     get: (wid: string, id: string) => send<Detail>(`${ws(wid)}/extractions/${id}`),
     upload: (wid: string, file: File, template = 'auto', readRest = false) => { const f = new FormData(); f.append('file', file); f.append('template', template); f.append('read_rest', String(readRest)); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
     promote: (wid: string, id: string, docIndex: number, title: string) => send<{ doc_type: string; title: string; fields: number }>(`${ws(wid)}/extractions/${id}/forms/${docIndex}/promote`, json('POST', { title })),
-    correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
+    correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean; needs_review: number }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
     remove: (wid: string, id: string) => send<void>(`${ws(wid)}/extractions/${id}`, { method: 'DELETE' }),
     readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
