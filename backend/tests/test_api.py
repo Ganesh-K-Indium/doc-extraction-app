@@ -256,3 +256,47 @@ def test_fresh_install_has_no_workspace(tmp_path, monkeypatch):
     db.init_db()
     with db.session() as s:
         assert s.query(db.Workspace).count() == 0                               # the first screen offers to create one
+
+
+def test_read_the_rest_on_demand(client, pdf, monkeypatch):
+    wid = mk(client)
+    base = f"/api/workspaces/{wid}/extractions"
+    eid = up(client, wid, pdf).json()["id"]
+    wait(client, wid, eid)
+    form = client.get(f"{base}/{eid}/fields.json", headers=H).json()["forms"][0]
+    url = f"{base}/{eid}/documents/{form['doc_index']}/rest"
+    assert client.post(url, headers=H).status_code == 503                                  # no model configured here
+
+    from app import config
+    from app.services import discover
+
+    async def fake_read(model, jpeg, prompt):
+        return {"title": None, "checkboxes": [], "tables": [], "fields": [
+            {"label": "Last Name", "value": "Morgan"}, {"label": "Reference number", "value": "RX-7781"}]}
+    monkeypatch.setattr(config, "llm_enabled", lambda: True)
+    monkeypatch.setattr(discover, "_read", fake_read)
+    assert client.post(f"{base}/{eid}/documents/99/rest", headers=H).status_code == 404
+    done = client.post(url, headers=H)
+    assert done.status_code == 200 and done.json()["added"] is True
+    got = client.get(f"{base}/{eid}/fields.json", headers=H).json()
+    extra = next(f for f in got["forms"] if f.get("remainder"))
+    assert extra["remainder_of"] == form["doc_index"] and extra["label"].startswith("Other content on page")
+    assert any(c["label"] == "Reference number" for c in extra["fields"].values())
+    assert form["doc_index"] in got["rest_checked"]
+    assert client.get(f"{base}/{eid}", headers=H).json()["stats"]["needs_review"] >= 0
+    assert client.post(url, headers=H).status_code == 409                                  # once is enough
+    # a correction on the new entry works like any other
+    key = next(k for k, c in extra["fields"].items() if c["label"] == "Reference number")
+    assert client.patch(f"{base}/{eid}/fields", json={"doc_index": extra["doc_index"], "key": key, "value": "RX-0000"}, headers=H).status_code == 200
+    # and it is not reachable from another workspace
+    other = mk(client, "Other")
+    assert client.post(f"/api/workspaces/{other}/extractions/{eid}/documents/{form['doc_index']}/rest", headers=H).status_code == 404
+
+
+def test_read_rest_is_part_of_the_upload_identity(client, pdf):
+    wid = mk(client)
+    first = client.post(f"/api/workspaces/{wid}/extractions", files={"file": ("p.pdf", pdf.read_bytes(), "application/pdf")}, data={"template": "auto", "read_rest": "true"}, headers=H).json()
+    assert client.get(f"/api/workspaces/{wid}/extractions/{first['id']}", headers=H).json()["read_rest"] is True
+    wait(client, wid, first["id"])
+    plain = up(client, wid, pdf).json()
+    assert plain["id"] != first["id"] and plain.get("reused") is not True                  # same bytes, different options: a new run

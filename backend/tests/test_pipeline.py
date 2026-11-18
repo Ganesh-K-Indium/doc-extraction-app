@@ -53,7 +53,7 @@ def test_kv_parser():
 
 
 def test_classification_and_segmentation():
-    assert classify.classify_text("Provider Prior Authorization Request Form ... " * 3)["type"] == "prior_auth_form"
+    assert classify.classify_text("Provider Prior Authorization Request Form\nMEMBER INFORMATION\nLast Name: Morgan First Name: Taylor")["type"] == "prior_auth_form"
     assert classify.classify_text("")["type"] == "blank_or_logo"
     pages = [{"page": i + 1, "classification": {"type": t, "label": t}} for i, t in
              enumerate(["fax_cover", "blank_or_logo", "prior_auth_form", "pt_initial_exam", "pt_initial_exam", "daily_note"])]
@@ -407,3 +407,100 @@ def test_blank_one_sided_fields_are_not_flagged():
     b = discover.parse({"fields": [{"label": "Name", "value": "Ann"}]})["fields"]
     got = discover.merge_fields(a, b)
     assert got["notes"]["status"] == "empty" and got["name"]["status"] == "agreed"
+
+
+# ---- forms inside other content ------------------------------------------------------------------------------------------------
+
+LETTER = "\n".join(f"Paragraph line {i}: our clinic is writing about the pending authorization for this patient." for i in range(14))
+
+
+def test_a_title_is_found_anywhere_on_the_page_but_a_mention_is_not():
+    below = LETTER + "\nProvider Prior Authorization Request Form\nMEMBER INFORMATION\nLast Name: Morgan"
+    assert classify.classify_text(below)["type"] == "prior_auth_form"                  # form below a long letter, same page
+    mention = "Dear Sir,\nPlease complete the Provider Prior Authorization Request Form and return it within ten days.\n" + LETTER
+    assert classify.classify_text(mention)["type"] == "unknown"                          # named in a sentence: not a form
+    split = LETTER + "\nPhysical Therapy\nInitial\nExamination\nPatient Name: Morgan Taylor"
+    assert classify.classify_text(split)["type"] == "pt_initial_exam"                   # a title broken over three lines
+    both = "Daily Note / Billing Sheet\n" + LETTER + "\nProvider Prior Authorization Request Form\nMEMBER INFORMATION"
+    assert classify.classify_text(both)["type"] == "daily_note"                         # two titles: the topmost names the page
+    cover = "FAX\nThis transmission is legally privileged and confidential information intended only for the person named above."
+    assert classify.classify_text(cover)["type"] == "fax_cover"                         # cover sheets have no title: top-of-page rule
+
+
+def test_segmentation_respects_single_page_templates():
+    def pg(n, t): return {"page": n, "classification": {"type": t, "label": t}}
+    single = {"prior_auth_form"}
+    docs = classify.segment([pg(1, "prior_auth_form"), pg(2, "unknown"), pg(3, "blank_or_logo")], single)
+    assert [(d["type"], d["pages"]) for d in docs] == [("prior_auth_form", [1]), ("unknown", [2, 3])]   # an untitled page is not a form's continuation
+    two_copies = classify.segment([pg(1, "prior_auth_form"), pg(2, "prior_auth_form")], single)
+    assert [d["pages"] for d in two_copies] == [[1], [2]]                                                  # two copies of a form are two documents
+    exam = classify.segment([pg(1, "pt_initial_exam"), pg(2, "pt_initial_exam"), pg(3, "unknown")], single)
+    assert [(d["type"], d["pages"]) for d in exam] == [("pt_initial_exam", [1, 2, 3])]                     # a multi-page type keeps absorbing
+
+
+# ---- reading the rest of a templated document ------------------------------------------------------------------------------------
+
+def _disc_cell(label, value, page=1, bbox=None, status="agreed"):
+    return {"label": label, "value": value, "status": status, "alternatives": [], "page": page, "bbox": bbox}
+
+
+def test_rest_subtracts_what_the_template_already_covers():
+    from app.services import remainder
+    tpl = pipeline.load_template("magnacare_prior_auth")
+    form = {"doc_index": 0, "pages": [1], "tables": {"cpt": [{"code": {"value": "97110", "page": 1, "bbox": [50, 400, 90, 410]}}]},
+            "fields": {"member.member_id": {"value": "9000001234", "page": 1, "bbox": [300, 100, 380, 112]},
+                       "member.last_name": {"value": "Morgan", "page": 1, "bbox": [60, 120, 100, 132]}}}
+    found = {"readers": ["a", "b"], "title": None, "table_columns": {"cpt": ["QTY", "CPT/HCPCS", "Description of Service", "U&C Charge"], "notes": ["Item", "Owner"]},
+             "fields": {
+                 "last_name": _disc_cell("Last Name", "Morgan"),                                       # same label as a template field
+                 "member_ref": _disc_cell("Member Reference", "9000001234", bbox=[301, 101, 379, 111]),  # sits on a template value
+                 "dup_value": _disc_cell("Account", "9000001234"),                                       # same long value elsewhere
+                 "blank": _disc_cell("Notes", None, status="empty"),                                     # empty blank: nothing to extract
+                 "ref": _disc_cell("Reference number", "RX-7781", bbox=[50, 600, 130, 612]),             # genuinely new
+                 "box": {"label": "Urgent", "value": False, "status": "agreed", "alternatives": [], "page": 1, "bbox": None, "method": "pixel"},  # an option of the template
+             },
+             "tables": {"cpt": [{"qty": _disc_cell("QTY", "12")}],                                        # the template's own table
+                        "notes": [{"item": _disc_cell("Item", "Call back"), "owner": _disc_cell("Owner", "Dana")}]}}
+    rest = remainder.subtract(found, form, tpl)
+    assert list(rest["fields"]) == ["ref"]
+    assert list(rest["tables"]) == ["notes"]
+
+
+def _form_below_a_letter(path):
+    import pymupdf as fitz
+    d = fitz.open()
+    p = d.new_page(width=612, height=792)
+    y = 50
+    for i in range(14):
+        p.insert_text((50, y), f"Paragraph line {i}: our clinic is writing about the pending authorization for this patient.", fontsize=9)
+        y += 12
+    p.insert_text((50, y + 20), "Provider Prior Authorization Request Form", fontsize=14)
+    for k, t in enumerate(["MEMBER INFORMATION", "Last Name*: Morgan", "First Name*: Taylor", "Date of Birth*: 07/01/1970"]):
+        p.insert_text((50, y + 50 + k * 12), t, fontsize=9)
+    p.insert_text((50, y + 130), "Reference number: RX-7781", fontsize=9)
+    d.save(path)
+
+
+async def fake_rest_reader(model, jpeg, prompt):
+    if "extracting ALL the data" in prompt:      # the discovery pass over the same page
+        return {"title": None, "checkboxes": [], "tables": [], "fields": [
+            {"label": "Last Name", "value": "Morgan"}, {"label": "First Name", "value": "Taylor"},
+            {"label": "Date of Birth", "value": "07/01/1970", "type": "date"},
+            {"label": "Reference number", "value": "RX-7781"}, {"label": "Notes", "value": None}]}
+    return await fake_form(model, jpeg, prompt)
+
+
+def test_form_below_other_text_is_a_form_and_the_rest_is_read_separately(tmp_path):
+    pdf = str(tmp_path / "mixed.pdf")
+    _form_below_a_letter(pdf)
+    without = asyncio.run(pipeline.process(pdf, form_reader=fake_rest_reader))
+    assert [d["type"] for d in without["documents"]] == ["prior_auth_form"]            # found below the letter
+    assert [f["doc_type"] for f in without["forms"]] == ["prior_auth_form"] and without["rest_checked"] == []
+
+    full = asyncio.run(pipeline.process(pdf, form_reader=fake_rest_reader, read_rest=True))
+    assert [f["doc_type"] for f in full["forms"]] == ["prior_auth_form", "other_content"]
+    rest = full["forms"][1]
+    assert rest["remainder"] and rest["remainder_of"] == full["forms"][0]["doc_index"] and rest["doc_index"] != full["forms"][0]["doc_index"]
+    assert [c["label"] for c in rest["fields"].values()] == ["Reference number"]        # not Last Name etc., not the empty blank
+    assert full["rest_checked"] == [full["forms"][0]["doc_index"]]
+    assert full["forms"][0]["fields"]["member.last_name"]["value"] == "Morgan"            # the form itself is untouched

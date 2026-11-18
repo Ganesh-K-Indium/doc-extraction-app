@@ -34,6 +34,7 @@ def fields_json(ex) -> Dict[str, Any]:
         forms.append({**f, "values": _flat(f)})
     return {"extraction_id": ex.id, "filename": ex.filename, "forms": forms,
             "other_documents": r.get("other_documents", []), "validation": r.get("validation", []),
+            "rest_checked": r.get("rest_checked", []),
             "stats": r.get("stats", {})}
 
 

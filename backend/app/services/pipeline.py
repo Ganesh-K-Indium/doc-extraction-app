@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from app import config
-from app.services import classify, cross, discover, form_extractor, kv, ocr, pdf_pages, router, tess, validation
+from app.services import classify, cross, discover, form_extractor, kv, ocr, pdf_pages, remainder, router, tess, validation
 
 logger = logging.getLogger("app.services.pipeline")
 
@@ -97,7 +97,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
 
 
 async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None,
-                  template_choice: str = AUTO) -> Dict[str, Any]:
+                  template_choice: str = AUTO, read_rest: bool = False) -> Dict[str, Any]:
     progress = progress or (lambda *_: None)
     n_pages = await asyncio.to_thread(pdf_pages.page_count, path)
     if n_pages > config.MAX_PAGES:
@@ -144,10 +144,17 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             if p["classification"]["type"] == "unknown" and p["text"].strip():
                 prev = pages[i - 1]["text"] if i else ""
                 p["classification"] = await classify.classify_with_model(p["text"], ocr_models, model_ask, prev)
-    documents = classify.segment(pages)
+    single_page = set()
+    for t, name in type_templates().items():
+        try:
+            if load_template(name).get("single_page"):
+                single_page.add(t)
+        except FileNotFoundError:
+            pass
+    documents = classify.segment(pages, single_page)
     by_num = {p["page"]: p for p in pages}
 
-    forms, others = [], []
+    forms, others, templated = [], [], []
     templates = type_templates()
     for i, doc in enumerate(documents):
         progress("documents", i, len(documents))
@@ -164,6 +171,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
                           "pages": doc["pages"], "readers": res["readers"], "fields": res["fields"], "tables": res["tables"],
                           "validation": validation.validate_form(tpl, res["fields"], res["tables"]),
                           "_template": tpl, "_text": "\n".join(texts.values())})
+            templated.append((forms[-1], tpl))
         elif decision["extractor"] == "discover":
             usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
             res = await discover.discover_document(work, usable, form_models, form_reader)
@@ -180,6 +188,19 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             others.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "pages": doc["pages"],
                            "pairs": pairs, "canonical": kv.canonical(pairs)})
 
+    rest_checked: List[int] = []
+    if read_rest and form_models:
+        # Text and structure around a template's own fields: read it with discovery, minus what the template covers.
+        progress("rest", 0, len(templated))
+        next_index = len(documents)               # indexes after the real documents, so nothing collides
+        for n, (f, tpl) in enumerate(templated):
+            rest_checked.append(f["doc_index"])
+            extra = await remainder.remainder_form(work, f, tpl, form_models, form_reader)
+            if extra:
+                extra.update({"doc_index": next_index, "_template": {"canonical": {}}, "_text": ""})
+                next_index += 1
+                forms.append(extra)
+            progress("rest", n + 1, len(templated))
     findings: List[Dict[str, Any]] = []
     for f in forms:
         findings += [{**v, "doc_index": f["doc_index"]} for v in f["validation"]]
@@ -190,6 +211,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
     progress("done", n_pages, n_pages)
     return {
         "pages": pages, "documents": documents, "forms": forms, "other_documents": others, "validation": findings,
+        "rest_checked": rest_checked,
         "stats": {"pages": n_pages, "forms": len(forms),
                   "needs_review": sum(1 for f in forms for c in f["fields"].values() if c.get("status") in ("review", "undetermined")),
                   "errors": sum(1 for v in findings if v["severity"] == "error"),

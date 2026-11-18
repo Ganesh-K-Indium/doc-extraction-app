@@ -74,6 +74,8 @@ export default function ExtractionPage() {
     const [visible, setVisible] = useState(1);
     const [sel, setSel] = useState<QItem | null>(null);
     const [saved, setSaved] = useState<Record<number, string>>({});
+    const [reading, setReading] = useState<number | null>(null);
+    const [restNote, setRestNote] = useState<Record<number, string>>({});
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
@@ -197,7 +199,11 @@ export default function ExtractionPage() {
                                     {forms.map(f => (
                                         <div key={f.doc_index}>
                                             <h2 className="form-title">{f.discovered ? (f.label || 'Untitled document') : f.template_id} <span className="muted">pages {f.pages.join(', ')}</span></h2>
-                                            {f.discovered && (
+                                            {f.remainder && (
+                                                <div className="banner banner--rest">
+                                                    <p>Everything else on these pages that the form’s template does not cover. Printed text that belongs to the form itself (phone numbers in a header, a legend) can appear here too; ignore it.</p>
+                                                </div>)}
+                                            {f.discovered && !f.remainder && (
                                                 <div className="banner">
                                                     <p>No template matched, so these fields were found by reading the page. Check the values marked “Check”, then save this as a document type to have the next file of this kind recognised and validated.</p>
                                                     {saved[f.doc_index]
@@ -215,6 +221,20 @@ export default function ExtractionPage() {
                                                         selected={sel?.doc === f.doc_index && sel.key === k}
                                                         onSelect={() => select({ doc: f.doc_index, key: k }, f.fields[k])} onSave={v => save(f.doc_index, k, v)} />)}
                                                 </fieldset>))}
+                                            {!f.discovered && !forms.some(x => x.remainder_of === f.doc_index) && !(data.fields?.rest_checked ?? []).includes(f.doc_index) && (
+                                                <div className="restbar">
+                                                    <button className="btn" disabled={reading !== null} onClick={async () => {
+                                                        setReading(f.doc_index);
+                                                        try {
+                                                            const out = await api.readRest(wid, id, f.doc_index);
+                                                            if (!out.added) setRestNote(n => ({ ...n, [f.doc_index]: 'Nothing else was found on these pages.' }));
+                                                            await load(); reload();
+                                                        } catch (e) { setError((e as Error).message); }
+                                                        finally { setReading(null); }
+                                                    }}>{reading === f.doc_index ? 'Reading the pages' : 'Read the rest of these pages'}</button>
+                                                    <span className="muted">Finds text, fields and tables around the form that its template does not cover. Uses model calls.</span>
+                                                </div>)}
+                                            {restNote[f.doc_index] && <p className="muted">{restNote[f.doc_index]}</p>}
                                             {Object.entries(f.tables).map(([name, rows]) => (
                                                 <fieldset key={name} className="group"><legend>{name === 'cpt' ? 'CPT / HCPCS services' : name.replace(/_/g, ' ')}</legend>
                                                     {rows.length === 0 ? <p className="empty">No rows were found.</p> : (

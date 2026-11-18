@@ -47,6 +47,22 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 Uploading the same file twice reuses the first result (SHA-256), so you don't pay for the same OCR again.
 
+## Forms inside other content
+
+Real files mix things: a cover letter, a form, free-text notes, another form. How each case is handled:
+
+| Layout | Result |
+|---|---|
+| A form on its own pages among other pages | The form's pages use its template; other pages are discovered (or use their own template). |
+| A form lower down on a page that also has a letter or notes | Found anywhere on the page: a type matches when its title appears **as a title** (one to three lines of its own), not only at the top. The form's fields are extracted; the rest of the page needs the step below. |
+| A page that only *mentions* a form's name in a sentence | Not a form: a sentence is not a title. |
+| An untitled page after a one-page form | A new document, not the form's continuation. (Multi-page types, such as an exam, do absorb untitled continuation pages.) |
+| Two copies of the same one-page form back to back | Two documents. |
+
+**Read the rest.** A template extracts only its own fields, so text and structure around the form stay as plain text in `pages.json` unless you ask for more. Tick *Also read the rest of each page* at upload, or press *Read the rest of these pages* on a document afterwards. The pages are read with discovery and everything the template already covers is removed (same label, same place on the page, same long value, empty blanks). What is left appears as a separate **Other content** entry next to the form, never mixed into its fields. It is optional because it uses extra model calls. Printed boilerplate of the form itself (a header's phone numbers, a legend table) can appear there too; there is no rule that tells boilerplate from data without a blank copy of the form.
+
+Limit: a single page holding **two different** forms is classified by the first title, so the second form's fields are not extracted against its template (the rest step will surface them as discovered fields).
+
 ## Templates are optional
 
 At upload the user picks how the file is read:

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app import config, db
 from app.api.deps import require_key, workspace
-from app.services import export, ocr, pipeline, template_draft, workspace_types
+from app.services import export, ocr, pipeline, remainder, template_draft, workspace_types
 
 logger = logging.getLogger("app.api.extractions")
 
@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/extractions", tags=["e
 def _summary(ex) -> dict:
     return {"id": ex.id, "filename": ex.filename, "status": ex.status, "stage": ex.stage,
             "progress": {"done": ex.progress_done, "total": ex.progress_total}, "error": ex.error,
-            "template_choice": ex.template_choice, "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
+            "template_choice": ex.template_choice, "read_rest": bool(ex.read_rest), "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
 
 
 def _get(s, workspace_id: str, extraction_id: str):
@@ -48,11 +48,11 @@ async def run_extraction(extraction_id: str) -> None:
         if ex is None:  # the workspace was deleted while this was queued
             return
         ex.status = "processing"
-        choice, ws_id = ex.template_choice or "auto", ex.workspace_id
+        choice, ws_id, rest = ex.template_choice or "auto", ex.workspace_id, bool(ex.read_rest)
         s.commit()
     try:
         with workspace_types.use(ws_id):
-            result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice)
+            result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice, read_rest=rest)
         status, error = "done", None
     except ocr.OcrError as e:
         result, status, error = None, "failed", str(e)
@@ -68,7 +68,8 @@ async def run_extraction(extraction_id: str) -> None:
 
 
 @router.post("", status_code=202)
-async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto")):
+async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto"),
+                 read_rest: bool = Form(False)):
     data = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"The file is larger than {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
@@ -81,10 +82,10 @@ async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFil
     digest = hashlib.sha256(data).hexdigest()
     with db.session() as s:
         # Same bytes already read successfully: reuse that result instead of paying for the same OCR again.
-        prior = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template).order_by(db.Extraction.created_at.desc()).first()
+        prior = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template, read_rest=read_rest).order_by(db.Extraction.created_at.desc()).first()
         if prior and pdf_file(prior.id).is_file():
             return {"id": prior.id, "status": "done", "reused": True}
-        ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template)
+        ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template, read_rest=read_rest)
         s.add(ex)
         s.commit()
         extraction_id = ex.id
@@ -192,3 +193,50 @@ def download_truth(workspace_id: str, extraction_id: str):
     download is only as right as your corrections."""
     with db.session() as s:
         return export.truth_json(_get(s, workspace_id, extraction_id))
+
+
+@router.post("/{extraction_id}/documents/{doc_index}/rest")
+async def read_the_rest(workspace_id: str, extraction_id: str, doc_index: int):
+    """Read what a templated document's template does not cover (text around the form, other fields and tables), on
+    demand. Adds a separate "Other content" entry; the form's own fields are never touched."""
+    if not config.llm_enabled():
+        raise HTTPException(503, "Reading the rest of a page needs a vision model, and none is configured on this server.")
+    with db.session() as s:
+        ex = _get(s, workspace_id, extraction_id)
+        result = ex.result or {}
+        forms = result.get("forms", [])
+        form = next((f for f in forms if f["doc_index"] == doc_index), None)
+        if form is None:
+            raise HTTPException(404, "No such document.")
+        if form.get("discovered"):
+            raise HTTPException(409, "This document was already read without a template, so there is no rest to read.")
+        if doc_index in result.get("rest_checked", []):
+            raise HTTPException(409, "The rest of this document has already been read.")
+    with workspace_types.use(workspace_id):
+        name = pipeline.type_templates().get(form["doc_type"])
+        if name is None:
+            raise HTTPException(409, "This document's type no longer exists in the workspace.")
+        template = pipeline.load_template(name)
+    work = pipeline.work_path(str(pdf_file(extraction_id)))
+    try:
+        extra = await remainder.remainder_form(work, form, template, config.extraction_models())
+    except Exception:
+        logger.exception("Reading the rest of %s failed", extraction_id)
+        raise HTTPException(502, "The pages could not be read just now. Try again in a minute.")
+    with db.session() as s:
+        ex = _get(s, workspace_id, extraction_id)
+        result = dict(ex.result or {})
+        result["rest_checked"] = sorted(set(result.get("rest_checked", [])) | {doc_index})
+        added = 0
+        if extra:
+            idx = 1 + max([f["doc_index"] for f in result["forms"]] + [d["doc_index"] for d in result["documents"]])
+            extra["doc_index"] = idx
+            result["forms"] = [*result["forms"], extra]
+            result["validation"] = [*result["validation"], *({**v, "doc_index": idx} for v in extra["validation"])]
+            added = len(extra["fields"]) + sum(len(r) for r in extra["tables"].values())
+            st = dict(result.get("stats", {}))
+            st["needs_review"] = sum(1 for f in result["forms"] for c in f["fields"].values() if c.get("status") in ("review", "undetermined"))
+            result["stats"] = st
+        ex.result = result
+        s.commit()
+    return {"added": bool(extra), "doc_index": extra["doc_index"] if extra else None, "items": added}

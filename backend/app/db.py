@@ -4,7 +4,7 @@ import logging
 import uuid
 from typing import Any, Dict, Optional
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app import config
@@ -56,6 +56,7 @@ class Extraction(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
     result: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
     template_choice: Mapped[str] = mapped_column(String(64), default="auto")  # auto | discover | a registered type
+    read_rest: Mapped[bool] = mapped_column(Boolean, default=False)  # also read what templates do not cover
     sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     # reviewer edits: "{doc_index}:{field key}" -> value
     corrections: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
@@ -82,6 +83,8 @@ def _add_missing_columns() -> None:
     with _engine.begin() as conn:
         if "template_choice" not in have:
             conn.execute(text("ALTER TABLE extractions ADD COLUMN template_choice VARCHAR(64) DEFAULT 'auto'"))
+        if "read_rest" not in have:
+            conn.execute(text("ALTER TABLE extractions ADD COLUMN read_rest BOOLEAN DEFAULT 0"))
         if "workspace_id" not in have:
             conn.execute(text("ALTER TABLE extractions ADD COLUMN workspace_id VARCHAR(36)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_extractions_workspace_id ON extractions (workspace_id)"))

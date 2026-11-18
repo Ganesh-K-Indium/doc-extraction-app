@@ -9,7 +9,7 @@ export type Status = 'agreed' | 'review' | 'single' | 'empty' | 'corrected' | 'u
 
 export interface Summary {
     id: string; filename: string; status: 'queued' | 'processing' | 'done' | 'failed'; stage: string | null;
-    progress: { done: number; total: number }; error: string | null; created_at: string; template_choice?: string;
+    progress: { done: number; total: number }; error: string | null; created_at: string; template_choice?: string; read_rest?: boolean;
     stats: { pages: number; forms: number; needs_review: number; errors: number } | null;
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }
@@ -27,11 +27,12 @@ export interface Form {
     doc_index: number; doc_type: string; template_id: string; pages: number[]; readers: string[];
     fields: Record<string, Cell>; tables: Record<string, Record<string, Cell>[]>; values: Record<string, unknown>;
     discovered?: boolean; label?: string; table_columns?: Record<string, string[]>;
+    remainder?: boolean; remainder_of?: number;
 }
 export interface Finding { rule: string; severity: 'error' | 'warn' | 'info'; detail: string; field?: string; doc_index?: number }
 export interface Detail extends Summary {
     pages?: { documents: Doc[]; pages: Page[] };
-    fields?: { forms: Form[]; validation: Finding[]; other_documents: { doc_index: number; doc_type: string; pages: number[]; canonical: Record<string, string> }[] };
+    fields?: { forms: Form[]; validation: Finding[]; rest_checked?: number[]; other_documents: { doc_index: number; doc_type: string; pages: number[]; canonical: Record<string, string> }[] };
 }
 
 export interface RegistryType { type: string; label: string; extractor: 'template_form' | 'kv' | 'skip'; template: string | null; fields: number; required: number; custom?: boolean }
@@ -87,10 +88,11 @@ export const templates = {
 export const api = {
     list: (wid: string) => send<Summary[]>(`${ws(wid)}/extractions`),
     get: (wid: string, id: string) => send<Detail>(`${ws(wid)}/extractions/${id}`),
-    upload: (wid: string, file: File, template = 'auto') => { const f = new FormData(); f.append('file', file); f.append('template', template); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
+    upload: (wid: string, file: File, template = 'auto', readRest = false) => { const f = new FormData(); f.append('file', file); f.append('template', template); f.append('read_rest', String(readRest)); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
     promote: (wid: string, id: string, docIndex: number, title: string) => send<{ doc_type: string; title: string; fields: number }>(`${ws(wid)}/extractions/${id}/forms/${docIndex}/promote`, json('POST', { title })),
     correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
     remove: (wid: string, id: string) => send<void>(`${ws(wid)}/extractions/${id}`, { method: 'DELETE' }),
+    readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
     /** Download a JSON file (fetch + blob so the API key header is sent). */
     download: async (wid: string, id: string, kind: 'pages' | 'fields' | 'truth', name: string) => {

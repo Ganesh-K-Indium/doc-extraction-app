@@ -11,6 +11,7 @@ export default function ListPage() {
     const [busy, setBusy] = useState(false);
     const [over, setOver] = useState(false);
     const [choice, setChoice] = useState('auto');
+    const [readRest, setReadRest] = useState(false);
     const [types, setTypes] = useState<RegistryType[]>([]);
     const input = useRef<HTMLInputElement>(null);
     const nav = useNavigate();
@@ -28,7 +29,7 @@ export default function ListPage() {
     const upload = async (file?: File) => {
         if (!file) return;
         setBusy(true); setError('');
-        try { const r = await api.upload(wid, file, choice); reload(); nav(`/app/w/${wid}/e/${r.id}`); }
+        try { const r = await api.upload(wid, file, choice, readRest && choice !== 'discover'); reload(); nav(`/app/w/${wid}/e/${r.id}`); }
         catch (e) { setError((e as Error).message); }
         finally { setBusy(false); if (input.current) input.current.value = ''; }
     };
@@ -51,6 +52,11 @@ export default function ListPage() {
                         </select>
                     </label>
                     <button className="btn btn--primary" disabled={busy} onClick={() => input.current?.click()}>{busy ? 'Uploading' : 'Choose a PDF'}</button>
+                    {choice !== 'discover' && (
+                        <label className="intake__rest">
+                            <input type="checkbox" checked={readRest} onChange={e => setReadRest(e.target.checked)} />
+                            <span>Also read the rest of each page <span className="muted">(text and tables around a form; uses more model calls)</span></span>
+                        </label>)}
                 </div>
                 <input ref={input} type="file" accept="application/pdf" hidden onChange={e => upload(e.target.files?.[0])} />
             </div>
