@@ -1,0 +1,29 @@
+{
+  "doc_type": "prior_auth_form",
+  "note": "Hand-read from page 3 of 003C5AFF_member_provider_deidentified_clean.pdf. The form itself misspells NEUROMUSCLAR; the key keeps it as printed.",
+  "fields": {
+    "review_type": "ROUTINE", "transition_of_care": false,
+    "member.request_date": "10/12/2026", "member.member_id": "9000001234",
+    "member.last_name": "Morgan", "member.first_name": "Taylor", "member.dob": "07/01/1970",
+    "member.phone": "201-555-0148", "member.street": "10 TEST ST", "member.city": "SAMPLE TOWN",
+    "member.state": "NJ", "member.zip": "07001", "member.setting": "Outpatient", "member.place_of_service": ["Office"],
+    "ordering_provider.first_name": "JORDAN LEE", "ordering_provider.last_name": "PARKER",
+    "ordering_provider.tax_id": "99-9999999", "ordering_provider.npi": "1999999999",
+    "ordering_provider.phone": "201-555-0120", "ordering_provider.fax": "201-555-0121",
+    "ordering_provider.street": "25 TESTWAY AVENUE, SUITE 201", "ordering_provider.city": "TESTVILLE",
+    "ordering_provider.state": "NJ", "ordering_provider.zip": "07001",
+    "facility.name": "SAMPLE HEALTH ASSOCIATES", "facility.tax_id": "99-9999999", "facility.npi": "1999999999",
+    "facility.phone": "201-555-0120", "facility.fax": "201-555-0121",
+    "facility.street": "25 TESTWAY AVENUE, SUITE 201", "facility.city": "TESTVILLE",
+    "facility.state": "NJ", "facility.zip": "07001",
+    "clinical.dx_code_1": "M54.2", "clinical.dx_code_2": null, "clinical.dx_code_3": null,
+    "clinical.start_date_of_service": "09/16/2026", "clinical.end_date_of_service": "10/19/2026"
+  },
+  "tables": {
+    "cpt": [
+      {"qty": "12 VISITS", "code": "97110", "description": "THERAPEUTIC EXERCISE", "charge": "180.00"},
+      {"qty": "12 VISITS", "code": "97112", "description": "NEUROMUSCLAR", "charge": "160.00"},
+      {"qty": "12 VISITS", "code": "97140", "description": "MANUAL THERAPY", "charge": "150.00"}
+    ]
+  }
+}
