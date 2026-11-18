@@ -21,6 +21,20 @@ pytest -q                            # offline, no network
 cd frontend && npm install && cp .env.example .env && npm run dev
 ```
 
+## Reviewing a document
+
+The review screen puts the source PDF on the left (zoom, fit width, page controls; opens fitted to the pane) and the extraction on the right, with a draggable divider whose position is remembered.
+
+- **One document at a time.** A file with several documents shows a strip to switch between them, each with its count of values to check. Selecting one scrolls the PDF to its pages.
+- **Work through what needs checking.** Filters (All, To check, Blank, Edited) and a search box narrow the list; *Next to check* / *Previous* (or `j` / `k`) step through every flagged value, fields and table cells alike, and highlight each on the page. `Enter` or *Confirm* accepts a value; *use “…”* takes the other reader's value.
+- **Edit with the right control.** Yes/no values are tick boxes, choices are drop-downs, multi-choice values are checklists, long text grows as you type, and every table cell is editable in place. Edits appear immediately and are saved in the background; the workspace's "to check" count follows.
+- **See the JSON.** The JSON tab shows `fields.json` and `pages.json` as a collapsible tree or raw text, with your edits applied, and can copy or download either.
+- **Export** (fields.json, pages.json, answer key) is in the menu beside the file name.
+
+## Checking and editing a template
+
+Uploading a blank form opens the form beside what was read from it. Click a field to see where it was found on the form. Everything is editable: labels, types, required marks, choices, tables and their columns, links to other documents, date rules, and section headings; *View template JSON* shows the raw template. Your own types can be reopened later with *Edit* (changes apply to files uploaded afterwards); built-in types open read-only, with *Make an editable copy*.
+
 ## Workspaces
 
 Everything lives inside a workspace: its documents, results, answer keys and **its own custom document types** (built-in types are shared). The app opens on the workspaces screen; you create one (or continue in the one you last used), then upload and review inside it. A switcher in the workspace bar moves between them.
