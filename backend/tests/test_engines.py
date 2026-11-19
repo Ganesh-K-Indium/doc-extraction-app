@@ -1304,3 +1304,37 @@ def test_local_reader_never_borrows_a_value_from_another_section():
     assert "ordering_provider.last_name" not in got and "ordering_provider.first_name" not in got
     assert got["ordering_provider.tax_id"] == "999999999"
     assert "ordering_provider.last_name" not in local_reader.read_fields("Last Name*: Morgan", tpl)["fields"]      # header missing: no guess
+
+
+# -- tables read from OCR text, no model ---------------------------------------------------------------------------------
+
+def _template(name):
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent.parent / "app" / "templates" / f"{name}.json").read_text())
+
+
+def test_local_reader_reads_a_table_by_its_printed_header():
+    from app.services.extraction import local_reader
+    text = "CPT/HCPCS\nQTY* | CPT/HCPCS* | Description of Service: | U&C Charge\n12 VISITS | 97110 | THERAPEUTIC EXERCISE | 180.00\n12 VISITS | 97140 | MANUAL THERAPY | 150.00\nUpdate to Current Auth #: | # of Visits: | Requested Extension Date:\nREVIEW TIMELINES"
+    rows = local_reader.read_fields(text, _template("magnacare_prior_auth"))["table_rows"]
+    assert rows == [{"qty": "12 VISITS", "code": "97110", "description": "THERAPEUTIC EXERCISE", "charge": "180.00"},
+                    {"qty": "12 VISITS", "code": "97140", "description": "MANUAL THERAPY", "charge": "150.00"}]
+
+
+def test_local_reader_table_header_words_may_be_shorter_than_the_templates():
+    from app.services.extraction import local_reader
+    text = "CPT Code | Description | Units\nGP:97110 | Therapeutic exercise | 2\nGP:97140 | Manual therapy | 1\nTotal time: 45 min | Signature: J.K."
+    rows = local_reader.read_fields(text, _template("daily_note"))["table_rows"]
+    assert [r["code"] for r in rows] == ["GP:97110", "GP:97140"] and rows[0]["description"] == "Therapeutic exercise" and rows[1]["units"] == "1"
+
+
+def test_local_reader_table_without_a_header_is_anchored_on_its_code_pattern_and_stops_when_rows_end():
+    from app.services.extraction import local_reader
+    rows = local_reader.read_table(["GP:97110 | Therapeutic exercise | 2", "GP:97140 | Manual therapy | 1", "Signature | J.K."], _template("daily_note")["tables"][0])
+    assert len(rows) == 2 and rows[1] == {"code": "GP:97140", "description": "Manual therapy", "units": "1"}
+
+
+def test_local_reader_does_not_invent_table_rows_from_other_lines():
+    from app.services.extraction import local_reader
+    assert local_reader.read_fields("Patient Name: Morgan Taylor\nSome free text here | and here", _template("daily_note"))["table_rows"] == []

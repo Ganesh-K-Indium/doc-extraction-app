@@ -155,7 +155,7 @@ def agreement(a: str, b: str) -> float:
     return 2 * sum((ca & cb).values()) / (na + nb) if na and nb else 0.0
 
 
-MIN_GLUED = 9          # a token shorter than this is not worth splitting
+MIN_GLUED = 7          # a token shorter than this is not worth splitting
 MAX_UNMATCHED = 0.12   # share of a glued token's characters that no reference word explains, at most
 
 

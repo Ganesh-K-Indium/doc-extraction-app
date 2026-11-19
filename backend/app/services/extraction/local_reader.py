@@ -89,8 +89,94 @@ def _wrapped(next_line: str, wanted) -> str:
     return " " + cell
 
 
+def _flat(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _column_name(label: str) -> str:
+    return _flat(re.sub(r"\([^)]*\)", " ", label))
+
+
+def _header_map(cells: List[str], columns: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Which cell of a line is which column, by the printed column names. Empty unless at least two columns are found."""
+    names = [(c["key"], _column_name(c["label"])) for c in columns]
+    got: Dict[int, str] = {}
+    for i, cell in enumerate(cells):
+        flat = _flat(cell)
+        best = None
+        for key, name in names:
+            if len(name) >= 2 and key not in got.values() and (name in flat or (len(flat) >= 4 and flat in name)):
+                if best is None or len(name) > len(best[1]):
+                    best = (key, name)
+        if best:
+            got[i] = best[0]
+    return got if len(got) >= min(2, len(columns)) else {}
+
+
+def _fits(value: str, col: Dict[str, Any]) -> bool:
+    pat = col.get("pattern")
+    return bool(re.fullmatch(pat, value.strip().upper())) if pat else True
+
+
+def read_table(lines: List[str], table: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The rows of one template table from a page's OCR lines, which already hold one row per line with its cells
+    joined by " | ". With the printed header found, cells map to columns by name; without one, the column that has a
+    pattern (a CPT code) anchors each row and the other columns fill in around it in order. Only the first block is
+    read, and a row whose pattern column does not fit is not a row."""
+    columns = table["columns"]
+    limit = int(table.get("max_rows") or 50)
+    keys = [c["key"] for c in columns]
+    anchor = next((c for c in columns if c.get("pattern")), None)
+    start, mapping = 0, {}
+    if table.get("header"):                                     # the printed section title, when the template names one
+        words = re.findall(r"[A-Za-z0-9]+", table["header"])
+        pat = re.compile(_GAP.join(re.escape(w) for w in words), re.I)
+        start = next((i for i, l in enumerate(lines) if pat.search(l)), 0)
+    hdr, hdr_width = None, 0
+    for i in range(start, len(lines)):
+        cells = [c.strip() for c in lines[i].split(COLUMN_SEP)]
+        m = _header_map(cells, columns)
+        if m:
+            hdr, mapping, hdr_width = i, m, len(cells)
+            break
+    rows: List[Dict[str, str]] = []
+    for i in range(hdr + 1 if hdr is not None else start, len(lines)):
+        cells = [c.strip() for c in lines[i].split(COLUMN_SEP)]
+        if _header_map(cells, columns):
+            if rows:
+                break                                           # a second copy of the table starts: the first block is the table
+            continue
+        row: Dict[str, str] = {}
+        if mapping and max(mapping) < len(cells) and len(cells) == hdr_width:
+            for idx, key in mapping.items():
+                if cells[idx]:
+                    row[key] = cells[idx]
+        elif anchor is not None:
+            at = next((j for j, c in enumerate(cells) if _fits(c, anchor)), None)
+            if at is not None:
+                order = keys.index(anchor["key"])
+                before, after = cells[:at], cells[at + 1:]
+                row[anchor["key"]] = cells[at]
+                for k, v in zip(reversed(keys[:order]), reversed(before)):
+                    if v:
+                        row[k] = v
+                for k, v in zip(keys[order + 1:], after):
+                    if v:
+                        row[k] = v
+        if anchor is not None and not _fits(row.get(anchor["key"], ""), anchor):
+            row = {}
+        if len(row) < 2 or (anchor is None and len(cells) < 2):
+            if rows:
+                break                                           # the table has ended
+            continue
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def read_fields(text: str, template: Dict[str, Any]) -> Dict[str, Any]:
-    """{"fields": {key: value}, "table_rows": []} for one page's text; fields it cannot find are left out."""
+    """{"fields": {key: value}, "table_rows": [...]} for one page's text; fields it cannot find are left out."""
     lines = [l for l in (text or "").splitlines() if l.strip()]
     sections = template.get("sections", [])
     windows = _windows(lines, sections)
@@ -121,4 +207,5 @@ def read_fields(text: str, template: Dict[str, Any]) -> Dict[str, Any]:
                         got += _wrapped(stretch[li + 1], wanted)
                     if got:
                         fields[f["key"]] = got
-    return {"fields": fields, "table_rows": []}
+    tables = template.get("tables") or []
+    return {"fields": fields, "table_rows": read_table(lines, tables[0]) if tables else []}
