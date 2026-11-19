@@ -63,6 +63,10 @@ class Reading:
     digit_low_share: float = 0.0
     seconds: float = 0.0
     agreement: Optional[float] = None     # share of words another local engine also read (see cross_check)
+    # where each line sits on the page as fractions (x0, y0, x1, y1) of the image, and whether it holds a doubtful number:
+    # what region-level re-reads need (see doubtful_lines and plan_regions)
+    line_boxes: Optional[List[Tuple[float, float, float, float]]] = None
+    line_digit_low: Optional[List[bool]] = None
 
     @property
     def text(self) -> str:
@@ -73,8 +77,9 @@ _ALNUM = re.compile(r"[A-Za-z0-9]")
 _DIGIT = re.compile(r"\d")
 
 
-def build_reading(words: List[Word], engine: str, seconds: float = 0.0) -> Reading:
-    """Group words into rows (by vertical position), join each row left to right, and summarise confidence."""
+def build_reading(words: List[Word], engine: str, seconds: float = 0.0, size: Optional[Tuple[float, float]] = None) -> Reading:
+    """Group words into rows (by vertical position), join each row left to right, and summarise confidence.
+    `size` is the (width, height) of the image the word boxes refer to; with it each line also gets a page-relative box."""
     words = [w for w in words if w.text and w.text.strip()]
     if not words:
         return Reading(engine, [], [], 0, None, 0.0, 0.0, seconds)
@@ -90,6 +95,8 @@ def build_reading(words: List[Word], engine: str, seconds: float = 0.0) -> Readi
             rows.append([w])
     lines: List[str] = []
     line_conf: List[Optional[float]] = []
+    boxes: List[Tuple[float, float, float, float]] = []
+    digit_low: List[bool] = []
     for row in rows:
         row.sort(key=lambda w: w.x0)
         text = row[0].text.strip()
@@ -100,6 +107,10 @@ def build_reading(words: List[Word], engine: str, seconds: float = 0.0) -> Readi
         lines.append(text)
         confs = [w.conf for w in row if w.conf is not None and _ALNUM.search(w.text)]
         line_conf.append(statistics.fmean(confs) if confs else None)
+        digit_low.append(any(w.conf is not None and w.conf < LOW_DIGIT and _DIGIT.search(w.text) for w in row))
+        if size and size[0] > 0 and size[1] > 0:
+            boxes.append((min(w.x0 for w in row) / size[0], min(w.y0 for w in row) / size[1],
+                          max(w.x1 for w in row) / size[0], max(w.y1 for w in row) / size[1]))
     real = [w for w in words if _ALNUM.search(w.text) and w.conf is not None]
     digits = [w for w in real if _DIGIT.search(w.text)]
     return Reading(
@@ -107,7 +118,7 @@ def build_reading(words: List[Word], engine: str, seconds: float = 0.0) -> Readi
         confidence=statistics.fmean(w.conf for w in real) if real else None,
         low_share=(sum(1 for w in real if w.conf < LOW_WORD) / len(real)) if real else 0.0,
         digit_low_share=(sum(1 for w in digits if w.conf < LOW_DIGIT) / len(digits)) if digits else 0.0,
-        seconds=seconds)
+        seconds=seconds, line_boxes=boxes if len(boxes) == len(lines) else None, line_digit_low=digit_low)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -151,6 +162,7 @@ def cross_check(primary: Reading, other: Reading) -> Reading:
         ts = tokens(line)
         conf.append(sum(1 for t in ts if theirs[t] > 0) / len(ts) if ts else None)
     primary.line_conf = conf
+    primary.line_digit_low = [False] * len(conf)       # this engine's own digit confidences mean nothing; agreement is the evidence
     primary.agreement = agreement(primary.text, other.text)
     return primary
 
@@ -179,6 +191,64 @@ def assess(reading: Reading, threshold: float, jpeg: Optional[bytes] = None) -> 
     return Verdict(not reasons, reasons)
 
 
+def doubtful_lines(r: Reading, calibrated: bool) -> List[int]:
+    """Indexes of the lines that should not stand on the local reading's word: a line the engine was unsure of (below
+    LOW_WORD), a number it was unsure of, or, for an engine whose confidence cannot be trusted, a line the second engine
+    does not agree with (`cross_check` puts that agreement in line_conf). Judged line by line, because a page's average
+    hides one terrible line."""
+    cut = LOW_WORD if calibrated else MIN_AGREEMENT
+    digits = r.line_digit_low or [False] * len(r.lines)
+    return [i for i, c in enumerate(r.line_conf) if (c is not None and c < cut) or digits[i]]
+
+
+MAX_REGIONS = 3         # more separate regions than this and the crops cost about as much as the whole page
+MAX_REGION_AREA = 0.5   # so does re-reading more than half of the page
+MAX_DOUBTFUL = 0.4      # if this share of the lines is doubtful the page as a whole is poor: read all of it
+
+
+@dataclass
+class Region:
+    first: int                                   # the lines first..last (inclusive) this region replaces
+    last: int
+    box: Tuple[float, float, float, float]       # page-relative (x0, y0, x1, y1), padded
+
+
+def plan_regions(r: Reading, doubtful: List[int]) -> Optional[List[Region]]:
+    """Group doubtful lines into a few bands to re-read on their own, or None when the whole page should be read instead
+    (nothing located, too many bands, too much of the page, or most lines are doubtful)."""
+    if not doubtful or not r.line_boxes or len(r.line_boxes) != len(r.lines) or len(doubtful) / len(r.lines) > MAX_DOUBTFUL:
+        return None
+    bands: List[List[int]] = []
+    for i in sorted(doubtful):
+        if bands and i - bands[-1][-1] <= 2:             # a good line between two doubtful ones is re-read too, for context
+            bands[-1].extend(range(bands[-1][-1] + 1, i + 1))
+        else:
+            bands.append([i])
+    out: List[Region] = []
+    for b in bands:
+        boxes = [r.line_boxes[i] for i in b]
+        x0, y0 = min(x[0] for x in boxes), min(x[1] for x in boxes)
+        x1, y1 = max(x[2] for x in boxes), max(x[3] for x in boxes)
+        px, py = 0.02, max(0.006, (y1 - y0) / (len(b) * 4))
+        out.append(Region(b[0], b[-1], (max(0.0, x0 - px), max(0.0, y0 - py), min(1.0, x1 + px), min(1.0, y1 + py))))
+    area = sum((g.box[2] - g.box[0]) * (g.box[3] - g.box[1]) for g in out)
+    return out if len(out) <= MAX_REGIONS and area <= MAX_REGION_AREA else None
+
+
+def crop(jpeg: bytes, box: Tuple[float, float, float, float], min_height: int = 96) -> bytes:
+    """The part of the page image inside a page-relative box, tall enough for a model to read."""
+    from PIL import Image
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    w, h = img.size
+    x0, y0, x1, y1 = int(box[0] * w), int(box[1] * h), max(int(box[2] * w), int(box[0] * w) + 1), max(int(box[3] * h), int(box[1] * h) + 1)
+    if y1 - y0 < min_height:                                   # a one-line strip is too thin to read reliably: add context
+        grow = (min_height - (y1 - y0)) // 2 + 1
+        y0, y1 = max(0, y0 - grow), min(h, y1 + grow)
+    out = io.BytesIO()
+    img.crop((x0, y0, x1, y1)).save(out, "JPEG", quality=92)
+    return out.getvalue()
+
+
 def assess_cross(reading: Reading, jpeg: Optional[bytes] = None) -> Verdict:
     """The verdict for a reading that was cross-checked against a second engine (see cross_check)."""
     if reading.words == 0:
@@ -196,6 +266,7 @@ def assess_cross(reading: Reading, jpeg: Optional[bytes] = None) -> Verdict:
 # ---------------------------------------------------------------------------------------------------------------------
 
 class Engine:
+    serial = False        # True: one page at a time. The neural engines are not guaranteed safe to run from several threads at once
     calibrated = True     # False: its confidence cannot tell clean print from handwriting, so a second engine must agree
     id = ""
     label = ""
@@ -208,10 +279,22 @@ class Engine:
     def _words(self, jpeg: bytes) -> List[Word]:
         raise NotImplementedError
 
+    @property
+    def _turn(self) -> threading.Lock:
+        if not hasattr(self, "_turn_lock"):
+            self._turn_lock = threading.Lock()
+        return self._turn_lock
+
     async def read(self, jpeg: bytes) -> Reading:
         start = time.perf_counter()
-        words = await asyncio.to_thread(self._words, jpeg)
-        return build_reading(words, self.id, time.perf_counter() - start)
+        words = await asyncio.to_thread(self._run, jpeg)
+        return build_reading(words, self.id, time.perf_counter() - start, image_size(jpeg))
+
+    def _run(self, jpeg: bytes) -> List[Word]:
+        if not self.serial:
+            return self._words(jpeg)
+        with self._turn:
+            return self._words(jpeg)
 
     def info(self) -> Dict[str, Any]:
         ok = self.available()
@@ -232,6 +315,26 @@ def words_from_tsv(tsv: str) -> List[Word]:
             continue
         out.append(Word(x, y, x + w, y + h, c[11].strip(), conf / 100.0 if conf >= 0 else None))
     return out
+
+
+def tsv_size(tsv: str) -> Optional[Tuple[float, float]]:
+    """The page image size Tesseract's word table is measured in (its level-1 row)."""
+    for row in tsv.splitlines()[1:]:
+        c = row.split("\t", 11)
+        if len(c) >= 10 and c[0] == "1":
+            try:
+                return float(c[8]), float(c[9])
+            except ValueError:
+                return None
+    return None
+
+
+def image_size(jpeg: bytes) -> Optional[Tuple[float, float]]:
+    try:
+        from PIL import Image
+        return Image.open(io.BytesIO(jpeg)).size
+    except Exception:
+        return None
 
 
 class Tesseract(Engine):
@@ -294,6 +397,7 @@ class _Lazy:
 
 class RapidOCR(Engine):
     calibrated = False
+    serial = True
     id = "rapidocr"
     label = "RapidOCR"
     summary = "PaddleOCR models on ONNX. Light and quick on a CPU; a good local step up from Tesseract for printed scans."
@@ -329,6 +433,7 @@ class RapidOCR(Engine):
 
 class PaddleOCR(Engine):
     calibrated = False
+    serial = True
     id = "paddleocr"
     label = "PaddleOCR"
     summary = "Strong open-source OCR with good layout handling. Heavier to install than RapidOCR."
@@ -367,6 +472,7 @@ class PaddleOCR(Engine):
 
 class DocTR(Engine):
     calibrated = False
+    serial = True
     id = "doctr"
     label = "docTR"
     summary = "Deep-learning OCR (PyTorch) with strong results on printed pages and tables. Needs more memory."

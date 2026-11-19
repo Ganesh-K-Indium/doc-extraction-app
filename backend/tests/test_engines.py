@@ -240,11 +240,39 @@ def test_agreement_separates_clean_pages_from_unreadable_ones():
     assert same.agreement == 1.0 and local.assess_cross(same).ok                                # its own low confidence no longer matters
 
 
+def test_neural_engines_run_one_page_at_a_time_and_tesseract_in_parallel():
+    import threading
+    import time as _t
+
+    class Probe(local.Engine):
+        id, label = "probe", "Probe"
+        def __init__(self, serial):
+            self.serial, self.now, self.peak, self.guard = serial, 0, 0, threading.Lock()
+        def available(self):
+            return True
+        def _words(self, jpeg):
+            with self.guard:
+                self.now += 1
+                self.peak = max(self.peak, self.now)
+            _t.sleep(0.05)
+            with self.guard:
+                self.now -= 1
+            return [W(0, 0, 40, 20, "x")]
+
+    async def burst(eng):
+        await asyncio.gather(*[eng.read(jpeg_of(False)) for _ in range(6)])
+        return eng.peak
+    assert run(burst(Probe(serial=True))) == 1
+    assert run(burst(Probe(serial=False))) > 1
+    assert [e.serial for e in local.engines()] == [False, True, True, True]
+
+
 def test_engine_listing_names_every_engine():
     ids = [e["id"] for e in local.listing()]
     assert ids == ["tesseract", "rapidocr", "paddleocr", "doctr"]
     missing = [e for e in local.listing() if not e["ready"]]
     assert all(e["status"] == "not_installed" and e["hint"] for e in missing)
+    assert all(e["status"] == "ready" for e in local.listing() if e["ready"])
 
 
 @pytest.mark.skipif(not tess_available(), reason="Tesseract is not installed")
@@ -329,8 +357,12 @@ def test_plan_settings_and_fingerprint(clean_env, fake_engine):
     assert plan.resolve({"strategy": "economy"}).strategy == "economy"                          # a workspace beats it
 
 
-def test_settings_are_validated(clean_env, fake_engine):
+def test_settings_are_validated(clean_env, fake_engine, monkeypatch):
     fake_engine(reading=reading())
+    absent = FakeLocal()
+    absent.id, absent.label, absent.install = "doctr", "docTR", "pip install doctr"
+    absent.available = lambda: False                                  # whatever is installed on this machine
+    monkeypatch.setitem(local._ENGINES, "doctr", absent)
     clean_env.setenv("OPENAI_API_KEY", "k")
     ok = plan.clean({"strategy": "custom", "mode": "escalate", "local_engine": "tesseract", "models": ["openai:gpt-4.1", "openai:gpt-4.1"],
                      "escalate_below": "0.8", "token_cap": 50000})
@@ -450,6 +482,143 @@ def test_tesseract_words_from_the_work_pass_are_reused(fake_engine):
     tsv = "h\n5\t1\t1\t1\t1\t1\t10\t10\t50\t20\t96\tHello\n"
     s = scan(mode="escalate", engine_id="tesseract", tsv=tsv)
     assert eng.calls == 0 and [l.text for l in s.lines] == ["Hello"]                            # no second OCR pass
+
+
+# ---- region-level re-reads ----------------------------------------------------------------------------------------------
+
+def page_reading(confs, engine="tesseract", size=(1000.0, 1400.0), digit_low=()):
+    """A page with one line per confidence, stacked down the page, so each line has a box."""
+    words = [local.Word(100, 100 + i * 100, 900, 140 + i * 100, f"Line number {i + 1} text", c) for i, c in enumerate(confs)]
+    r = local.build_reading(words, engine, size=size)
+    for i in digit_low:
+        r.line_digit_low[i] = True
+    return r
+
+
+def test_lines_know_where_they_sit_on_the_page():
+    r = page_reading([0.9, 0.9])
+    assert r.line_boxes == [(0.1, pytest.approx(100 / 1400), 0.9, pytest.approx(140 / 1400)), (0.1, pytest.approx(200 / 1400), 0.9, pytest.approx(240 / 1400))]
+    assert local.build_reading([W(0, 0, 10, 10, "x")], "t").line_boxes is None                   # no image size, no boxes
+    assert local.tsv_size("h\n1\t1\t0\t0\t0\t0\t0\t0\t2480\t3508\t-1\t\n") == (2480.0, 3508.0)
+
+
+def test_doubtful_lines_and_their_regions():
+    r = page_reading([0.97, 0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97])
+    assert local.doubtful_lines(r, True) == [2]
+    regions = local.plan_regions(r, [2])
+    assert len(regions) == 1 and (regions[0].first, regions[0].last) == (2, 2)
+    x0, y0, x1, y1 = regions[0].box
+    assert x0 < 0.1 and x1 > 0.9 and y0 < 300 / 1400 and y1 > 340 / 1400                         # padded around the line
+    near = local.plan_regions(r, [2, 4])
+    assert len(near) == 1 and (near[0].first, near[0].last) == (2, 4)                            # one good line between: one region
+    far = local.plan_regions(r, [1, 5, 9])
+    assert len(far) == 3
+    assert local.plan_regions(r, [0, 3, 6, 9]) is None                                            # four bands: cheaper to read the page
+    assert local.plan_regions(r, list(range(5))) is None                                          # half the lines: the page itself is poor
+    assert local.plan_regions(local.build_reading([W(0, 0, 10, 10, "x")], "t"), [0]) is None     # nothing located
+    digits = page_reading([0.97] * 6, digit_low=[3])
+    assert local.doubtful_lines(digits, True) == [3]                                       # a doubtful number is enough
+    assert local.doubtful_lines(page_reading([0.97, 0.7]), True) == []                           # mid confidence is a page-level matter, not a bad line
+    assert local.doubtful_lines(page_reading([0.97, 0.5]), True) == [1]
+    agree = page_reading([1.0, 0.5])                                                             # uncalibrated engines: line_conf is agreement
+    assert local.doubtful_lines(agree, False) == [1]
+    crop = local.crop(jpeg_of(True), (0.1, 0.5, 0.9, 0.51))
+    from PIL import Image
+    assert Image.open(io.BytesIO(crop)).size[1] >= 96                                             # a thin strip is made tall enough to read
+
+
+def region_scan(reading_obj, reader, **kw):
+    return run(ladder.read_scanned(jpeg=jpeg_of(True), models=["m-a", "m-b"], mode="escalate", engine_id="tesseract", reader=reader, **kw))
+
+
+def test_a_page_with_one_weak_line_sends_only_that_region(fake_engine):
+    r = page_reading([0.97, 0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97, 0.97])
+    fake_engine(reading=r)
+    seen = []
+
+    async def reader(model, jpeg):
+        from PIL import Image
+        seen.append((model, Image.open(io.BytesIO(jpeg)).size))
+        return ["Line number 3 text (as the models read it)"]
+    s = region_scan(r, reader)
+    assert len(seen) == 2 and {m for m, _ in seen} == {"m-a", "m-b"}                             # one region, read by both models
+    assert all(size[0] <= 600 and size[1] < 800 * 0.25 for _, size in seen)                       # a strip, not the page
+    texts = [l.text for l in s.lines]
+    assert len(texts) == 10 and texts[2] == "Line number 3 text (as the models read it)" and texts[0] == "Line number 1 text"
+    assert all(l.status == "agreed" for l in s.lines)                                            # both models agreed on the region
+    assert s.source == "ocr-local" and not s.verified
+    assert s.reading["escalated"] is True and s.reading["scope"] == "regions" and s.reading["regions"] == 1 and s.reading["region_lines"] == 1
+    assert "1 of 10 lines" in s.reading["reasons"][-1]
+
+
+def test_models_that_disagree_on_a_region_are_flagged_there(fake_engine):
+    r = page_reading([0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97])
+    fake_engine(reading=r)
+
+    async def reader(model, jpeg):
+        return ["Total due 120.00"] if model == "m-a" else ["Total due 128.00"]
+    s = region_scan(r, reader)
+    assert [l.status for l in s.lines].count("review") == 1 and s.lines[1].status == "review" and s.lines[1].alternatives
+
+
+def test_scattered_or_widespread_doubt_reads_the_whole_page(fake_engine):
+    calls = []
+
+    async def reader(model, jpeg):
+        from PIL import Image
+        calls.append(Image.open(io.BytesIO(jpeg)).size)
+        return ["whole page line"]
+    fake_engine(reading=page_reading([0.3, 0.97, 0.97, 0.3, 0.97, 0.97, 0.3, 0.97, 0.97, 0.3]))
+    s = region_scan(None, reader)                                                                # four separate bands
+    assert s.source == "ocr" and s.reading["scope"] == "page" and all(c == (600, 800) for c in calls)
+    calls.clear()
+    fake_engine(reading=page_reading([0.3, 0.3, 0.3, 0.97, 0.97, 0.97]))
+    assert region_scan(None, reader).source == "ocr"                                             # half the lines are doubtful
+
+
+def test_a_failing_region_read_keeps_a_good_page_and_reads_a_poor_one_whole(fake_engine):
+    sizes = []
+
+    async def reader(model, jpeg):
+        from PIL import Image
+        size = Image.open(io.BytesIO(jpeg)).size
+        sizes.append(size)
+        if size != (600, 800):
+            raise RuntimeError("crop refused")
+        return ["whole page"]
+    good = page_reading([0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97])
+    fake_engine(reading=good)
+    s = region_scan(None, reader)                                                                # the page passed overall: keep it, flagged
+    assert s.source == "ocr-local" and any("could not re-read" in r for r in s.reading["reasons"]) and s.lines[1].status == "review"
+    assert (600, 800) not in sizes
+    poor = page_reading([0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97])
+    poor.digit_low_share = 0.5                                                                   # the page fails as a whole too
+    fake_engine(reading=poor)
+    s = region_scan(None, reader)
+    assert s.source == "ocr" and s.reading["scope"] == "page" and (600, 800) in sizes
+
+
+def test_regions_respect_the_token_cap_and_force(fake_engine):
+    fake_engine(reading=page_reading([0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97]))
+
+    async def reader(model, jpeg):
+        return ["x"]
+    with track_usage("t") as u:
+        u.record("discover", "m", total_tokens=900)
+        s = region_scan(None, reader, token_cap=500)
+    assert s.source == "ocr-local" and s.reading.get("cost_capped") and s.reading.get("scope") != "regions" and "doubtful lines" in s.reading["reasons"][-1]
+    s = region_scan(None, reader, force_vision=True)                                             # an explicit request reads the page
+    assert s.source == "ocr" and s.reading["scope"] == "page"
+
+
+def test_a_handwriting_region_marks_the_page(fake_engine):
+    fake_engine(reading=page_reading([0.97, 0.3, 0.97, 0.97, 0.97, 0.97, 0.97]))
+
+    async def reader(model, jpeg):
+        out = ocr.Lines(["scribbled"])
+        out.handwriting = True
+        return out
+    assert region_scan(None, reader).handwritten is True
 
 
 # ---- through the whole pipeline ---------------------------------------------------------------------------------------

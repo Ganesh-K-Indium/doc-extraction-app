@@ -1,0 +1,6 @@
+# Optional local OCR engines. Install the ones you want to offer on the Reading engines page (Tesseract needs no Python package).
+# Models download on first use: set DOCTR_CACHE_DIR / PADDLE_PDX_CACHE_HOME to choose where, and pre-download them for air-gapped servers.
+rapidocr-onnxruntime>=1.3.0
+paddlepaddle>=3.0.0
+paddleocr>=3.0.0
+python-doctr[torch]>=0.9.0

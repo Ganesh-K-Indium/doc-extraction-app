@@ -263,6 +263,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
                   "local_ocr_pages": sum(1 for p in pages if p["source"] == "ocr-local"),
                   "vision_pages": sum(1 for p in pages if p["source"] == "ocr"),
                   "escalated_pages": sum(1 for p in pages if (p.get("reading") or {}).get("escalated")),
+                  "region_pages": sum(1 for p in pages if (p.get("reading") or {}).get("scope") == "regions"),
                   "handwritten_pages": sum(1 for p in pages if p.get("handwritten")),
                   "unverified_tables": sum(1 for f in forms for rows in f["tables"].values()
                                            if any(c.get("method") == "text-layer" and c.get("status") == "review" for r in rows for c in r.values()))},

@@ -24,12 +24,14 @@ export interface ReadingPlan {
 export interface PageReading {
     engine?: string | null; confidence?: number | null; agreement?: number | null; local_confidence?: number | null;
     escalated?: boolean; reasons?: string[]; models?: string[]; cost_capped?: boolean;
+    /** "regions" when only the doubtful parts of the page were re-read by a vision model. */
+    scope?: 'page' | 'regions'; regions?: number; region_lines?: number;
 }
 export interface Stats {
     pages: number; forms: number; needs_review: number; errors: number;
     /** How it was read: digital pages by code, scans by vision models, pages with handwriting. Absent on older results. */
     digital_pages?: number; scanned_pages?: number; handwritten_pages?: number; unverified_tables?: number;
-    local_ocr_pages?: number; vision_pages?: number; escalated_pages?: number;
+    local_ocr_pages?: number; vision_pages?: number; escalated_pages?: number; region_pages?: number;
     usage?: { calls: number; tokens: number; by_stage: Record<string, number> };
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }

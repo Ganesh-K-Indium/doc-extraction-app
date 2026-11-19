@@ -52,24 +52,34 @@ interface Props {
     onSelect: () => void; onSave: (v: Value) => void; onJump: () => void;
 }
 
+/** One value. A value that is fine takes one line with a small tick; a value that needs checking opens its reasons and
+ *  alternatives right under it; the selected value shows where it came from. Quiet rows make a long form skimmable. */
 export function FieldRow({ doc, name, cell, selected, onSelect, onSave, onJump }: Props) {
     const st = stateOf(cell);
     const flagged = FLAGGED.has(cell.status);
+    const hasValue = cell.value !== null && cell.value !== undefined;
     const inputId = `in-${doc}-${name}`;
+    const detail = flagged || selected;
     return (
-        <div id={rowId(doc, name)} className={`field field--${st.key}${selected ? ' field--on' : ''}`} onClick={onSelect} onFocus={onSelect}>
-            <label className="field__label" htmlFor={inputId}>{labelFor(name, cell)}</label>
-            <div className="field__control"><Control id={inputId} cell={cell} onSave={onSave} /></div>
-            <div className="field__meta">
-                <span className="field__state" title={cell.reason}>{st.key === 'done' && <Tick />}{st.text}</span>
-                <button className="link field__page" onClick={e => { e.stopPropagation(); onJump(); }} aria-label={`Show page ${cell.page} of the source`}>page {cell.page}</button>
-                {flagged && cell.value !== null && cell.value !== undefined && <button className="btn btn--tiny" onClick={e => { e.stopPropagation(); onSave(cell.value as Value); }}>Confirm</button>}
-                {cell.alternatives.length > 0 && (
-                    <span className="field__alt">{altIntro(cell)}{' '}
-                        {cell.alternatives.map(a => <button key={a} className="link" onClick={e => { e.stopPropagation(); onSave(typedLike(cell, a)); }}>use “{altText(cell, a)}”</button>)}
-                    </span>)}
-                {cell.reason && flagged && cell.alternatives.length === 0 && <span className="field__alt">{cell.reason}</span>}
+        <div id={rowId(doc, name)} className={`rf rf--${st.key}${selected ? ' rf--on' : ''}`} onClick={onSelect} onFocus={onSelect}>
+            <label className="rf__label" htmlFor={inputId}>{labelFor(name, cell)}</label>
+            <div className="rf__control"><Control id={inputId} cell={cell} onSave={onSave} /></div>
+            <div className="rf__state">
+                {st.key === 'done' && <span className="rf__tick" title={st.text}><Tick /><span className="sr-only">{st.text}</span></span>}
+                {st.key === 'quiet' && <span className="rf__quiet" title={st.text}>{cell.status === 'empty' ? 'Blank' : 'One reader'}</span>}
             </div>
+            {detail && (
+                <div className="rf__detail">
+                    {flagged && <span className="rf__chip">{st.text}</span>}
+                    {flagged && cell.alternatives.length > 0 && (
+                        <span className="rf__alt">{altIntro(cell)}{' '}
+                            {cell.alternatives.map(a => <button key={a} className="link" onClick={e => { e.stopPropagation(); onSave(typedLike(cell, a)); }}>use “{altText(cell, a)}”</button>)}
+                        </span>)}
+                    {flagged && cell.alternatives.length === 0 && cell.reason && <span className="rf__alt">{cell.reason}</span>}
+                    {!flagged && <span className="rf__src">{st.text}</span>}
+                    {flagged && hasValue && <button className="btn btn--tiny" onClick={e => { e.stopPropagation(); onSave(cell.value as Value); }}>Confirm</button>}
+                    <button className="link rf__page" onClick={e => { e.stopPropagation(); onJump(); }} aria-label={`Show page ${cell.page} of the source`}>page {cell.page}</button>
+                </div>)}
         </div>
     );
 }

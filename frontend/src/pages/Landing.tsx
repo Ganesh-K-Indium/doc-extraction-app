@@ -34,9 +34,16 @@ function Sheet({ kind, n }: { kind: Kind; n: number }) {
     );
 }
 
+const MODES = [
+    { t: 'Economy', cost: 'No model calls', d: 'Local OCR only. Free, private, fine for clean printed scans. Doubtful lines are flagged for you.', rec: false },
+    { t: 'Balanced', cost: 'Models only when doubtful', d: 'Local OCR first. Weak lines, or weak pages, go to the vision models. Best cost for most documents.', rec: true },
+    { t: 'Accuracy', cost: 'Models on every scan', d: 'Two vision models read every scanned page and are compared. Highest accuracy, highest cost.', rec: false },
+    { t: 'Custom', cost: 'You decide', d: 'Pick the engine, the models, the confidence needed and a token cap.', rec: false },
+];
+
 const STEPS = [
     { t: 'Profile each page', d: 'Does it have real text, or is it a picture? Is the text layer readable? Is there handwriting? Each page is routed on what it actually is.', note: 'Decides the reader' },
-    { t: 'Read it', d: 'Digital pages: text and table cells copied by code and verified against the page. Scans and handwriting: two vision models, compared line by line, with a third look at disputed values.', note: 'Disagreements are kept, not hidden' },
+    { t: 'Read it', d: 'Digital pages: text and table cells copied by code and verified against the page. Scans and handwriting: a local OCR engine first; where it is unsure, two vision models read just those lines or the whole page and are compared, with a third look at disputed values.', note: 'Disagreements are kept, not hidden' },
     { t: 'Sort into documents', d: 'Fax stamps are split off as metadata. Pages are classified and grouped, so a 9-page packet becomes four documents and a 68-page filing stays one.', note: 'Blank and cover pages are kept, not dropped' },
     { t: 'Extract and check', d: 'Each document is read against its template, or discovered from the page when it has none. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
 ];
@@ -48,7 +55,7 @@ export default function Landing() {
                 <div className="lp-wrap lp-head__in">
                     <Link to="/" className="brand"><span className="brand__mark" aria-hidden="true" />{APP_NAME}</Link>
                     <nav className="lp-nav" aria-label="Page sections">
-                        <a href="#kinds">Any document</a><a href="#how">How it works</a><a href="#output">Output</a><a href="#review">Review</a><a href="#types">Document types</a>
+                        <a href="#kinds">Any document</a><a href="#engines">Engines</a><a href="#how">How it works</a><a href="#output">Output</a><a href="#review">Review</a><a href="#types">Document types</a>
                     </nav>
                     <Link to="/app" className="btn btn--primary">Open workspaces</Link>
                 </div>
@@ -58,7 +65,7 @@ export default function Landing() {
                 <section className="lp-hero">
                     <div className="lp-wrap">
                         <h1>Read the whole packet. Check only what’s in doubt.</h1>
-                        <p className="lp-lede">Upload any PDF: a financial filing, a scanned form, a fax, a handwritten note. {APP_NAME} reads every page the cheapest reliable way, sorts the file into its documents, and flags only the values it could not prove. Digital pages are read directly from the PDF and checked against the page; models step in for scans and handwriting.</p>
+                        <p className="lp-lede">Upload any PDF: a financial filing, a scanned form, a fax, a handwritten note. {APP_NAME} reads every page the cheapest reliable way, sorts the file into its documents, and flags only the values it could not prove. Digital pages are read directly from the PDF and checked against the page. Scans are read by free local OCR first, and a vision model steps in only for the lines or pages it cannot read well. You choose the engines and the models.</p>
                         <div className="lp-cta">
                             <Link to="/app" className="btn btn--primary btn--lg">Open workspaces</Link>
                             <a href="#output" className="btn btn--lg">See the output</a>
@@ -82,13 +89,30 @@ export default function Landing() {
                         <p className="lp-sub">No template to write first. Each page is routed by what it is, so you do not pay model prices for text the PDF already holds.</p>
                         <div className="lp-points lp-points--cols">
                             <div><h3>Digital PDFs: read by code</h3><p>Statements, filings and reports have real text and real table cells. They are copied exactly, and every number in a table is checked against the page. No model calls, unless a form-like page cannot be proven complete.</p></div>
-                            <div><h3>Scans and handwriting: two readers</h3><p>Two vision models transcribe the page independently and are compared. A disputed value gets one focused third look, and what is still in doubt goes to the review queue.</p></div>
+                            <div><h3>Scans and handwriting: local first, models when needed</h3><p>A local OCR engine reads the page and says how sure it is. Clean pages stay local and free. Doubtful lines, or whole pages, go to two vision models that read independently and are compared. What is still in doubt goes to the review queue.</p></div>
                             <div><h3>Anything else: discovered, then remembered</h3><p>Fields and tables are found from the page itself, with stable names ("Invoice No." and "Inv #" are one key). When a layout keeps recurring, save it as a document type in one click.</p></div>
                         </div>
                     </div>
                 </section>
 
-                <section id="how" className="lp-sec lp-sec--tint">
+                <section id="engines" className="lp-sec lp-sec--tint">
+                    <div className="lp-wrap">
+                        <h2>You choose how scans are read</h2>
+                        <p className="lp-sub">Set it once per workspace, or per upload. Digital PDFs cost nothing under every choice.</p>
+                        <div className="lp-modes">{MODES.map(m => (
+                            <div key={m.t} className={m.rec ? 'lp-mode lp-mode--rec' : 'lp-mode'}>
+                                <h3>{m.t}{m.rec && <em> recommended</em>}</h3><small>{m.cost}</small><p>{m.d}</p>
+                            </div>))}
+                        </div>
+                        <div className="lp-points lp-points--cols">
+                            <div><h3>Local OCR engines</h3><p>Tesseract, RapidOCR, PaddleOCR and docTR, free and on your server. The newer engines are checked against Tesseract before a page is trusted, because their own confidence can’t tell print from handwriting.</p></div>
+                            <div><h3>Vision models you pick</h3><p>OpenAI, Claude, Gemini, Ollama on your own hardware, or any OpenAI-compatible server. Choose two, from different providers if you like. Connect them on the Settings page: keys are stored encrypted.</p></div>
+                            <div><h3>Pay for the line, not the page</h3><p>When only a few lines are doubtful, only those regions are cropped and sent. A token cap per document stops the spend, and the review screen shows which engine read each page and why.</p></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section id="how" className="lp-sec">
                     <div className="lp-wrap">
                         <h2>From any PDF to checked values</h2>
                         <ol className="lp-steps">{STEPS.map((s, i) => (
@@ -143,7 +167,7 @@ export default function Landing() {
                             <h2>Reviewers see the doubtful values first</h2>
                             <div className="lp-points">
                                 <div><h3>Know how every value was read</h3><p>Each value says where it came from: copied from the PDF’s text, agreed by two readers, settled by a third reading, or edited by you. Each file shows how many model calls it cost.</p></div>
-                                <div><h3>Two readers, compared</h3><p>On scans and handwriting, a value both readers agree on stays quiet. A disagreement keeps both readings, and one click takes the other.</p></div>
+                                <div><h3>Two readers, compared</h3><p>Where a vision model reads a page, a value both readers agree on stays quiet. A disagreement keeps both readings, and one click takes the other. Not happy with a page? Send it to the vision models, or read the whole file again under another strategy, and compare the two.</p></div>
                                 <div><h3>A queue, not a hunt</h3><p>Filter to what needs checking, edit values and table cells in place, and step through flagged values with <kbd>j</kbd> and <kbd>k</kbd>. Each one is highlighted on the source page.</p></div>
                                 <div><h3>Rules that read across documents</h3><p>One document says one date, another says a different one. That becomes a finding, not something a person has to notice.</p></div>
                             </div>
@@ -174,7 +198,7 @@ export default function Landing() {
                             <li><span>Daily note and billing sheet</span><small>Field template</small></li>
                             <li><span>Fax cover sheet</span><small>Not extracted</small></li>
                             <li><span>Financial statements and reports</span><small>Read by code, no template</small></li>
-                            <li><span>Handwritten notes</span><small>Two readers, no template</small></li>
+                            <li><span>Handwritten notes</span><small>Local OCR, then vision models</small></li>
                             <li className="lp-types__next"><span>Any other document</span><small>Discovered, then saved as a type</small></li>
                         </ul>
                     </div>
@@ -191,7 +215,7 @@ export default function Landing() {
             <footer className="lp-foot">
                 <div className="lp-wrap">
                     <span>{APP_NAME}</span>
-                    <p>Uploaded files and results are stored on the server running this app. Digital pages are read on that server by code and nothing leaves it. Page images (scans, handwriting) and, for form-like digital pages code cannot fully read, page text are sent to the model provider you configure; without a key, scans are read locally by Tesseract. Use a provider agreement that fits the sensitivity of your documents before processing real ones.</p>
+                    <p>Uploaded files and results are stored on the server running this app. Digital pages are read on that server by code and nothing leaves it. Under the Economy strategy, or with local-only mode on, nothing leaves the server at all: scans are read by local OCR engines, or by models on your own hardware. Otherwise only the page images (or just the cropped regions) of scans that local OCR could not read well, and, for form-like digital pages code cannot fully read, page text, are sent to the model provider you connect. Provider keys you enter are stored encrypted and never shown again. Use a provider agreement that fits the sensitivity of your documents before processing real ones.</p>
                 </div>
             </footer>
         </div>

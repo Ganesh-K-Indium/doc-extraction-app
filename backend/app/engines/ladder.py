@@ -9,9 +9,13 @@ Modes (see plan.py): "local" stops after step 2 and only flags what is doubtful;
 "vision" skips straight to step 3. A per-document token cap stops step 3 once the budget is spent: the page then keeps its
 local reading, flagged for a person, rather than silently costing more.
 
+When only a few lines of a page are doubtful, only those regions are cropped and sent (see local.plan_regions): the rest of
+the page keeps its local reading. A page that is mostly doubtful, or whose doubtful lines are scattered, is read whole.
+
 A vision service that is down never fails a page that a local engine could read: the local reading is kept and the page
 says why it was not escalated.
 """
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -57,10 +61,35 @@ async def _reference(jpeg: bytes, tsv: Optional[str]) -> Optional[local.Reading]
     if tess_eng is None or not tess_eng.available():
         return None
     try:
-        return local.build_reading(local.words_from_tsv(tsv), "tesseract") if tsv is not None else await tess_eng.read(jpeg)
+        return local.build_reading(local.words_from_tsv(tsv), "tesseract", size=local.tsv_size(tsv)) if tsv is not None else await tess_eng.read(jpeg)
     except Exception as e:
         logger.warning("Reference OCR failed: %s", e)
         return None
+
+
+async def _read_regions(reading: local.Reading, regions: List[local.Region], jpeg: bytes, models: List[str], reader,
+                        info: Dict[str, Any]) -> Optional[Scan]:
+    """Have the vision models read only the doubtful regions and put their lines in place of the local ones. None when that
+    cannot be done (a model call fails): the caller then decides whether the whole page should be read."""
+    try:
+        crops = [await asyncio.to_thread(local.crop, jpeg, g.box) for g in regions]
+        pages = await asyncio.gather(*[ocr.read_page(c, models, reader) for c in crops])
+    except Exception as e:
+        logger.warning("Region read failed, reading the whole page instead: %s", e)
+        return None
+    lines: List[ocr.OcrLine] = []
+    local_lines = _local_lines(reading)
+    cursor = 0
+    for g, page in zip(regions, pages):
+        lines += local_lines[cursor:g.first]
+        lines += page.lines or local_lines[g.first:g.last + 1]
+        cursor = g.last + 1
+    lines += local_lines[cursor:]
+    replaced = sum(g.last - g.first + 1 for g in regions)
+    info.update({"escalated": True, "scope": "regions", "regions": len(regions), "region_lines": replaced, "lines": len(reading.lines),
+                 "models": models[:2], "local_confidence": reading.confidence})
+    info["reasons"] = list(info.get("reasons", [])) + [f"{replaced} of {len(reading.lines)} lines were doubtful, so only {'that region' if len(regions) == 1 else f'those {len(regions)} regions'} went to the vision models"]
+    return Scan(lines, "ocr-local", False, any(p.handwritten for p in pages), info)
 
 
 async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, models: List[str], reader=None, threshold: float = 0.85,
@@ -72,7 +101,7 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
     if mode != "vision" and not force_vision and eng is not None:
         try:
             if eng.id == "tesseract" and tsv is not None:       # the work-PDF pass already ran Tesseract on this page
-                reading = local.build_reading(local.words_from_tsv(tsv), eng.id)
+                reading = local.build_reading(local.words_from_tsv(tsv), eng.id, size=local.tsv_size(tsv))
             else:
                 reading = await eng.read(jpeg)
         except Exception as e:
@@ -96,7 +125,22 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
                     verdict.reasons.append("no second OCR engine is installed to cross-check it")
         info["confidence"] = reading.confidence
         info["reasons"] = list(verdict.reasons)
-        if verdict.ok or mode == "local":
+        if mode == "local":
+            return Scan(_local_lines(reading), "ocr-local", False, False, info)
+        # Doubtful lines are re-read on their own, whether or not the page as a whole passed: an average hides one bad line.
+        regions = None
+        if reading.words > 0 and not ocr.text_is_garbled(reading.text):
+            regions = local.plan_regions(reading, local.doubtful_lines(reading, eng.calibrated))
+        if regions:
+            if over_budget(token_cap):
+                info["cost_capped"] = True
+                info["reasons"].append("the token cap for this document was reached, so doubtful lines were not re-read by a vision model")
+                return Scan(_local_lines(reading), "ocr-local", False, False, info)
+            done = await _read_regions(reading, regions, jpeg, models, reader, info)
+            if done is not None:
+                return done
+            info["reasons"].append("the vision models could not re-read the doubtful lines")
+        if verdict.ok:
             return Scan(_local_lines(reading), "ocr-local", False, False, info)
         if over_budget(token_cap):
             info["cost_capped"] = True
@@ -114,7 +158,7 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
             info["reasons"].append("the vision models were unavailable, so the local reading was kept")
             return Scan(_local_lines(reading), "ocr-local", False, False, info)
         raise e
-    info.update({"escalated": reading is not None or bool(local_error) or force_vision, "engine": "vision", "models": models[:2]})
+    info.update({"escalated": reading is not None or bool(local_error) or force_vision, "scope": "page", "engine": "vision", "models": models[:2]})
     if reading is not None:
         info["local_confidence"] = reading.confidence
     return Scan(page.lines, "ocr", page.cross_checked, page.handwritten, info)
