@@ -20,16 +20,18 @@ export function provenance(f: Form): string {
     return 'No model was available, so only text the PDF already holds was used.';
 }
 
-/** "5 digital · 1 local OCR · no model calls": how the whole file was read, in a line. */
-export function readSummary(s: Stats): string {
+const pages = (n: number) => `${n} ${n === 1 ? 'page' : 'pages'}`;
+
+/** "5 pages digital · 3 pages read by RapidOCR · no model calls": how the whole file was read, in a line. `engines` names the local OCR engines used. */
+export function readSummary(s: Stats, engines: string[] = []): string {
     const parts: string[] = [];
-    if (s.digital_pages) parts.push(`${s.digital_pages} digital`);
+    if (s.digital_pages) parts.push(`${pages(s.digital_pages)} digital`);
     if (s.local_ocr_pages !== undefined) {
-        if (s.local_ocr_pages) parts.push(`${s.local_ocr_pages} local OCR`);
-        if (s.vision_pages) parts.push(`${s.vision_pages} vision`);
-        if (s.region_pages) parts.push(`${s.region_pages} part-re-read by vision`);
-    } else if (s.scanned_pages) parts.push(`${s.scanned_pages} scanned`);
-    if (s.handwritten_pages) parts.push(`${s.handwritten_pages} handwriting`);
+        if (s.local_ocr_pages) parts.push(`${pages(s.local_ocr_pages)} read by ${engines.length ? engines.join(' + ') : 'local OCR'}`);
+        if (s.vision_pages) parts.push(`${pages(s.vision_pages)} read by vision models`);
+        if (s.region_pages) parts.push(`${pages(s.region_pages)} partly re-read by vision models`);
+    } else if (s.scanned_pages) parts.push(`${pages(s.scanned_pages)} scanned`);
+    if (s.handwritten_pages) parts.push(`${pages(s.handwritten_pages)} with handwriting`);
     if (s.usage) parts.push(s.usage.calls === 0 ? 'no model calls' : `${s.usage.tokens.toLocaleString()} tokens`);
     return parts.join(' · ');
 }

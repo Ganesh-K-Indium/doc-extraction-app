@@ -48,6 +48,11 @@ export default function ExtractionPage() {
     }, [data, load]);
 
     const forms = useMemo(() => data?.fields?.forms ?? [], [data]);
+    const engineNames = useMemo(() => {
+        const label: Record<string, string> = { tesseract: 'Tesseract', rapidocr: 'RapidOCR', paddleocr: 'PaddleOCR', doctr: 'docTR' };
+        const ids = (data?.pages?.pages ?? []).filter(pg => pg.source === 'ocr-local').map(pg => pg.reading?.engine).filter((e): e is string => !!e);
+        return [...new Set(ids)].map(e => label[e] ?? e);
+    }, [data]);
     const findings = useMemo(() => data?.fields?.validation ?? [], [data]);
 
     // Everything that needs a person: flagged fields and table cells, plus fields an error finding points at.
@@ -153,7 +158,7 @@ export default function ExtractionPage() {
 
     const panel = (
         <div className="panel">
-            <ReviewHeader wid={wid} filename={data.filename} workspaceName={workspace.name} done={done} stats={data.stats} verified={verified} toCheck={queue.length} errors={errors}
+            <ReviewHeader wid={wid} filename={data.filename} workspaceName={workspace.name} done={done} stats={data.stats} engines={engineNames} verified={verified} toCheck={queue.length} errors={errors}
                 hasScans={(data.stats?.scanned_pages ?? 0) > 0} busy={rereading}
                 onShowCheck={() => { setTab('fields'); setFilter('check'); setQuery(''); if (queue.length) select(queue[0], cellAt(forms.find(f => f.doc_index === queue[0].doc), queue[0].key)); }}
                 onShowFindings={() => setTab('findings')} onReread={s => reread({ strategy: s })} onDownload={kind => api.download(wid, id, kind, data.filename)} />

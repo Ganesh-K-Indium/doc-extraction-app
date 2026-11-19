@@ -9,6 +9,7 @@ interface Props {
     workspaceName: string;
     done: boolean;
     stats: Stats | null;
+    engines?: string[];            // names of the local OCR engines that read pages
     verified: number;
     toCheck: number;
     errors: number;
@@ -50,7 +51,7 @@ export function ReviewHeader(p: Props) {
                         <button className={p.toCheck ? 'rv-stat rv-stat--flag' : 'rv-stat'} onClick={p.onShowCheck} disabled={!p.toCheck}><b>{p.toCheck}</b> to check</button>
                         <button className={p.errors ? 'rv-stat rv-stat--flag' : 'rv-stat'} onClick={p.onShowFindings} disabled={!p.errors}><b>{p.errors}</b> {p.errors === 1 ? 'error' : 'errors'}</button>
                     </div>
-                    {p.stats && <p className="rv-head__read" title="How the pages of this file were read">{readSummary(p.stats)}</p>}
+                    {p.stats && <p className="rv-head__read" title="How the pages of this file were read">{readSummary(p.stats, p.engines)}</p>}
                 </>)}
         </header>
     );
