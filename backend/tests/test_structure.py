@@ -111,3 +111,122 @@ def test_a_table_found_by_another_extractor_replaces_its_rows_but_not_the_headin
     page = st.build_page(rows, tables=given)
     assert kinds(page) == ["heading", "table", "paragraph"]
     assert page["blocks"][1]["columns"] == ["Line item", "Column 1"] and page["blocks"][1]["rows"][1] == ["Service", "67,797"]
+
+
+# -- borrowing positions for a vision model's text (align.py) -----------------------------------------------------------
+
+def _ref():
+    """Tesseract-like rows of cells: a title beside an address, a label row, and a wrapped paragraph."""
+    def c(text, x0, y, x1=None):
+        return (text, x0, y, x1 if x1 is not None else x0 + 0.01 * len(text), y + 0.012)
+    return [
+        [c("Sample Health Associates", 0.1, 0.05)],
+        [c("25 Testway Ave Ste 201", 0.1, 0.08), c("Physical Therapy", 0.6, 0.08)],
+        [c("Testville NJ 07001", 0.1, 0.10), c("Initial", 0.6, 0.10)],
+        [c("Patient Name: Morgan Taylor", 0.1, 0.16), c("Visit No.: 1", 0.6, 0.16)],
+        [c("Taylor is a 51 year old female with neck", 0.1, 0.22)],
+        [c("pain starting four weeks ago and it has", 0.1, 0.235)],
+        [c("not stopped since then", 0.1, 0.25)],
+    ]
+
+
+def test_vision_text_takes_the_positions_of_the_matching_reference_cells():
+    from app.services.extraction import align
+    vision = ["Sample Health Associates", "25 Testway Ave Ste 201", "Testville NJ 07001", "Physical Therapy", "Initial",
+              "Patient Name: Morgan Taylor | Visit No.: 1"]
+    rows, coverage = align.place(vision, _ref())
+    assert coverage == 1.0
+    by_text = {c[0]: c for r in rows for c in r}
+    assert by_text["Physical Therapy"][1:3] == (0.6, 0.08) and by_text["Sample Health Associates"][1:3] == (0.1, 0.05)
+    # a column-by-column listing is put back into rows: the title is beside the address again
+    assert any({"25 Testway Ave Ste 201", "Physical Therapy"} <= {c[0] for c in r} for r in rows)
+
+
+def test_the_vision_models_words_are_kept_not_tesseracts():
+    from app.services.extraction import align
+    ref = _ref()
+    ref[3] = [("Patient Narne: Morgan Tayler", 0.1, 0.16, 0.4, 0.172), ("Visit No.: l", 0.6, 0.16, 0.7, 0.172)]      # Tesseract misread
+    rows, _ = align.place(["Sample Health Associates", "Patient Name: Morgan Taylor | Visit No.: 1"], ref)
+    assert any(c[0] == "Patient Name: Morgan Taylor" for r in rows for c in r) and any(c[0] == "Visit No.: 1" for r in rows for c in r)
+
+
+def test_a_paragraph_the_model_joined_is_spread_back_over_the_rows_it_came_from():
+    from app.services.extraction import align
+    para = "Taylor is a 51 year old female with neck pain starting four weeks ago and it has not stopped since then"
+    rows, coverage = align.place(["Sample Health Associates", para], _ref())
+    ys = sorted({round(c[2], 3) for r in rows for c in r if c[0] != "Sample Health Associates"})
+    assert coverage == 1.0 and ys == [0.22, 0.235, 0.25]
+    assert " ".join(c[0] for r in rows[1:] for c in r) == para
+
+
+def test_a_page_that_mostly_does_not_match_is_refused_rather_than_guessed():
+    from app.services.extraction import align
+    vision = ["Totally different words here", "Nothing like the reference text at all", "Another unrelated line of text", "Sample Health Associates"]
+    assert align.place(vision, _ref()) is None
+
+
+def test_the_same_text_twice_is_not_placed_on_one_cell_twice():
+    from app.services.extraction import align
+    ref = [[("Yes please confirm", 0.1, 0.1, 0.4, 0.112)], [("Yes please confirm", 0.1, 0.3, 0.4, 0.312)]]
+    rows, _ = align.place(["Yes please confirm", "Yes please confirm"], ref)
+    assert sorted(round(c[2], 2) for r in rows for c in r) == [0.1, 0.3]
+
+
+def _scanned_pdf(path, lines):
+    """A PDF whose only page is a picture of `lines` (no text layer), like a scan."""
+    import pymupdf
+    src = pymupdf.open()
+    page = src.new_page(width=612, height=792)
+    y = 90
+    for text in lines:
+        page.insert_text((60, y), text, fontsize=14)
+        y += 26
+    pix = page.get_pixmap(dpi=200)
+    out = pymupdf.open()
+    scan = out.new_page(width=612, height=792)
+    scan.insert_image(scan.rect, stream=pix.tobytes("png"))
+    out.save(path)
+
+
+def test_a_vision_read_page_in_the_pipeline_gets_positions_when_it_matches_and_says_where_from():
+    import asyncio
+    import tempfile
+    import pytest
+    from app.services import pipeline
+    from app.services.reading.tess import available
+    if not available():
+        pytest.skip("Tesseract is not installed")
+    lines = ["Quarterly Statement", "Patient Name: Morgan Taylor", "Date of Birth: 01/15/1975", "Total due $1,250.00 on 08/12/2026"]
+    path = tempfile.mkdtemp() + "/scan.pdf"
+    _scanned_pdf(path, lines)
+
+    async def vision(model, jpeg):                       # a model that read the page correctly
+        return lines
+
+    result = asyncio.run(pipeline.process(path, ocr_reader=vision))
+    (p,) = [x for x in result["pages"] if x["source"] == "ocr"]
+    st = p["structure"]
+    assert st["layout"] is True and st["positions_from"] in ("tesseract", "local engine") and st["placement"] >= 0.85
+    kv = [b for b in st["blocks"] if b["type"] == "key_value"]
+    assert kv and all(b.get("bbox") for b in kv)
+    assert {e["value"] for e in st["entities"]} >= {"01/15/1975", "$1,250.00"}
+
+
+def test_a_vision_read_page_that_does_not_match_keeps_a_text_only_structure_and_says_so():
+    import asyncio
+    import tempfile
+    import pytest
+    from app.services import pipeline
+    from app.services.reading.tess import available
+    if not available():
+        pytest.skip("Tesseract is not installed")
+    path = tempfile.mkdtemp() + "/scan.pdf"
+    _scanned_pdf(path, ["Quarterly Statement", "Patient Name: Morgan Taylor", "Date of Birth: 01/15/1975"])
+
+    async def vision(model, jpeg):                       # a model whose reading has nothing to do with the picture
+        return ["Completely different wording", "Nothing here matches the page", "Another line of invented text"]
+
+    result = asyncio.run(pipeline.process(path, ocr_reader=vision))
+    (p,) = [x for x in result["pages"] if x["source"] == "ocr"]
+    assert p["structure"]["layout"] is False and "positions_from" not in p["structure"]
+    assert all("bbox" not in b for b in p["structure"]["blocks"])

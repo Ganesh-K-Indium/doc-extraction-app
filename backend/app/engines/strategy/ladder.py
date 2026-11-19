@@ -35,6 +35,7 @@ class Scan:
     handwritten: bool
     reading: Dict[str, Any] = field(default_factory=dict)
     layout: Optional[List[Any]] = None          # the page as rows of positioned cells, when the lines are the local engine's own (see structure.py)
+    reference: Optional[List[Any]] = None       # the local engine's layout of a page a vision model then read: positions to borrow (see align.py)
 
 
 def tokens_used() -> int:
@@ -90,7 +91,7 @@ async def _read_regions(reading: local.Reading, regions: List[local.Region], jpe
     info.update({"escalated": True, "scope": "regions", "regions": len(regions), "region_lines": replaced, "lines": len(reading.lines),
                  "models": models[:2], "local_confidence": reading.confidence})
     info["reasons"] = list(info.get("reasons", [])) + [f"{replaced} of {len(reading.lines)} lines were doubtful, so only {'that region' if len(regions) == 1 else f'those {len(regions)} regions'} went to the vision models"]
-    return Scan(lines, "ocr-local", False, any(p.handwritten for p in pages), info)
+    return Scan(lines, "ocr-local", False, any(p.handwritten for p in pages), info, None, reading.line_cells)
 
 
 async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, models: List[str], reader=None, threshold: float = 0.85,
@@ -162,4 +163,4 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
     info.update({"escalated": reading is not None or bool(local_error) or force_vision, "scope": "page", "engine": "vision", "models": models[:2]})
     if reading is not None:
         info["local_confidence"] = reading.confidence
-    return Scan(page.lines, "ocr", page.cross_checked, page.handwritten, info)
+    return Scan(page.lines, "ocr", page.cross_checked, page.handwritten, info, None, reading.line_cells if reading is not None else None)

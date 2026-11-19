@@ -23,7 +23,7 @@ def structure_json(ex) -> Dict[str, Any]:
             if not p:
                 continue
             st = p.get("structure") or {"blocks": [], "entities": [], "layout": False}
-            pages.append({"page": n, "source": p.get("source"), "layout": st.get("layout", False), "blocks": st.get("blocks", []),
+            pages.append({"page": n, "source": p.get("source"), "layout": st.get("layout", False), "positions_from": st.get("positions_from"), "blocks": st.get("blocks", []),
                           "entities": st.get("entities", [])})
         docs.append({"doc_index": d.get("doc_index"), "type": d.get("type"), "label": d.get("label"), "pages": pages})
     return {"extraction_id": ex.id, "filename": ex.filename, "reading": r.get("reading"), "documents": docs}

@@ -35,7 +35,7 @@ function Sheet({ kind, n }: { kind: Kind; n: number }) {
 }
 
 const MODES = [
-    { t: 'Economy', cost: 'No model calls', d: 'Local OCR only. Free, private, fine for clean printed scans. Doubtful lines are flagged for you.', rec: false },
+    { t: 'Economy', cost: 'No model calls', d: 'Local OCR only. Free, private, fine for clean printed scans. Doubtful lines are flagged for you, and a template’s fields and tables are still filled from the text.', rec: false },
     { t: 'Balanced', cost: 'Models only when doubtful', d: 'Local OCR first. Weak lines, or weak pages, go to the vision models. Best cost for most documents.', rec: true },
     { t: 'Accuracy', cost: 'Models on every scan', d: 'Two vision models read every scanned page and are compared. Highest accuracy, highest cost.', rec: false },
     { t: 'Custom', cost: 'You decide', d: 'Pick the engine, the models, the confidence needed and a token cap.', rec: false },
@@ -45,7 +45,7 @@ const STEPS = [
     { t: 'Profile each page', d: 'Does it have real text, or is it a picture? Is the text layer readable? Is there handwriting? Each page is routed on what it actually is.', note: 'Decides the reader' },
     { t: 'Read it', d: 'Digital pages: text and table cells copied by code and verified against the page. Scans and handwriting: a local OCR engine first; where it is unsure, two vision models read just those lines or the whole page and are compared, with a third look at disputed values.', note: 'Disagreements are kept, not hidden' },
     { t: 'Sort into documents', d: 'Fax stamps are split off as metadata. Pages are classified and grouped, so a 9-page packet becomes four documents and a 68-page filing stays one.', note: 'Blank and cover pages are kept, not dropped' },
-    { t: 'Extract and check', d: 'Each document is read against its template, or discovered from the page when it has none. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
+    { t: 'Extract and check', d: 'Each document is read against its template, or its structure and fields are found from the page when it has none. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
 ];
 
 export default function Landing() {
@@ -90,7 +90,7 @@ export default function Landing() {
                         <div className="lp-points lp-points--cols">
                             <div><h3>Digital PDFs: read by code</h3><p>Statements, filings and reports have real text and real table cells. They are copied exactly, and every number in a table is checked against the page. No model calls, unless a form-like page cannot be proven complete.</p></div>
                             <div><h3>Scans and handwriting: local first, models when needed</h3><p>A local OCR engine reads the page and says how sure it is. Clean pages stay local and free. Doubtful lines, or whole pages, go to two vision models that read independently and are compared. What is still in doubt goes to the review queue.</p></div>
-                            <div><h3>Anything else: discovered, then remembered</h3><p>Fields and tables are found from the page itself, with stable names ("Invoice No." and "Inv #" are one key). When a layout keeps recurring, save it as a document type in one click.</p></div>
+                            <div><h3>Anything else: structured, then remembered</h3><p>No template needed. Every page also comes out as structured content: headings, paragraphs, label and value groups, tables and lists, with the dates, amounts and contacts found. Fields get stable names ("Invoice No." and "Inv #" are one key). When a layout keeps recurring, save it as a document type in one click.</p></div>
                         </div>
                     </div>
                 </section>
@@ -123,8 +123,8 @@ export default function Landing() {
 
                 <section id="output" className="lp-sec lp-sec--tint">
                     <div className="lp-wrap">
-                        <h2>Two files, built to be loaded</h2>
-                        <p className="lp-sub">Page-by-page content in one, each document’s key–value data in the other. View them in the app, with your corrections applied, or download both from any extraction.</p>
+                        <h2>Three files, built to be loaded</h2>
+                        <p className="lp-sub">Page-by-page content and how it was read, each document’s key–value data, and the document’s structure as headings, text, tables and lists. Open a page in the app to see its structure beside how it was read, or download any file from an extraction.</p>
                         <div className="lp-code2">
                             <figure className="lp-code">
                                 <figcaption>pages.json</figcaption>
@@ -136,10 +136,10 @@ export default function Landing() {
     "reasons": ["a picture covers most of the page"]
   },
   "page_meta": { "fax_page": 3, "fax_pages": 9 },
-  "source": "ocr",
-  "handwritten": false,
-  "verified": true,
-  "text": "Provider Prior Authorization…"
+  "source": "ocr-local",
+  "reading": { "engine": "doctr", "confidence": 0.94 },
+  "text": "Provider Prior Authorization…",
+  "structure": { "blocks": [ … ], "entities": [ … ] }
 }`}</pre>
                             </figure>
                             <figure className="lp-code">
@@ -156,6 +156,17 @@ export default function Landing() {
   "page": 3,
   "bbox": [412.1, 291.4, 480.9, 303.2]
 }`}</pre>
+                            </figure>
+                            <figure className="lp-code">
+                                <figcaption>structure.json</figcaption>
+                                <pre>{`{ "type": "heading", "level": 2,
+  "text": "INCOME STATEMENTS" },
+{ "type": "key_value", "items": [
+  { "label": "Patient Name",
+    "value": "Morgan Taylor" } ] },
+{ "type": "table",
+  "columns": ["Code", "Service", "Units"],
+  "rows": [["97110", "Exercise", "2"]] }`}</pre>
                             </figure>
                         </div>
                     </div>
@@ -199,7 +210,7 @@ export default function Landing() {
                             <li><span>Fax cover sheet</span><small>Not extracted</small></li>
                             <li><span>Financial statements and reports</span><small>Read by code, no template</small></li>
                             <li><span>Handwritten notes</span><small>Local OCR, then vision models</small></li>
-                            <li className="lp-types__next"><span>Any other document</span><small>Discovered, then saved as a type</small></li>
+                            <li className="lp-types__next"><span>Any other document</span><small>Structured, then saved as a type</small></li>
                         </ul>
                     </div>
                 </section>

@@ -24,7 +24,7 @@ from app.engines.ocr import local
 from app.engines.strategy import ladder, plan as plans
 from app.services.documents import classify
 from app.services.quality import cross, validation
-from app.services.extraction import discover, form_extractor, kv, remainder, structure
+from app.services.extraction import align, discover, form_extractor, kv, remainder, structure
 from app.services.reading import ocr, pdf_pages, router, tess
 
 logger = logging.getLogger("app.services.pipeline")
@@ -70,7 +70,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             route = router.decide_reader(router.profile_page(original), use_llm, plan.local_engine is not None, mode)
             info = await asyncio.to_thread(pdf_pages.analyze_page, work, n)  # geometry from the work PDF (has OCR layer on scans)
             lines_meta: Dict[str, Any] = {}
-            layout = None
+            layout, reference = None, None
             handwritten = False
             reading: Dict[str, Any] = {"engine": "text-layer"}
             if route["reader"] in ("ocr_dual", "ocr_ladder", "ocr_local"):
@@ -81,7 +81,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     force_vision=force_vision and route["reader"] != "ocr_local", tsv=tsv)
                 raw = [l.text for l in scan.lines]
                 lines_meta = {l.text: l for l in scan.lines}
-                source, verified, handwritten, reading, layout = scan.source, scan.verified, scan.handwritten, scan.reading, scan.layout
+                source, verified, handwritten, reading, layout, reference = scan.source, scan.verified, scan.handwritten, scan.reading, scan.layout, scan.reference
             else:
                 raw = [l.strip() for l in original["text"].splitlines() if l.strip()]
                 source = "text-layer" if route["reader"] == "text_layer" else "text-layer-unverified"
@@ -103,7 +103,22 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                 w, h = info["size"]["width"], info["size"]["height"]
                 given = [{"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": t.get("headers"),
                           "rows": t.get("rows"), "method": t.get("method")} for t in info["tables"] if t.get("bbox")]
+            placed, positions_from = None, None
+            if not layout and source in ("ocr", "ocr-local"):
+                # a vision model's text has no positions: borrow them from a local reading of the same page, when the two match well.
+                # The local engine that escalated the page is the better reference; Tesseract's layer is always there as the other.
+                refs = [(reference, "local engine")] if reference else []
+                if info["words"] and info["size"]["width"]:
+                    refs.append((local.build_reading([local.Word(*w["bbox"], w["text"]) for w in info["words"]], "tesseract",
+                                                     size=(info["size"]["width"], info["size"]["height"])).line_cells, "tesseract"))
+                for ref, name in refs:
+                    got = align.place(raw, ref) if ref else None
+                    if got:
+                        layout, placed, positions_from = got[0], got[1], name
+                        break
             structure_page = structure.build_page(layout, tables=given) if layout else structure.build_from_lines(content)
+            if placed is not None:
+                structure_page["positions_from"], structure_page["placement"] = positions_from, round(placed, 2)
             return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": classify.classify_text(text), "text": text, "lines": out_lines,
