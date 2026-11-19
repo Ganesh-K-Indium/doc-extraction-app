@@ -35,6 +35,7 @@ from app.services.reading import ocr, tess
 
 logger = logging.getLogger("app.engines.local")
 
+IN_WORKER = False      # True inside an engine's own process (worker.py), where the engine runs directly
 LOW_WORD = 0.60        # a word read with less confidence than this is doubtful
 LOW_DIGIT = 0.70       # numbers are held to a stricter standard: one wrong digit is a wrong value
 GAP_FACTOR = 1.5       # a gap wider than this many text heights starts a new cell in the row
@@ -332,6 +333,7 @@ def model_status(engine_id: str) -> Dict[str, Any]:
 
 
 class Engine:
+    isolated = False      # True: runs in a child process of its own (isolated.py), because its library cannot share a process with the others
     serial = False        # True: one page at a time. The neural engines are not guaranteed safe to run from several threads at once
     calibrated = True     # False: its confidence cannot tell clean print from handwriting, so a second engine must agree
     id = ""
@@ -357,6 +359,10 @@ class Engine:
         return build_reading(words, self.id, time.perf_counter() - start, image_size(jpeg))
 
     def _run(self, jpeg: bytes) -> List[Word]:
+        if self.isolated and not IN_WORKER:
+            from app.engines import isolated
+            with self._turn:
+                return [Word(r[0], r[1], r[2], r[3], r[4], r[5]) for r in isolated.call(self.id, self.label, jpeg)]
         if not self.serial:
             return self._words(jpeg)
         with self._turn:
@@ -501,6 +507,7 @@ class RapidOCR(Engine):
 class PaddleOCR(Engine):
     calibrated = False
     serial = True
+    isolated = True       # Paddle and PyTorch cannot share a process (see worker.py)
     id = "paddleocr"
     label = "PaddleOCR"
     summary = "Strong open-source OCR with good layout handling. Heavier to install than RapidOCR."
@@ -543,6 +550,7 @@ class PaddleOCR(Engine):
 class DocTR(Engine):
     calibrated = False
     serial = True
+    isolated = True       # Paddle and PyTorch cannot share a process (see worker.py)
     id = "doctr"
     label = "docTR"
     summary = "Deep-learning OCR (PyTorch) with strong results on printed pages and tables. Needs more memory."

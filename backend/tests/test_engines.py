@@ -1056,3 +1056,123 @@ def test_the_download_endpoint_and_overview(client, preparing, monkeypatch):
             break
         time.sleep(0.05)
     assert doctr["prepare"]["state"] == "done" and doctr["models"]["state"] == "downloaded"
+
+
+# ---- engines in their own processes -------------------------------------------------------------------------------------
+
+FAKE_WORKER = r'''
+import sys, struct, json, os, time
+inp, out = sys.stdin.buffer, sys.stdout.buffer
+while True:
+    h = inp.read(4)
+    if len(h) < 4:
+        break
+    n = struct.unpack(">I", h)[0]
+    data = inp.read(n)
+    if data == b"die": os._exit(3)
+    if data == b"hang": time.sleep(30)
+    if data == b"junk":
+        out.write(struct.pack(">I", 4) + b"nope"); out.flush(); continue
+    reply = {"ok": False, "error": "ValueError: nope"} if data == b"bad" else {"ok": True, "words": [[0, 0, 10, 10, "pid%d" % os.getpid(), 0.9]]}
+    b = json.dumps(reply).encode()
+    out.write(struct.pack(">I", len(b)) + b); out.flush()
+'''
+
+
+@pytest.fixture()
+def fake_worker(tmp_path):
+    import sys
+    from app.engines import isolated
+    made = []
+
+    def make(**kw):
+        w = isolated.Worker("Fake engine", [sys.executable, "-c", FAKE_WORKER], log=tmp_path / "logs" / "fake.log", **kw)
+        made.append(w)
+        return w
+    yield make
+    for w in made:
+        w.stop()
+
+
+def test_a_worker_process_answers_page_after_page(fake_worker):
+    w = fake_worker()
+    first, second = w.call(b"page one"), w.call(b"page two")
+    assert first[0][4] == second[0][4] and first[0][4].startswith("pid")                             # the same process: the model is loaded once
+    assert first[0][:4] == [0, 0, 10, 10] and first[0][5] == 0.9
+
+
+def test_a_bad_page_is_reported_and_the_process_carries_on(fake_worker):
+    from app.engines import isolated
+    w = fake_worker()
+    pid = w.call(b"ok")[0][4]
+    with pytest.raises(isolated.WorkerError, match="could not read the page: ValueError: nope"):
+        w.call(b"bad")
+    assert w.call(b"ok")[0][4] == pid                                                                # one bad page does not cost the model
+
+
+def test_a_crashed_worker_fails_that_page_and_the_next_one_starts_fresh(fake_worker):
+    from app.engines import isolated
+    w = fake_worker()
+    pid = w.call(b"ok")[0][4]
+    with pytest.raises(isolated.WorkerError, match="stopped unexpectedly"):
+        w.call(b"die")
+    again = w.call(b"ok")[0][4]
+    assert again != pid                                                                              # a new process, so the server keeps working
+
+
+def test_a_worker_that_hangs_is_killed(fake_worker):
+    from app.engines import isolated
+    w = fake_worker(first_timeout=0.6, timeout=0.6)
+    with pytest.raises(isolated.WorkerError, match="did not answer within"):
+        w.call(b"hang")
+    assert w.call(b"ok")[0][4].startswith("pid")                                                     # and the next page is fine
+
+
+def test_an_unreadable_answer_is_an_error_not_a_crash(fake_worker):
+    from app.engines import isolated
+    w = fake_worker()
+    with pytest.raises(isolated.WorkerError, match="could not be read"):
+        w.call(b"junk")
+    assert w.call(b"ok")[0][4].startswith("pid")
+
+
+def test_the_worker_loop_answers_frames_and_survives_an_engine_error():
+    import json
+    import struct
+    from app.engines import worker
+
+    class Engine:
+        def _words(self, jpeg):
+            if jpeg == b"boom":
+                raise RuntimeError("model fell over")
+            return [local.Word(1, 2, 3, 4, "hi", 0.5)]
+
+    def frame(b):
+        return struct.pack(">I", len(b)) + b
+    inp, out = io.BytesIO(frame(b"a") + frame(b"boom") + frame(b"b")), io.BytesIO()
+    worker.serve(Engine(), inp, out)
+    out.seek(0)
+    replies = []
+    while (data := worker.read_frame(out)) is not None:
+        replies.append(json.loads(data))
+    assert [r["ok"] for r in replies] == [True, False, True]
+    assert replies[0]["words"] == [[1, 2, 3, 4, "hi", 0.5]] and "RuntimeError: model fell over" in replies[1]["error"]
+
+
+def test_only_the_engines_that_cannot_share_a_process_are_isolated(monkeypatch):
+    from app.engines import isolated
+    assert {e.id: e.isolated for e in local.engines()} == {"tesseract": False, "rapidocr": False, "paddleocr": True, "doctr": True}
+
+    class Heavy(local.Engine):
+        id, label, isolated = "heavy", "Heavy", True
+        def available(self): return True
+        def _words(self, jpeg): raise AssertionError("must run in the child process")
+    seen = []
+    monkeypatch.setattr(isolated, "call", lambda eid, label, jpeg: (seen.append((eid, label)), [[1, 2, 30, 40, "x", 0.8]])[1])
+    r = run(Heavy().read(jpeg_of(False)))
+    assert seen == [("heavy", "Heavy")] and r.lines == ["x"] and r.confidence == 0.8                  # the parent only talks to the worker
+    monkeypatch.setattr(local, "IN_WORKER", True)
+
+    class Inside(Heavy):
+        def _words(self, jpeg): return [W(0, 0, 10, 10, "direct")]
+    assert run(Inside().read(jpeg_of(False))).lines == ["direct"]                                     # inside the worker it runs the engine itself
