@@ -14,7 +14,10 @@ export const isBlank = (c: Cell) => c.value === null || c.value === undefined ||
 export function stateOf(c: Cell): { key: 'done' | 'quiet' | 'flag'; text: string } {
     if (c.status === 'corrected') return { key: 'done', text: display(c.value) === display(c.original as Cell['value']) ? 'Confirmed' : 'Edited' };
     switch (c.status) {
-        case 'agreed': return { key: 'done', text: c.method ? 'Read from checkbox' : 'Both readers agree' };
+        case 'agreed':
+            if (c.settled_by) return { key: 'done', text: 'Settled by a third reading' };
+            if (c.method === 'text-layer') return { key: 'done', text: 'Read from the PDF text' };
+            return { key: 'done', text: c.method ? 'Read from checkbox' : 'Both readers agree' };
         case 'single': return { key: 'quiet', text: 'One reader' };
         case 'empty': return { key: 'quiet', text: 'Blank' };
         default: return { key: 'flag', text: c.status === 'undetermined' ? 'Could not read' : 'Check' };
@@ -31,7 +34,13 @@ export function typedLike(cell: Cell, text: string): Value {
 }
 export const altText = (cell: Cell, a: string) => (typeof cell.value === 'boolean' ? (/^(true|yes)$/i.test(a.trim()) ? 'Yes' : 'No') : a);
 export const altIntro = (cell: Cell) =>
-    /scanned text/.test(cell.reason ?? '') ? 'The scanned text reads' : /pixels/.test(cell.reason ?? '') ? 'A model read it as' : 'The second reader saw';
+    /scanned text/.test(cell.reason ?? '') ? 'The scanned text reads' : /pixels/.test(cell.reason ?? '') ? 'A model read it as' : /third reading/.test(cell.reason ?? '') ? 'Earlier readings:' : 'The second reader saw';
+
+/** A repeated label on a later page is keyed `label_p<page>`; say which page so two "Total"s are not identical rows. */
+export const labelFor = (name: string, cell: Cell): string => {
+    const base = cell.label ?? name.split('.').pop()?.replace(/_/g, ' ') ?? name;
+    return /_p\d+$/.test(name) && !/\(page \d+\)/.test(base) ? `${base} (page ${cell.page})` : base;
+};
 
 const CELL = /^(?<t>[^[\]]+)\[(?<r>\d+)\]\.(?<c>.+)$/;
 export const cellKey = (table: string, row: number, col: string) => `${table}[${row}].${col}`;
@@ -86,4 +95,11 @@ export function revealInPane(el: HTMLElement | null, paneSelector = '.panel__bod
     const top = p.top + 44;                        // a sticky section heading covers the first rows
     if (e.top < top) pane.scrollTop -= top - e.top;
     else if (e.bottom > p.bottom - 8) pane.scrollTop += e.bottom - p.bottom + 8;
+}
+
+/** Scroll a pane so an element sits at its top (without moving the window, which scrollIntoView would). */
+export function scrollPaneTo(el: HTMLElement | null, paneSelector = '.panel__body'): void {
+    const pane = el?.closest<HTMLElement>(paneSelector);
+    if (!el || !pane) return;
+    pane.scrollTop += el.getBoundingClientRect().top - pane.getBoundingClientRect().top - 40;   // clear the sticky heading
 }

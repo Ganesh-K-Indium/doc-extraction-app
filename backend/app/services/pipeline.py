@@ -230,5 +230,11 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
                   "needs_review": sum(1 for f in forms for c in list(f["fields"].values()) + [x for rows in f["tables"].values() for r in rows for x in r.values()]
                                       if c.get("status") in ("review", "undetermined")),
                   "errors": sum(1 for v in findings if v["severity"] == "error"),
-                  "failed_pages": sum(1 for p in pages if p["source"] == "failed")},
+                  "failed_pages": sum(1 for p in pages if p["source"] == "failed"),
+                  # how the file was read, for the Documents page: code (digital), models (scans), handwriting seen
+                  "digital_pages": sum(1 for p in pages if p["source"] == "text-layer"),
+                  "scanned_pages": sum(1 for p in pages if p["source"] in ("ocr", "ocr-local", "text-layer-unverified")),
+                  "handwritten_pages": sum(1 for p in pages if p.get("handwritten")),
+                  "unverified_tables": sum(1 for f in forms for rows in f["tables"].values()
+                                           if any(c.get("method") == "text-layer" and c.get("status") == "review" for r in rows for c in r.values()))},
     }

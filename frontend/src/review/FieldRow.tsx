@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { Cell } from '../api';
-import { altIntro, altText, display, FLAGGED, rowId, stateOf, typedLike, type Value } from './helpers';
+import { altIntro, altText, display, FLAGGED, labelFor, rowId, stateOf, typedLike, type Value } from './helpers';
 import { Tick } from './Tick';
 
 /** The control that fits the value: tick box, choice list, checklist, or a text box that grows with its content. */
@@ -58,7 +58,7 @@ export function FieldRow({ doc, name, cell, selected, onSelect, onSave, onJump }
     const inputId = `in-${doc}-${name}`;
     return (
         <div id={rowId(doc, name)} className={`field field--${st.key}${selected ? ' field--on' : ''}`} onClick={onSelect} onFocus={onSelect}>
-            <label className="field__label" htmlFor={inputId}>{cell.label ?? name.split('.').pop()?.replace(/_/g, ' ')}</label>
+            <label className="field__label" htmlFor={inputId}>{labelFor(name, cell)}</label>
             <div className="field__control"><Control id={inputId} cell={cell} onSave={onSave} /></div>
             <div className="field__meta">
                 <span className="field__state" title={cell.reason}>{st.key === 'done' && <Tick />}{st.text}</span>

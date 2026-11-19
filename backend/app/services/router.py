@@ -70,8 +70,8 @@ def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: boo
 
 
 READERS = [
-    {"id": "text_layer", "label": "Embedded text", "summary": "Digital page: the PDF's own text is exact, no model needed."},
-    {"id": "ocr_dual", "label": "Two vision readers", "summary": "Scan or image-only page: two models transcribe it and their readings are compared by content. A Tesseract layer supplies positions for highlighting."},
+    {"id": "text_layer", "label": "Embedded text (read by code)", "summary": "Digital page: the PDF's own text and table cells are copied exactly, and every number in a table is checked against the page. No model is used unless code cannot prove it read a form-like page completely."},
+    {"id": "ocr_dual", "label": "Two vision readers", "summary": "Scan, photo or handwriting: two models transcribe the page and their readings are compared by content. A Tesseract layer supplies positions for highlighting. Disputed values get one focused third look."},
     {"id": "ocr_local", "label": "Tesseract on this machine", "summary": "Scan with no model configured: read locally, nothing leaves the server. Single reader, so unverified."},
     {"id": "text_layer_unverified", "label": "Scanner text, unverified", "summary": "Scan with neither a model nor Tesseract available: only the scanner's own text, if it has any, is used."},
 ]

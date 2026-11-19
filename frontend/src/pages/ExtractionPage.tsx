@@ -5,7 +5,7 @@ import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
 import { useWorkspace } from '../workspaceContext';
 import { FieldRow } from '../review/FieldRow';
-import { allCells, cellAt, FLAGGED, matches, revealInPane, rowId, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
+import { allCells, cellAt, FLAGGED, matches, revealInPane, rowId, scrollPaneTo, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
 import { JsonView } from '../review/JsonView';
 import { PdfPane } from '../review/PdfPane';
 import { TableGrid } from '../review/TableGrid';
@@ -13,8 +13,25 @@ import '../components/textLayer.css';
 
 type Tab = 'fields' | 'pages' | 'findings' | 'json';
 const FILTERS: [Filter, string][] = [['all', 'All'], ['check', 'To check'], ['blank', 'Blank'], ['edited', 'Edited']];
-const EXTRACT_LABEL: Record<string, string> = { template_form: 'Read against a template', discover: 'Discovered without a template', kv: 'Read as label and value pairs', skip: 'Not extracted' };
-const READER_LABEL: Record<string, string> = { text_layer: 'embedded text', ocr_dual: 'two vision readers', ocr_local: 'Tesseract on this server', text_layer_unverified: 'the scanner’s own text (unverified)' };
+const EXTRACT_LABEL: Record<string, string> = { template_form: 'Read against a template', discover: 'Read without a template', kv: 'Read as label and value pairs', skip: 'Not extracted' };
+const READER_LABEL: Record<string, string> = { text_layer: 'embedded text, by code', ocr_dual: 'two vision readers', ocr_local: 'Tesseract on this server', text_layer_unverified: 'the scanner’s own text (unverified)' };
+
+/** One honest sentence about how a document's values were obtained. */
+function provenance(f: Form): string {
+    if (f.readers.includes('text-layer')) return 'Read directly from the PDF’s own text and tables, so these values are exact copies. Tables were checked against the page: every number printed in them is present.';
+    if (f.readers.length > 1) return 'Read by two models independently and compared. Values they agree on are quiet; anything else is marked Check.';
+    if (f.readers.length === 1) return 'Read by one model only, so nothing was cross-checked. Treat every value as unverified.';
+    return 'No model was available, so only text the PDF already holds was used.';
+}
+function readLine(s: NonNullable<Detail['stats']>): string {
+    const parts: string[] = [];
+    if (s.digital_pages) parts.push(`${s.digital_pages} digital ${s.digital_pages === 1 ? 'page' : 'pages'} read by code`);
+    if (s.scanned_pages) parts.push(`${s.scanned_pages} scanned ${s.scanned_pages === 1 ? 'page' : 'pages'} read by models`);
+    if (s.handwritten_pages) parts.push(`${s.handwritten_pages} with handwriting`);
+    if (s.usage) parts.push(s.usage.calls === 0 ? 'no model calls' : `${s.usage.calls} model ${s.usage.calls === 1 ? 'call' : 'calls'}, ${s.usage.tokens.toLocaleString()} tokens`);
+    return parts.join(' · ');
+}
+const sectionId = (doc: number, name: string) => `sec-${doc}-${name.replace(/\W/g, '_')}`;
 
 const formTitle = (f: Form) => (f.discovered ? f.label || 'Untitled document' : f.template_id);
 const pageRange = (p: number[]) => (p.length === 1 ? `page ${p[0]}` : `pages ${p[0]}–${p[p.length - 1]}`);
@@ -145,9 +162,10 @@ export default function ExtractionPage() {
         return (
             <>
                 {f.remainder && <div className="banner banner--rest"><p>Everything else on these pages that the form’s template does not cover. Printed text that belongs to the form itself (phone numbers in a header, a legend) can appear here too; ignore it.</p></div>}
+                {!f.remainder && <p className="provenance">{provenance(f)}</p>}
                 {f.discovered && !f.remainder && (
                     <div className="banner">
-                        <p>No template matched, so these fields were found by reading the page. Check the values marked “Check”, then save this as a document type to have the next file of this kind recognised and validated.</p>
+                        <p>No template matched, so these fields were discovered from the page. {Object.values(f.fields).some(c => FLAGGED.has(c.status)) || Object.values(f.tables).some(rows => rows.some(r => Object.values(r).some(c => FLAGGED.has(c.status)))) ? 'Check the values marked “Check”, then save' : 'Save'} this as a document type to have the next file of this kind recognised, validated and named the same way every time.</p>
                         {saved[f.doc_index]
                             ? <p className="banner__ok">Saved as “{saved[f.doc_index]}”. New uploads of this kind will use it.</p>
                             : <button className="btn" onClick={async () => {
@@ -157,13 +175,24 @@ export default function ExtractionPage() {
                                 catch (e) { setError((e as Error).message); }
                             }}>Save as document type</button>}
                     </div>)}
+                {(() => {
+                    const targets = [...groups(f).filter(g => g.keys.some(shown)).map(g => ({ id: sectionId(f.doc_index, g.title), title: g.title })),
+                        ...Object.entries(f.tables).filter(([n, rows]) => tableShown(rows, n)).map(([n]) => ({ id: sectionId(f.doc_index, n), title: n === 'cpt' ? 'CPT / HCPCS services' : n.replace(/_/g, ' ') }))];
+                    return targets.length > 4 ? (
+                        <label className="jump">Jump to
+                            <select value="" onChange={e => { scrollPaneTo(document.getElementById(e.target.value)); e.target.value = ''; }}>
+                                <option value="">{targets.length} sections…</option>
+                                {targets.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+                            </select>
+                        </label>) : null;
+                })()}
                 {!anything && <p className="empty">Nothing matches. {filter !== 'all' ? 'Try “All”.' : 'Try a different search.'}</p>}
                 {groups(f).map(g => {
                     const keys = g.keys.filter(shown);
                     if (!keys.length) return null;
                     const flagged = g.keys.filter(k => FLAGGED.has(f.fields[k].status)).length;
                     return (
-                        <details key={g.title} className="section" open>
+                        <details key={g.title} id={sectionId(f.doc_index, g.title)} className="section" open>
                             <summary><span className="section__title">{g.title}</span>
                                 <span className={flagged ? 'section__count section__count--flag' : 'section__count'}>{flagged ? `${flagged} to check` : `${g.keys.length}`}</span></summary>
                             {keys.map(k => <FieldRow key={k} doc={f.doc_index} name={k} cell={f.fields[k]} selected={sel?.doc === f.doc_index && sel.key === k}
@@ -171,9 +200,10 @@ export default function ExtractionPage() {
                         </details>);
                 })}
                 {Object.entries(f.tables).map(([name, rows]) => tableShown(rows, name) && (
-                    <details key={name} className="section" open>
+                    <details key={name} id={sectionId(f.doc_index, name)} className="section" open={rows.length <= 30 || rows.some(r => Object.values(r).some(c => FLAGGED.has(c.status)))}>
                         <summary><span className="section__title">{name === 'cpt' ? 'CPT / HCPCS services' : name.replace(/_/g, ' ')}</span>
-                            <span className="section__count">{rows.length} {rows.length === 1 ? 'row' : 'rows'}</span></summary>
+                            {(() => { const n = rows.reduce((a, r) => a + Object.values(r).filter(c => FLAGGED.has(c.status)).length, 0);
+                                return <span className={n ? 'section__count section__count--flag' : 'section__count'}>{n ? `${n} to check · ` : ''}{rows.length} {rows.length === 1 ? 'row' : 'rows'}</span>; })()}</summary>
                         <TableGrid doc={f.doc_index} name={name} rows={rows} columns={f.table_columns?.[name]}
                             selectedKey={sel?.doc === f.doc_index ? sel.key : null}
                             onSelect={(key, cell) => select({ doc: f.doc_index, key }, cell)} onSave={(key, v) => save(f.doc_index, key, v)} />
@@ -218,6 +248,7 @@ export default function ExtractionPage() {
                         <span className={queue.length ? 'tally__item tally__item--flag' : 'tally__item'}><b>{queue.length}</b> to check</span>
                         <span className={errors ? 'tally__item tally__item--flag' : 'tally__item'}><b>{errors}</b> {errors === 1 ? 'error' : 'errors'}</span>
                     </div>)}
+                {done && data.stats && <p className="readline">{readLine(data.stats)}</p>}
             </header>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {!done ? (
@@ -257,7 +288,7 @@ export default function ExtractionPage() {
 
                     <div className="panel__body">
                         {tab === 'fields' && (forms.length === 0
-                            ? <p className="empty">No fields were extracted from this file. That happens when no model is configured on this server (fields are read by vision models) or when the file holds only cover or blank pages. The Pages tab shows the text that was read.</p>
+                            ? <p className="empty">No fields were extracted from this file. That happens when the file is a scan or handwriting and no model is configured on this server, or when it holds only cover or blank pages. The Pages tab shows the text that was read.</p>
                             : active && fieldsView(active))}
                         {tab === 'pages' && data.pages?.documents.map(d => (
                             <section key={d.doc_index} className="group"><h2 className="legend">{d.label} <span className="muted">pages {d.pages.join(', ')}</span></h2>
@@ -268,7 +299,8 @@ export default function ExtractionPage() {
                                     return (
                                         <details key={n} className="pagecard" onToggle={e => (e.currentTarget as HTMLDetailsElement).open && jump(n)}>
                                             <summary><b>Page {n}</b> {p.classification.label}
-                                                <span className={p.verified ? 'tag' : 'tag tag--flag'}>{p.verified ? 'verified' : 'unverified'}</span></summary>
+                                                <span className={p.verified ? 'tag' : 'tag tag--flag'}>{p.verified ? 'verified' : 'unverified'}</span>
+                                                {p.handwritten && <span className="tag tag--hand">handwriting</span>}</summary>
                                             <p className="route">Read by <b>{READER_LABEL[p.route?.reader ?? ''] ?? p.source}</b>: {p.route?.reasons.join('; ')}.</p>
                                             {p.error && <p className="field__alt">This page could not be read: {p.error}</p>}
                                             {flagged.map((l, i) => <p key={i} className="field__alt">{l.text}{l.alternatives.length ? ` (second reader: ${l.alternatives.join(' / ')})` : ''}</p>)}

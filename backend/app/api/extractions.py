@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from app import config, db
 from app.api.deps import require_key, workspace
 from app.services import export, ocr, pipeline, remainder, template_draft, workspace_types
+from app.services.usage_tracker import track_usage
 
 logger = logging.getLogger("app.api.extractions")
 
@@ -21,7 +22,20 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/extractions", tags=["e
 def _summary(ex) -> dict:
     return {"id": ex.id, "filename": ex.filename, "status": ex.status, "stage": ex.stage,
             "progress": {"done": ex.progress_done, "total": ex.progress_total}, "error": ex.error,
-            "template_choice": ex.template_choice, "read_rest": bool(ex.read_rest), "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats")}
+            "template_choice": ex.template_choice, "read_rest": bool(ex.read_rest), "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats"),
+            # what the file turned out to be: the discovered title, else the classified label, for the first few documents
+            "labels": _labels(ex)}
+
+
+def _labels(ex) -> list:
+    res = ex.result or {}
+    titles = {f["doc_index"]: f.get("label") for f in res.get("forms", []) if f.get("label") and not f.get("remainder")}
+    out: list = []
+    for d in res.get("documents", []):
+        label = titles.get(d["doc_index"]) or d.get("label")
+        if label and label not in ("Unclassified", "Untemplated document") and label not in out:
+            out.append(label)
+    return out[:3]
 
 
 def _get(s, workspace_id: str, extraction_id: str):
@@ -64,8 +78,11 @@ async def run_extraction(extraction_id: str) -> None:
         choice, ws_id, rest = ex.template_choice or "auto", ex.workspace_id, bool(ex.read_rest)
         s.commit()
     try:
-        with workspace_types.use(ws_id):
+        with workspace_types.use(ws_id), track_usage(f"extraction:{extraction_id[:8]}") as usage:
             result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice, read_rest=rest)
+        summary = usage.summary()
+        result["stats"]["usage"] = {"calls": len(usage.entries), "tokens": summary["total_tokens"],
+                                    "by_stage": {k: v["tokens"] for k, v in summary["by_stage"].items()}}
         result["pipeline_version"] = config.PIPELINE_VERSION
         status, error = "done", None
     except ocr.OcrError as e:

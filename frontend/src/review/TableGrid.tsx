@@ -21,12 +21,13 @@ interface Props {
     selectedKey: string | null; onSelect: (key: string, cell: Cell) => void; onSave: (key: string, v: Value) => void;
 }
 
-/** A table whose cells can all be edited in place. Flagged cells are tinted; hover shows why. */
+/** A table whose cells can all be edited in place. Flagged cells are tinted; hover shows why. A long or wide table (a
+ *  financial statement) scrolls inside itself with its column headings and row labels kept in view. */
 export function TableGrid({ doc, name, rows, columns, selectedKey, onSelect, onSave }: Props) {
     if (rows.length === 0) return <p className="empty">No rows were found.</p>;
     const keys = Object.keys(rows[0]);
     return (
-        <div className="gridwrap">
+        <div className={rows.length > 15 ? 'gridwrap gridwrap--tall' : 'gridwrap'} tabIndex={rows.length > 15 ? 0 : undefined} aria-label={rows.length > 15 ? `${name.replace(/_/g, ' ')} table, scrollable` : undefined}>
             <table className="grid editable">
                 <thead><tr><th className="grid__n" scope="col"><span className="sr-only">Row</span></th>{keys.map((k, i) => <th key={k} scope="col">{columns?.[i] || (k.startsWith('col_') ? '' : k.replace(/_/g, ' '))}</th>)}</tr></thead>
                 <tbody>{rows.map((row, r) => (

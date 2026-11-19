@@ -292,3 +292,46 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .split { overflow: hidden; }
 .panel__body, .editor__panel, .editor__wide, .list, .jt, .jsonview__raw, .docs, .lp { overscroll-behavior: contain; }
 .lp { height: 100vh; height: 100dvh; }
+
+
+/* ---- Documents page: many different files ------------------------------------------------------------------------- */
+.tablewrap { overflow-x: auto; }
+.ledger__sub { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--ink-2); max-width: 36ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger td { vertical-align: top; } .ledger tbody th { vertical-align: top; }
+.kinds { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.kind { font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 99px; border: 1px solid var(--rule); color: var(--ink-2); white-space: nowrap; }
+.kind--digital { color: var(--teal); background: var(--teal-bg); border-color: transparent; }
+.kind--scan { color: var(--ink); background: var(--sunk); }
+.kind--hand { color: var(--amber); background: var(--amber-bg); border-color: transparent; }
+.listbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 12px; }
+.listbar .search { flex: 1 1 220px; min-width: 0; max-width: 360px; }
+.listbar__sort { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); margin-left: auto; }
+.listmore { display: flex; align-items: center; gap: 12px; margin: 14px 0 0; }
+.notice ul { margin: 6px 0 0; padding-left: 18px; } .notice code { font-size: 12px; }
+.suggest { margin: 0 0 24px; padding: 16px 18px; border: 1px solid var(--rule); border-left: 3px solid var(--teal); border-radius: var(--r); background: var(--panel); }
+.suggest h2 { font-size: 15px; margin: 0 0 2px; } .suggest > p { margin: 0 0 10px; }
+.suggest ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.suggest li { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--rule); }
+.suggest__fields { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; max-width: 70ch; }
+.suggest__act { display: inline-flex; gap: 4px; flex: none; }
+
+/* ---- Review: provenance, long statements ------------------------------------------------------------------------- */
+.provenance { margin: 6px 0 4px; font-size: 12px; color: var(--ink-2); line-height: 1.5; max-width: 70ch; }
+.readline { margin: 6px 0 0; font-size: 12px; color: var(--ink-2); }
+.jump { display: flex; align-items: center; gap: 8px; margin: 6px 0 10px; font-size: 12px; color: var(--ink-2); }
+.jump select { max-width: 100%; min-width: 0; flex: 1; text-transform: capitalize; }
+.tag--hand { color: var(--amber); font-weight: 500; }
+.gridwrap--tall { max-height: 62vh; overflow: auto; border: 1px solid var(--rule); border-radius: var(--r); }
+.gridwrap--tall:focus-visible { outline: 2px solid var(--action); outline-offset: 1px; }
+.gridwrap--tall .grid.editable thead th { position: sticky; top: 0; z-index: 3; background: var(--panel); box-shadow: 0 1px 0 var(--rule); }
+.grid.editable .grid__n { width: 28px; min-width: 28px; text-align: right; padding: 0 6px; color: var(--ink-2); font-size: 11px; }
+.gridwrap--tall .grid.editable tbody th.grid__n, .gridwrap--tall .grid.editable thead th.grid__n { position: sticky; left: 0; z-index: 2; background: var(--panel); }
+.gridwrap--tall .grid.editable td:nth-child(2) { position: sticky; left: 28px; z-index: 1; background: var(--panel); box-shadow: 1px 0 0 var(--rule); }
+.gridwrap--tall .grid.editable thead th:nth-child(2) { left: 28px; z-index: 4; }
+.gridwrap--tall .grid.editable td.is-flag:nth-child(2) { background: var(--pink-bg); }
+.grid.editable td:nth-child(2) input { min-width: 180px; }
+
+@media (max-width: 720px) {
+  .listbar__sort { margin-left: 0; } .suggest li { align-items: flex-start; }
+  .ledger__sub { max-width: 24ch; }
+}

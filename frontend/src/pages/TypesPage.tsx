@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { meta, templates, type RegistryType, type Registry, type TemplateDoc, type TemplateField } from '../api';
 import type { Overlay, PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
+import { Suggestions } from '../components/Suggestions';
 import { TemplateEditor } from '../components/TemplateEditor';
 import { slugify } from '../lib/slug';
 import { PdfPane } from '../review/PdfPane';
@@ -101,8 +102,9 @@ export default function TypesPage() {
     return (
         <main className="list">
             <h1 className="page-title">Document types</h1>
-            <p className="lede">A known type is read against its template and validated. Anything else is read without one, and you can save the result as a type afterwards. To add a type before you have an example filled in, upload a blank copy of the form. Types you add belong to this workspace only; the built-in ones are available everywhere.</p>
+            <p className="lede">You never have to define a type first: files that match nothing are read without a template, and your files are watched for layouts that repeat. A known type is read against its template, validated, and named the same way every time. Save a reviewed result as a type, accept a suggestion below, or upload a blank form to draft one. Types you add belong to this workspace only; the built-in ones are available everywhere.</p>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
+            <Suggestions wid={wid} limit={5} onSaved={() => { load(); reload(); }} onError={setError} />
 
             <div className="intake intake--row">
                 <div><h2 className="section-title" style={{ margin: 0 }}>Add a type from a blank form</h2>
@@ -128,7 +130,7 @@ export default function TypesPage() {
                                 </td>
                             </tr>))}</tbody>
                     </table>
-                    <h2 className="section-title">How text is read</h2>
+                    <h2 className="section-title">How pages are read</h2>
                     <dl className="defs">{reg.readers.map(r => (<div key={r.id}><dt>{r.label}</dt><dd>{r.summary}</dd></div>))}</dl>
                 </>
             )}

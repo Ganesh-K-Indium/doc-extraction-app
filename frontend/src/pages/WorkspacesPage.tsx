@@ -93,7 +93,7 @@ export default function WorkspacesPage() {
     return (
         <main className="list">
             <h1 className="page-title">Workspaces</h1>
-            <p className="lede">A workspace keeps its own documents and its own document types, so each project or client stays separate. Open one to upload files and review what was extracted.</p>
+            <p className="lede">A workspace keeps its own documents and its own document types, so each project or client stays separate. Open one to upload files, of any kind and in any number, and review what was extracted.</p>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
 
             {items === null ? (!error && <p className="muted">Loading workspaces</p>) : items.length === 0 ? (

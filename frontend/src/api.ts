@@ -10,11 +10,19 @@ export type Status = 'agreed' | 'review' | 'single' | 'empty' | 'corrected' | 'u
 export interface Summary {
     id: string; filename: string; status: 'queued' | 'processing' | 'done' | 'failed'; stage: string | null;
     progress: { done: number; total: number }; error: string | null; created_at: string; template_choice?: string; read_rest?: boolean;
-    stats: { pages: number; forms: number; needs_review: number; errors: number } | null;
+    stats: Stats | null;
+    /** What the file turned out to be (discovered title or classified type), first few documents. */
+    labels?: string[];
+}
+export interface Stats {
+    pages: number; forms: number; needs_review: number; errors: number;
+    /** How it was read: digital pages by code, scans by vision models, pages with handwriting. Absent on older results. */
+    digital_pages?: number; scanned_pages?: number; handwritten_pages?: number; unverified_tables?: number;
+    usage?: { calls: number; tokens: number; by_stage: Record<string, number> };
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }
 export interface Page {
-    page: number; source: string; verified: boolean; scanned: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
+    page: number; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
     route?: Route; page_meta: Record<string, string | number>; classification: { type: string; label: string; confidence: number };
 }
 export interface Route { reasons: string[]; reader?: string; extractor?: string }
@@ -22,6 +30,8 @@ export interface Doc { doc_index: number; type: string; label: string; pages: nu
 export interface Cell {
     value: string | string[] | boolean | null; status: Status; alternatives: string[]; reason?: string;
     method?: string | null; bbox: BBox | null; page: number; original?: unknown; label?: string; section?: string | null;
+    /** Set when a third reading settled a disagreement between the two readers. */
+    settled_by?: string;
     type?: string; options?: string[];
 }
 export interface Form {
@@ -50,6 +60,10 @@ export interface TemplateDoc {
     [k: string]: unknown;
 }
 export type DraftTemplate = TemplateDoc;
+export interface Suggestion {
+    title: string | null; count: number; fields: string[]; tables: string[];
+    examples: { extraction_id: string; doc_index: number; filename: string }[];
+}
 export interface Registry { types: RegistryType[]; readers: { id: string; label: string; summary: string }[] }
 
 export interface Workspace {
@@ -92,6 +106,8 @@ export const templates = {
     get: (wid: string, docType: string) => send<{ template: TemplateDoc; builtin: boolean }>(`${ws(wid)}/templates/${encodeURIComponent(docType)}`),
     replace: (wid: string, template: TemplateDoc) => send<{ doc_type: string }>(`${ws(wid)}/templates/${encodeURIComponent(template.doc_type)}`, json('PUT', { template })),
     remove: (wid: string, docType: string) => send<void>(`${ws(wid)}/templates/${encodeURIComponent(docType)}`, { method: 'DELETE' }),
+    /** Document shapes that keep recurring among this workspace's untemplated files. */
+    suggestions: (wid: string) => send<{ suggestions: Suggestion[] }>(`${ws(wid)}/templates/suggestions`).then(r => r.suggestions),
 };
 
 export const api = {
