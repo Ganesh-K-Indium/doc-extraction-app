@@ -19,7 +19,7 @@ Nothing here knows what a patient, a form or a code means, so a new document typ
 import re
 from typing import Any, Dict, List, Optional
 
-from app.services import normalize as N
+from app.services.extraction import normalize as N
 
 
 def _val(form: Dict[str, Any], key: str) -> str:

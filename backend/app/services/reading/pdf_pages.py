@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pymupdf as fitz
 
-from app.services import ocr
+from app.services.reading import ocr
 
 FITZ_LOCK = threading.RLock()
 
@@ -75,7 +75,7 @@ def _tables(page, page_num: int) -> List[Dict[str, Any]]:
     keeps column alignment; PyMuPDF's generic find_tables() is the fallback for text-only tables it rejects."""
     out: List[Dict[str, Any]] = []
     try:
-        from app.services.table_extractor import extract_page_tables_with_bbox
+        from app.services.reading.table_extractor import extract_page_tables_with_bbox
         for t, bb in extract_page_tables_with_bbox(page, page_num):
             out.append({"bbox": round_rect(bb), "headers": t["headers"], "rows": t["rows"], "method": "layout"})
     except Exception:
@@ -131,16 +131,19 @@ def analyze_page(path: str, page_num: int) -> Dict[str, Any]:
         }
 
 
-def build_work_pdf(src: str, dst: str, scanned: "set[int]") -> "dict[int, str]":
+def build_work_pdf(src: str, dst: str, scanned: "set[int]", tsv_out: "Optional[dict[int, str]]" = None) -> "dict[int, str]":
     """Copy `src` to `dst`, replacing each page in `scanned` with a Tesseract-searchable version.
-    Returns {page: 'ok' | error text} for the scanned pages; a failed page is copied through untouched."""
-    from app.services import tess
+    Returns {page: 'ok' | error text} for the scanned pages; a failed page is copied through untouched.
+    `tsv_out`, when given, receives each scanned page's Tesseract word table, so the page need not be OCR'd twice."""
+    from app.services.reading import tess
     status: "dict[int, str]" = {}
     with FITZ_LOCK, open_pdf(src) as pdf, fitz.open() as out:
         for n in range(1, pdf.page_count + 1):
             if n in scanned and tess.available():
                 try:
-                    one = tess.searchable_page(pdf[n - 1])
+                    one, tsv = tess.searchable_page_with_words(pdf[n - 1])
+                    if tsv_out is not None:
+                        tsv_out[n] = tsv
                     out.insert_pdf(one)
                     one.close()
                     status[n] = "ok"

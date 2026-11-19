@@ -5,7 +5,7 @@ These are what a reviewer reads first, so they should be few, specific and actio
 import re
 from typing import Any, Dict, List
 
-from app.services import normalize as N
+from app.services.extraction import normalize as N
 
 _ICD10 = re.compile(r"^[A-TV-Z]\d[0-9A-Z](\.?[0-9A-Z]{1,4})?$")
 

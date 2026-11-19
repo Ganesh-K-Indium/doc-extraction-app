@@ -5,6 +5,8 @@ Two decisions, both returned with human-readable reasons so a reviewer (or a fut
 
   decide_reader(profile)   -> how to get the page TEXT:
         text_layer             born-digital page, embedded text is exact
+        ocr_ladder             scan: local OCR first, vision models only when the local reading is doubtful
+        ocr_local              scan: local OCR only (economy plan, or no model configured)
         text_layer_unverified  scan with only the scanner's own text layer, and no model available
         ocr_dual               scan / image-only page: two independent vision readers, lines cross-checked
   decide_extractor(doc)    -> how to get the document's DATA:
@@ -18,7 +20,8 @@ kind is a registry entry (classify.DOC_TYPES) plus, for a fixed form, a template
 """
 from typing import Any, Dict, List
 
-from app.services import classify, ocr
+from app.services.documents import classify
+from app.services.reading import ocr
 
 
 
@@ -32,7 +35,10 @@ def profile_page(info: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def decide_reader(profile: Dict[str, Any], llm_available: bool, tesseract_available: bool = False) -> Dict[str, Any]:
+def decide_reader(profile: Dict[str, Any], llm_available: bool, local_available: bool = False, mode: str = "vision") -> Dict[str, Any]:
+    """How to get a page's text. `mode` is the reading plan's effective mode (engines/plan.py): "vision" sends every scan
+    to the vision models, "escalate" reads it locally first and escalates only when that reading is doubtful, "local"
+    never calls a model."""
     reasons: List[str] = []
     if profile["scanned"]:
         reasons.append("the page is a picture, or its embedded text is unreadable, so any text layer is not trusted")
@@ -41,11 +47,14 @@ def decide_reader(profile: Dict[str, Any], llm_available: bool, tesseract_availa
     else:
         reasons.append(f"{profile['chars']} characters of embedded text and no page-sized picture")
         return {"reader": "text_layer", "reasons": reasons}
-    if llm_available:
+    if llm_available and mode == "escalate" and local_available:
+        return {"reader": "ocr_ladder", "reasons": reasons + ["local OCR reads the page first; a vision model only steps in if that reading is doubtful"]}
+    if llm_available and mode != "local":
         return {"reader": "ocr_dual", "reasons": reasons + ["two vision readers transcribe the page and are compared"]}
-    if tesseract_available:
-        return {"reader": "ocr_local", "reasons": reasons + ["no model configured, so Tesseract reads the page on this machine (single reader, unverified)"]}
-    return {"reader": "text_layer_unverified", "reasons": reasons + ["no model and no Tesseract available, using the embedded text as is"]}
+    if local_available:
+        why = "the reading plan keeps models out of it" if llm_available else "no model is configured"
+        return {"reader": "ocr_local", "reasons": reasons + [f"{why}, so a local OCR engine reads the page on this machine (single reader, unverified)"]}
+    return {"reader": "text_layer_unverified", "reasons": reasons + ["no model and no local OCR engine available, using the embedded text as is"]}
 
 
 def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: bool = False) -> Dict[str, Any]:
@@ -72,6 +81,7 @@ def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: boo
 READERS = [
     {"id": "text_layer", "label": "Embedded text (read by code)", "summary": "Digital page: the PDF's own text and table cells are copied exactly, and every number in a table is checked against the page. No model is used unless code cannot prove it read a form-like page completely."},
     {"id": "ocr_dual", "label": "Two vision readers", "summary": "Scan, photo or handwriting: two models transcribe the page and their readings are compared by content. A Tesseract layer supplies positions for highlighting. Disputed values get one focused third look."},
-    {"id": "ocr_local", "label": "Tesseract on this machine", "summary": "Scan with no model configured: read locally, nothing leaves the server. Single reader, so unverified."},
+    {"id": "ocr_ladder", "label": "Local OCR, then vision if needed", "summary": "Scan: a local OCR engine reads it first. Only if its confidence is low does a pair of vision models read the page and compare."},
+    {"id": "ocr_local", "label": "Local OCR on this machine", "summary": "Scan read by a local OCR engine (Tesseract by default): nothing leaves the server. Single reader, so unverified; doubtful lines are flagged."},
     {"id": "text_layer_unverified", "label": "Scanner text, unverified", "summary": "Scan with neither a model nor Tesseract available: only the scanner's own text, if it has any, is used."},
 ]

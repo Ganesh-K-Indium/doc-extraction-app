@@ -7,7 +7,9 @@ from pathlib import Path
 import pymupdf as fitz
 import pytest
 
-from app.services import digital, ocr, pdf_pages, pipeline, router
+from app.services.extraction import digital
+from app.services.reading import ocr, pdf_pages, router
+from app.services import pipeline
 from tests.test_api import H, client, mk, up, wait  # noqa: F401  (client is a fixture)
 
 SAMPLE = Path(__file__).resolve().parents[2] / "sample_data" / "MSFT_10-Q_2026-04-29_000119312526191507.pdf"

@@ -2,8 +2,12 @@ import asyncio
 
 import pytest
 
-from app.services import checkboxes, classify, cross, discover, form_extractor, kv, locate, template_draft, normalize as N, ocr, pdf_pages, pipeline, router, validation
-from app.services.tess import available as tess_available
+from app.services.extraction import checkboxes, discover, form_extractor, kv, normalize as N
+from app.services.documents import classify, template_draft
+from app.services.quality import cross, validation
+from app.services.reading import locate, ocr, pdf_pages, router
+from app.services import pipeline
+from app.services.reading.tess import available as tess_available
 from tests.make_packet import build
 
 
@@ -224,7 +228,7 @@ def _scan_pdf(path):
 
 @pytest.mark.skipif(not tess_available(), reason="Tesseract not installed")
 def test_tesseract_layer_makes_scans_highlightable(tmp_path):
-    from app.services import locate
+    from app.services.reading import locate
     src, work = str(tmp_path / "scan.pdf"), str(tmp_path / "scan.work.pdf")
     _scan_pdf(src)
     assert pdf_pages.analyze_page(src, 1)["words"] == []              # a picture: nothing to highlight
@@ -446,7 +450,7 @@ def _disc_cell(label, value, page=1, bbox=None, status="agreed"):
 
 
 def test_rest_subtracts_what_the_template_already_covers():
-    from app.services import remainder
+    from app.services.extraction import remainder
     tpl = pipeline.load_template("magnacare_prior_auth")
     form = {"doc_index": 0, "pages": [1], "tables": {"cpt": [{"code": {"value": "97110", "page": 1, "bbox": [50, 400, 90, 410]}}]},
             "fields": {"member.member_id": {"value": "9000001234", "page": 1, "bbox": [300, 100, 380, 112]},
@@ -508,7 +512,7 @@ def test_form_below_other_text_is_a_form_and_the_rest_is_read_separately(tmp_pat
 
 
 def test_a_workspaces_own_type_beats_a_builtin_with_the_same_title():
-    from app.services import workspace_types
+    from app.services.documents import workspace_types
     page = "Provider Prior Authorization Request Form\nMEMBER INFORMATION\nLast Name: Morgan"
     assert classify.classify_text(page)["type"] == "prior_auth_form"                    # nothing custom: the built-in
     mine = {"type": "my_prior_auth", "label": "My prior auth", "score": 3, "template": "my_prior_auth", "extractor": "template_form",

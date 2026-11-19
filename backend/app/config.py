@@ -14,6 +14,11 @@ MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "50")) * 1024 * 1024
 MAX_PAGES = int(os.getenv("MAX_PAGES", "200"))
 
 
+def data_dir() -> Path:
+    """Read from the environment at call time, like the folders below."""
+    return Path(os.getenv("DATA_DIR", "./data")).resolve()
+
+
 def templates_dir() -> Path:
     """Legacy location of custom templates from before workspaces; read only when migrating."""
     return Path(os.getenv("DATA_DIR", "./data")).resolve() / "templates"
@@ -23,24 +28,43 @@ def custom_types_file() -> Path:
     return Path(os.getenv("DATA_DIR", "./data")).resolve() / "custom_types.json"
 
 
+def local_only() -> bool:
+    """LOCAL_ONLY=1: nothing may leave this machine. Cloud model providers are switched off; local OCR and self-hosted
+    models (Ollama, a private OpenAI-compatible server) still work."""
+    return os.getenv("LOCAL_ONLY", "0").lower() in ("1", "true", "yes")
+
+
 def llm_enabled() -> bool:
-    return os.getenv("LLM_ENABLED", "1").lower() not in ("0", "false", "no") and bool(os.getenv("OPENAI_API_KEY"))
+    """True when models may be called at all: not switched off, and at least one provider is configured."""
+    if os.getenv("LLM_ENABLED", "1").lower() in ("0", "false", "no"):
+        return False
+    from app.engines import llm
+    return llm.any_ready()
 
 
 def extraction_models() -> list:
-    raw = os.getenv("EXTRACTION_MODELS", "gpt-4.1,gpt-4.1-mini")
-    return [m.strip() for m in raw.split(",") if m.strip()][:2]
+    """The server's default reader pair for structured extraction (a workspace can choose its own, see engines/plan.py)."""
+    raw = os.getenv("EXTRACTION_MODELS", "").strip()
+    if raw:
+        return [m.strip() for m in raw.split(",") if m.strip()][:2]
+    from app.engines import llm
+    return llm.default_models()
 
 
 def adjudicator_model() -> str:
     """Model for the third look at disputed values (see services/adjudicate.py). Empty when no model is available.
-    Defaults to the primary extraction model: it is called once per page that has a dispute, never for pages that agree."""
+    Defaults to the primary extraction model of the plan in force: it is called once per page that has a dispute, never
+    for pages that agree."""
     if not llm_enabled():
         return ""
-    return os.getenv("ADJUDICATION_MODEL", "").strip() or (extraction_models() or [""])[0]
+    explicit = os.getenv("ADJUDICATION_MODEL", "").strip()
+    if explicit:
+        return explicit
+    from app.engines import plan
+    return (plan.current().extract_models or [""])[0]
 
 
-PIPELINE_VERSION = "2026.11-handwriting-discovery-v5"  # bump when extraction behaviour changes: older cached results are then not reused
+PIPELINE_VERSION = "2026.11-engines-v6"  # bump when extraction behaviour changes: older cached results are then not reused
 
 
 def long_doc_pages() -> int:

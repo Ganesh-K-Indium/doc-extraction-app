@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, authHeaders, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
 import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
@@ -14,7 +14,7 @@ import '../components/textLayer.css';
 type Tab = 'fields' | 'pages' | 'findings' | 'json';
 const FILTERS: [Filter, string][] = [['all', 'All'], ['check', 'To check'], ['blank', 'Blank'], ['edited', 'Edited']];
 const EXTRACT_LABEL: Record<string, string> = { template_form: 'Read against a template', discover: 'Read without a template', kv: 'Read as label and value pairs', skip: 'Not extracted' };
-const READER_LABEL: Record<string, string> = { text_layer: 'embedded text, by code', ocr_dual: 'two vision readers', ocr_local: 'Tesseract on this server', text_layer_unverified: 'the scanner’s own text (unverified)' };
+const READER_LABEL: Record<string, string> = { text_layer: 'embedded text, by code', ocr_dual: 'two vision readers', ocr_ladder: 'local OCR, with vision models if it was doubtful', ocr_local: 'local OCR on this server', text_layer_unverified: 'the scanner’s own text (unverified)' };
 
 /** One honest sentence about how a document's values were obtained. */
 function provenance(f: Form): string {
@@ -26,7 +26,10 @@ function provenance(f: Form): string {
 function readLine(s: NonNullable<Detail['stats']>): string {
     const parts: string[] = [];
     if (s.digital_pages) parts.push(`${s.digital_pages} digital ${s.digital_pages === 1 ? 'page' : 'pages'} read by code`);
-    if (s.scanned_pages) parts.push(`${s.scanned_pages} scanned ${s.scanned_pages === 1 ? 'page' : 'pages'} read by models`);
+    if (s.local_ocr_pages !== undefined) {
+        if (s.local_ocr_pages) parts.push(`${s.local_ocr_pages} scanned ${s.local_ocr_pages === 1 ? 'page' : 'pages'} read by local OCR`);
+        if (s.vision_pages) parts.push(`${s.vision_pages} read by vision models${s.escalated_pages ? ` (${s.escalated_pages} sent on because local OCR was doubtful)` : ''}`);
+    } else if (s.scanned_pages) parts.push(`${s.scanned_pages} scanned ${s.scanned_pages === 1 ? 'page' : 'pages'} read by models`);
     if (s.handwritten_pages) parts.push(`${s.handwritten_pages} with handwriting`);
     if (s.usage) parts.push(s.usage.calls === 0 ? 'no model calls' : `${s.usage.calls} model ${s.usage.calls === 1 ? 'call' : 'calls'}, ${s.usage.tokens.toLocaleString()} tokens`);
     return parts.join(' · ');
@@ -51,6 +54,8 @@ export default function ExtractionPage() {
     const [saved, setSaved] = useState<Record<number, string>>({});
     const [reading, setReading] = useState<number | null>(null);
     const [restNote, setRestNote] = useState<Record<number, string>>({});
+    const [rereading, setRereading] = useState(false);
+    const nav = useNavigate();
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
@@ -226,6 +231,14 @@ export default function ExtractionPage() {
         );
     };
 
+    /** Read the file again under another strategy, or send chosen pages to the vision models. Makes a second extraction. */
+    const reread = async (body: { strategy?: string; pages?: number[] }) => {
+        setRereading(true); setError('');
+        try { const r = await api.reread(wid, id, body); reload(); nav(`/app/w/${wid}/e/${r.id}`); }
+        catch (e) { setError((e as Error).message); }
+        finally { setRereading(false); }
+    };
+
     const panel = (
         <div className="panel">
             <header className="panel__head">
@@ -239,6 +252,16 @@ export default function ExtractionPage() {
                                 <button onClick={() => api.download(wid, id, 'fields', data.filename)}>fields.json</button>
                                 <button onClick={() => api.download(wid, id, 'pages', data.filename)}>pages.json</button>
                                 <button title="The values as they are now, including your edits, as an answer key for accuracy scoring" onClick={() => api.download(wid, id, 'truth', data.filename)}>Answer key</button>
+                            </div>
+                        </details>)}
+                    {done && (data.stats?.scanned_pages ?? 0) > 0 && (
+                        <details className="menu">
+                            <summary className="btn btn--tiny" aria-disabled={rereading}>{rereading ? 'Starting…' : 'Read again'}</summary>
+                            <div className="menu__list" onClick={e => (e.currentTarget.parentElement as HTMLDetailsElement).open = false}>
+                                <small className="menu__note">Makes a second copy to compare. This one is kept.</small>
+                                <button disabled={rereading} onClick={() => reread({ strategy: 'economy' })}>Economy: local OCR only, free</button>
+                                <button disabled={rereading} onClick={() => reread({ strategy: 'balanced' })}>Balanced: models only if doubtful</button>
+                                <button disabled={rereading} onClick={() => reread({ strategy: 'accuracy' })}>Accuracy: two vision models on every scan</button>
                             </div>
                         </details>)}
                 </div>
@@ -302,6 +325,15 @@ export default function ExtractionPage() {
                                                 <span className={p.verified ? 'tag' : 'tag tag--flag'}>{p.verified ? 'verified' : 'unverified'}</span>
                                                 {p.handwritten && <span className="tag tag--hand">handwriting</span>}</summary>
                                             <p className="route">Read by <b>{READER_LABEL[p.route?.reader ?? ''] ?? p.source}</b>: {p.route?.reasons.join('; ')}.</p>
+                                            {p.reading && (p.reading.engine === 'vision' || p.reading.engine === 'tesseract' || p.reading.engine === 'rapidocr' || p.reading.engine === 'paddleocr' || p.reading.engine === 'doctr') && (
+                                                <p className="route">
+                                                    {p.reading.escalated
+                                                        ? <>Local OCR{p.reading.local_confidence != null ? ` (${Math.round(p.reading.local_confidence * 100)}% sure)` : ''} was not enough, so <b>vision models</b> read this page.</>
+                                                        : p.reading.engine === 'vision' ? <>Read by <b>vision models</b>{p.reading.models?.length ? `: ${p.reading.models.join(' and ')}` : ''}.</>
+                                                            : <>Read by <b>{p.reading.engine}</b>{p.reading.confidence != null ? `, ${Math.round(p.reading.confidence * 100)}% sure` : ''}{p.reading.agreement != null ? `, ${Math.round(p.reading.agreement * 100)}% agreement with a second engine` : ''}.</>}
+                                                    {(p.reading.reasons ?? []).length > 0 && <> Why: {p.reading.reasons!.join('; ')}.</>}
+                                                </p>)}
+                                            {p.scanned && p.source !== 'ocr' && !p.error && <button className="btn btn--tiny" disabled={rereading} onClick={() => reread({ pages: [n] })}>Read this page with vision models</button>}
                                             {p.error && <p className="field__alt">This page could not be read: {p.error}</p>}
                                             {flagged.map((l, i) => <p key={i} className="field__alt">{l.text}{l.alternatives.length ? ` (second reader: ${l.alternatives.join(' / ')})` : ''}</p>)}
                                         </details>);

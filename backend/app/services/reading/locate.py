@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import List, Optional, Tuple
 
-from app.services import pdf_pages
+from app.services.reading import pdf_pages
 
 FUZZY_MIN = 0.82
 _ALNUM = re.compile(r"[^a-z0-9]")

@@ -17,7 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.services import normalize as N, pipeline  # noqa: E402
+from app.services.extraction import normalize as N
+from app.services import pipeline  # noqa: E402
 
 FLAGGED = ("review", "undetermined")
 

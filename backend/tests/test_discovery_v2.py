@@ -5,7 +5,9 @@ import asyncio
 import pymupdf as fitz
 import pytest
 
-from app.services import discover, labels, pdf_pages, suggest
+from app.services.extraction import discover, labels
+from app.services.reading import pdf_pages
+from app.services.documents import suggest
 from tests.test_api import H, client, mk, pdf, up, wait  # noqa: F401  (fixtures)
 
 
@@ -214,7 +216,7 @@ def test_the_same_file_twice_or_a_long_filing_is_not_a_recurring_layout():
 
 def test_prose_with_a_heading_and_colon_is_not_turned_into_fields(tmp_path):
     import asyncio
-    from app.services import digital
+    from app.services.extraction import digital
     pdf = str(tmp_path / "p.pdf")
     _page_pdf(pdf, ["Cybersecurity: Our board of directors oversees the risks that arise from cyber threats to the company.",
                     "Invoice No: 1001", "Customer: Acme Corp"])

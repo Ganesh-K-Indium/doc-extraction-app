@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends
 
 from app.api.deps import require_key, workspace
-from app.services import classify, pipeline, router as pipeline_router, workspace_types
+from app.services.documents import classify, workspace_types
+from app.services import pipeline
+from app.services.reading import router as pipeline_router
 
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/registry", tags=["registry"], dependencies=[Depends(require_key), Depends(workspace)])
 

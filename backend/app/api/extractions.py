@@ -10,7 +10,11 @@ from pydantic import BaseModel
 
 from app import config, db
 from app.api.deps import require_key, workspace
-from app.services import export, ocr, pipeline, remainder, template_draft, workspace_types
+from app.engines import plan as plans
+from app.services import export, pipeline
+from app.services.reading import ocr, pdf_pages
+from app.services.extraction import remainder
+from app.services.documents import template_draft, workspace_types
 from app.services.usage_tracker import track_usage
 
 logger = logging.getLogger("app.api.extractions")
@@ -22,7 +26,7 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/extractions", tags=["e
 def _summary(ex) -> dict:
     return {"id": ex.id, "filename": ex.filename, "status": ex.status, "stage": ex.stage,
             "progress": {"done": ex.progress_done, "total": ex.progress_total}, "error": ex.error,
-            "template_choice": ex.template_choice, "read_rest": bool(ex.read_rest), "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats"),
+            "template_choice": ex.template_choice, "read_rest": bool(ex.read_rest), "created_at": ex.created_at.isoformat(), "stats": (ex.result or {}).get("stats"), "reading": (ex.result or {}).get("reading"),
             # what the file turned out to be: the discovered title, else the classified label, for the first few documents
             "labels": _labels(ex)}
 
@@ -76,10 +80,13 @@ async def run_extraction(extraction_id: str) -> None:
             return
         ex.status = "processing"
         choice, ws_id, rest = ex.template_choice or "auto", ex.workspace_id, bool(ex.read_rest)
+        override = dict(ex.reading or {})
         s.commit()
     try:
+        plan = plans.for_workspace(ws_id, {"strategy": override.get("strategy")})
         with workspace_types.use(ws_id), track_usage(f"extraction:{extraction_id[:8]}") as usage:
-            result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice, read_rest=rest)
+            result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice, read_rest=rest, plan=plan,
+                                            force_vision=override.get("force_vision") or ())
         summary = usage.summary()
         result["stats"]["usage"] = {"calls": len(usage.entries), "tokens": summary["total_tokens"],
                                     "by_stage": {k: v["tokens"] for k, v in summary["by_stage"].items()}}
@@ -100,7 +107,7 @@ async def run_extraction(extraction_id: str) -> None:
 
 @router.post("", status_code=202)
 async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFile = File(...), template: str = Form("auto"),
-                 read_rest: bool = Form(False)):
+                 read_rest: bool = Form(False), reading: str = Form("")):
     data = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, f"The file is larger than {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
@@ -110,13 +117,20 @@ async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFil
         valid = pipeline.valid_choice(template)
     if not valid:
         raise HTTPException(422, "That document type is not available. Pick one from the list, or choose automatic detection.")
+    if reading and reading not in {s["id"] for s in plans.STRATEGIES}:
+        raise HTTPException(422, "Choose Economy, Balanced or Accuracy for how scanned pages are read.")
     digest = hashlib.sha256(data).hexdigest()
+    wanted = plans.for_workspace(workspace_id, {"strategy": reading or None}).fingerprint()
     with db.session() as s:
-        # Same bytes already read successfully by this version of the pipeline: reuse that result instead of paying again.
-        prior = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template, read_rest=read_rest).order_by(db.Extraction.created_at.desc()).first()
+        # Same bytes already read successfully by this version of the pipeline, under the same reading plan: reuse that
+        # result instead of paying again. (A page-by-page re-read is never reused: it was a deliberate exception.)
+        candidates = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template, read_rest=read_rest).order_by(db.Extraction.created_at.desc()).all()
+        prior = next((c for c in candidates if not (c.reading or {}).get("force_vision")
+                      and (c.result or {}).get("reading", {}).get("fingerprint") == wanted), None)
         if prior and pdf_file(prior.id).is_file() and (prior.result or {}).get("pipeline_version") == config.PIPELINE_VERSION:
             return {"id": prior.id, "status": "done", "reused": True}
-        ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template, read_rest=read_rest)
+        ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template, read_rest=read_rest,
+                           reading={"strategy": reading} if reading else {})
         s.add(ex)
         s.commit()
         extraction_id = ex.id
@@ -209,6 +223,43 @@ def delete_extraction(workspace_id: str, extraction_id: str):
     pdf_file(extraction_id).with_suffix(".work.pdf").unlink(missing_ok=True)
 
 
+class Reread(BaseModel):
+    strategy: str = ""                  # economy | balanced | accuracy | custom; empty keeps the workspace's setting
+    pages: List[int] = []               # pages to send straight to the vision models; empty means the whole document
+
+
+@router.post("/{extraction_id}/reread", status_code=202)
+async def reread(workspace_id: str, extraction_id: str, body: Reread, background: BackgroundTasks):
+    """Read this file again with a different reading strategy, or send some pages to the vision models. The original
+    extraction is left as it is: this creates a second one to compare with."""
+    if body.strategy and body.strategy not in {s["id"] for s in plans.STRATEGIES}:
+        raise HTTPException(422, "Choose Economy, Balanced, Accuracy or Custom.")
+    strategy = body.strategy or ("" if body.pages else "accuracy")
+    if (strategy != "economy" or body.pages) and not config.llm_enabled():
+        raise HTTPException(503, "A better reading needs a vision model, and none is configured on this server.")
+    with db.session() as s:
+        src = _get(s, workspace_id, extraction_id)
+        if not pdf_file(extraction_id).is_file():
+            raise HTTPException(404, "The original PDF is no longer available.")
+        filename, sha, choice, rest = src.filename, src.sha256, src.template_choice, src.read_rest
+    n_pages = await asyncio.to_thread(pdf_pages.page_count, str(pdf_file(extraction_id)))
+    if any(p < 1 or p > n_pages for p in body.pages):
+        raise HTTPException(422, f"Pages must be between 1 and {n_pages}.")
+    reading: dict = {}
+    if strategy:
+        reading["strategy"] = strategy
+    if body.pages:
+        reading["force_vision"] = sorted(set(body.pages))
+    with db.session() as s:
+        ex = db.Extraction(workspace_id=workspace_id, filename=filename, sha256=sha, template_choice=choice, read_rest=rest, reading=reading)
+        s.add(ex)
+        s.commit()
+        new_id = ex.id
+    await asyncio.to_thread(lambda: pdf_file(new_id).write_bytes(pdf_file(extraction_id).read_bytes()))
+    background.add_task(run_extraction, new_id)
+    return {"id": new_id, "status": "queued"}
+
+
 class Promote(BaseModel):
     title: str = ""
 
@@ -266,7 +317,7 @@ async def read_the_rest(workspace_id: str, extraction_id: str, doc_index: int):
         template = pipeline.load_template(name)
     work = pipeline.work_path(str(pdf_file(extraction_id)))
     try:
-        extra = await remainder.remainder_form(work, form, template, config.extraction_models())
+        extra = await remainder.remainder_form(work, form, template, plans.for_workspace(workspace_id).extract_models)
     except Exception:
         logger.exception("Reading the rest of %s failed", extraction_id)
         raise HTTPException(502, "The pages could not be read just now. Try again in a minute.")

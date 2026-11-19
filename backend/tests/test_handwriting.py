@@ -2,8 +2,9 @@
 the one-call third look at disputed values, and the handwriting flag. All offline; data is generic."""
 import asyncio
 
-from app.services import adjudicate, discover, ocr
-from app.services import normalize as N
+from app.services.extraction import adjudicate, discover
+from app.services.reading import ocr
+from app.services.extraction import normalize as N
 
 
 def test_marks_that_change_a_number_are_not_ignored():

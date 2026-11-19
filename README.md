@@ -13,7 +13,7 @@ A review UI shows the source PDF next to the fields. Values both readers agree o
 # backend (venv lives at the project root, outside backend/)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
-cd backend && cp .env.example .env   # add OPENAI_API_KEY; without it only text-layer pages and checkboxes are read
+cd backend && cp .env.example .env   # optional: models can also be connected later on the Settings page
 uvicorn app.main:app --reload
 pytest -q                            # offline, no network
 
@@ -58,10 +58,10 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 ## How a file is processed
 
-1. **Work PDF.** Scanned pages get a Tesseract text layer (`tess.py`), laid over the original so page size and coordinates are unchanged. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.
-2. **Read.** `router.py` profiles each page and picks a reader, stored with its reasons (`route` in pages.json): embedded text, two vision models compared (`ocr_dual`), or Tesseract alone (`ocr_local`, nothing leaves the machine). Lines are compared by content, not line breaks, so layout differences are not disagreements but a different digit is.
+1. **Work PDF.** Scanned pages get a Tesseract text layer (`reading/tess.py`), laid over the original so page size and coordinates are unchanged. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.
+2. **Read.** `reading/router.py` profiles each page and picks a reader, stored with its reasons (`route` in pages.json): embedded text, two vision models compared (`ocr_dual`), or Tesseract alone (`ocr_local`, nothing leaves the machine). Lines are compared by content, not line breaks, so layout differences are not disagreements but a different digit is.
 3. **Sort.** Fax stamps are split off as metadata; pages are classified (keyword rules first, a small model only for unknown pages and only among registered types) and grouped into documents.
-4. **Extract.** Each document with a template is read page by page by two models against the template's fields, and the best-supported reading per field wins. Checkboxes are read from the pixels (a hollow square beside the label, then the ink inside it), never from a model unless the box can't be located. Tables use the layout extractor ported from the SEC pipeline (`table_extractor.py`), with PyMuPDF's grid finder as fallback.
+4. **Extract.** Each document with a template is read page by page by two models against the template's fields, and the best-supported reading per field wins. Checkboxes are read from the pixels (a hollow square beside the label, then the ink inside it), never from a model unless the box can't be located. Tables use the layout extractor ported from the SEC pipeline (`reading/table_extractor.py`), with PyMuPDF's grid finder as fallback.
 5. **Ground and cross-check.** Each value is located on the page. Tesseract is an independent third reader: if both models agree but Tesseract reads something similar and different at that spot, the field goes to review. When the models disagree, the reading that also appears in the page's own text is shown first.
 6. **Validate.** Per-document rules from the template (required fields, formats, date order), then cross-document consistency from each template's `canonical` section.
 
@@ -72,19 +72,72 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 Uploading the same file twice reuses the first result (SHA-256), so you don't pay for the same OCR again.
 
+## Reading engines and settings
+
+Scanned pages and handwriting can be read three ways, and each workspace chooses (**Reading engines** tab). Digital pages never cost anything: code reads them under every setting.
+
+| Strategy | What happens to a scanned page | Models called |
+|---|---|---|
+| **Economy** | A local OCR engine reads it. Doubtful lines are flagged. | never |
+| **Balanced** (default) | The local engine reads it first. Only if its reading is doubtful do two vision models read the page and compare. Clean pages are structured from their text. | only for doubtful pages |
+| **Accuracy** | Two vision models read every scanned page and are compared. | every scanned page |
+| **Custom** | The same knobs, set by hand: when to use a model, the confidence needed, a token cap per document. | as set |
+
+**How "doubtful" is decided.** Tesseract reports a confidence per word: clean print scores about 90 to 95%, handwriting 40 to 50%, a badly degraded scan about 40%. A page is escalated when its confidence is below the threshold (85% by default), many words or numbers were hard to read, nothing was recognised on a page that has marks, or the text is garbled. Other engines (RapidOCR, PaddleOCR, docTR) report confidences that look alike on clean print and handwriting, so their pages are accepted only when Tesseract's reading, which the preparation step already produces, agrees with them (75% word overlap; clean pages score 80 to 90%, handwriting under 35%). The lines they disagree on are the ones flagged. Every decision and its reason is stored per page and shown on the review screen, where any page can also be sent to the vision models by hand, or the whole file read again under another strategy (this makes a second copy; the first is kept).
+
+**Local OCR engines.** Tesseract is built in. RapidOCR (`pip install rapidocr-onnxruntime`), PaddleOCR (`pip install paddleocr paddlepaddle`) and docTR (`pip install "python-doctr[torch]"`) appear on the page when installed. RapidOCR was exercised end to end here; the PaddleOCR and docTR adapters follow those libraries' documented APIs but were not run in this environment, so use the **Test** button on the Reading engines page before relying on one.
+
+**Vision models.** Pick up to two per workspace, from different providers if you like: `openai:gpt-4.1`, `anthropic:claude-sonnet-5-5`, `gemini:gemini-2.5-flash`, `ollama:qwen2.5vl:7b` (your own hardware), `custom:<model>` (any OpenAI-compatible server such as vLLM). The default pair follows whichever provider is connected (OpenAI's `gpt-4.1` and `gpt-4.1-mini` if it is). A **token cap** per document stops escalation once a budget is spent; remaining doubtful pages keep their local reading, flagged.
+
+**Settings page.** Provider keys and addresses can be entered in the app (top bar, **Settings**). They are encrypted with Fernet before they are written to the database, are never sent back to the browser (only the last four characters), never logged, and a key saved there takes precedence over the same environment variable; removing it falls back to the environment. The encryption key is `APP_SECRET_KEY` if the server sets one (recommended: keep it outside the data folder), otherwise a random key in `DATA_DIR/secret.key` with owner-only permissions. Because access to Settings equals access to the keys, set `APP_API_KEY` when the server is reachable by anyone you do not trust.
+
+| Environment variable | Effect |
+|---|---|
+| `READING_STRATEGY`, `LOCAL_OCR_ENGINE`, `ESCALATE_BELOW`, `TOKEN_CAP` | Server defaults for workspaces that have not chosen |
+| `OPENAI_API_KEY` (`OPENAI_BASE_URL`), `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OLLAMA_BASE_URL`, `LLM_CUSTOM_BASE_URL` (`LLM_CUSTOM_API_KEY`, `LLM_CUSTOM_MODEL`) | Provider credentials, if you prefer the environment to the Settings page |
+| `LOCAL_ONLY=1` | Cloud providers are switched off entirely: nothing can leave the machine. Local OCR and your own models still work |
+| `LOCK_SETTINGS=1` | The Settings page is read-only, for deployments managed through the environment |
+| `APP_SECRET_KEY` | Encryption key for saved credentials |
+
+## Code map
+
+```
+backend/app
+  main.py, config.py, db.py          app wiring, settings from the environment, tables
+  api/                               HTTP: workspaces, extractions, templates, registry, engines (strategies, tests), settings (provider keys)
+  engines/                           how pages get read, and by whom
+    llm.py                           one call to any model provider (OpenAI, Anthropic, Gemini, Ollama, custom)
+    local.py                         local OCR engines, word confidence, "is this reading good enough"
+    ladder.py                        escalation for one scanned page: local first, vision models if doubtful, token cap
+    plan.py                          strategies and the per-workspace reading plan
+    credentials.py                   provider keys saved in the app, encrypted
+  services/
+    pipeline.py                      orchestrates one upload end to end;  export.py, usage_tracker.py
+    reading/                         PDF to page text: pdf_pages, tess (text layer for scans), ocr (two-reader transcription),
+                                     router (which reader), locate (find a value on the page), table_extractor
+    extraction/                      page text to values: form_extractor (templates), discover (no template), digital (code reads
+                                     digital pages), kv, remainder, checkboxes, adjudicate (third look), normalize, labels
+    documents/                       what a document is: classify, template_draft, suggest (recurring layouts), workspace_types
+    quality/                         validation (per-document rules), cross (consistency across documents)
+  templates/                         built-in document templates
+frontend/src
+  pages/                             Documents, review, Document types, Reading engines, Settings, Landing
+  components/, review/               shared pieces; the review screen's field rows, tables and PDF pane
+```
+
 ## Any document, no template
 
 A file that matches no template is still extracted, and the cost depends on what kind of pages it has.
 
 | Page | Read by | Model use |
 |---|---|---|
-| Digital (real text layer): statements, filings, reports | **Code** (`digital.py`): table cells and `Label: value` pairs copied exactly from the PDF | none, except a few lines to name a column header that spans rows (once per distinct header) |
+| Digital (real text layer): statements, filings, reports | **Code** (`extraction/digital.py`): table cells and `Label: value` pairs copied exactly from the PDF | none, except a few lines to name a column header that spans rows (once per distinct header) |
 | Digital but **unproven** or form-like with nothing code could read | Two models on the page *text* (no image), second reader reads against the first's labels | text only, only for those pages |
 | Scan or handwriting | Two vision models, first proposes the fields, second reads against its labels; one focused third look for disputed values | image tokens |
 
 **Code proves it read a digital page completely.** Every number printed inside a table's region must appear in the extracted cells (footnote markers and "Note 7" headings excluded). If not, the page tries PyMuPDF's grid finder, then the table's cells are marked `review` with what was missed, and (when a model is configured) the page goes to the text-only model path. A text layer that is not text (`(cid:12)`, replacement characters) is treated as a scan. On a 68-page 10-Q this reads 41 tables / 2,200 cells with no model calls and flags exactly one table (a mangled dividends table), which the model path then reads correctly.
 
-**Stable output.** Field keys are canonical (`labels.py`: "Invoice No." / "Inv #" / "Invoice Number" all become `invoice_number`; the section only joins a key when the same label occurs twice). A label with a different value on another page becomes `label_p<page>` instead of overwriting; rows of two readers' tables are paired by row label, not position.
+**Stable output.** Field keys are canonical (`extraction/labels.py`: "Invoice No." / "Inv #" / "Invoice Number" all become `invoice_number`; the section only joins a key when the same label occurs twice). A label with a different value on another page becomes `label_p<page>` instead of overwriting; rows of two readers' tables are paired by row label, not position.
 
 **Recurring shapes.** `GET /api/workspaces/{id}/templates/suggestions` lists document shapes that keep recurring among untemplated files (same canonical keys, at least twice); promote one example to save it as a template.
 
@@ -96,7 +149,7 @@ Handwriting goes through the same two-reader path as any scan; these rules exist
 
 - **The readers report handwriting** (in the same reply, no extra call). On such a page Tesseract is not used as a tie-break or "second opinion": it cannot read handwriting and would outvote the models with a wrong reading.
 - **Numbers are compared strictly.** A leading decimal point (`.2%` vs `2%`), a range (`7-20` vs `720`), `%` and `$` are differences, not noise.
-- **One focused third look per page, only when something is disputed** (`adjudicate.py`). The page is shown once with just the disputed values and their candidate readings. A third reading that matches a candidate settles it (two of three); a new reading stays in review; an unsure reading changes nothing. Pages where the readers agree on everything never pay for it.
+- **One focused third look per page, only when something is disputed** (`extraction/adjudicate.py`). The page is shown once with just the disputed values and their candidate readings. A third reading that matches a candidate settles it (two of three); a new reading stays in review; an unsure reading changes nothing. Pages where the readers agree on everything never pay for it.
 - **Fields are paired by value as well as label**, since handwriting has no fixed labels; repeats of one value (same place, or one label inside the other) and empty "fields" that are really the page title or a sentence are dropped.
 
 Cost: vision calls dominate (roughly 3 to 4k tokens per page image per call). A scanned page costs two reads for the transcript, two for the fields, and one more only if a value is disputed (about 10% extra on the samples tried). Knobs: `ADJUDICATE=0` turns the third look off; `ADJUDICATION_MODEL` picks its model (default: the first of `EXTRACTION_MODELS`); `HANDWRITING_OCR_MODELS` set to one model halves the transcript cost at the price of an unverified transcript. Pages with a real text layer cost nothing, and an identical file is never read twice.
@@ -127,7 +180,7 @@ At upload the user picks how the file is read:
 | **A template** (built-in, drafted, or saved from an earlier extraction) | Every page is read with that template. Use it for a single form; for a packet of several documents use automatic detection. |
 | **Read without a template** | The whole file is read as one document by discovery. |
 
-**Discovery** (`discover.py`) needs no setup. Two vision models each list every labelled field, checkbox and table on a page; the lists are matched by label (tolerant of different section headings) and merged with the same trust model as templates. A grid that one reader returns as a table and the other as flat fields (`Flexion Right: 170°`) is reconciled, not flagged. Checkboxes are judged from pixels; every value is located on the page and checked against Tesseract. The output has the same shape as a templated extraction, so review, corrections and export are identical. Without a template there are no required fields or formats to enforce, so the findings are only the places the readers were unsure.
+**Discovery** (`extraction/discover.py`) needs no setup. Two vision models each list every labelled field, checkbox and table on a page; the lists are matched by label (tolerant of different section headings) and merged with the same trust model as templates. A grid that one reader returns as a table and the other as flat fields (`Flexion Right: 170°`) is reconciled, not flagged. Checkboxes are judged from pixels; every value is located on the page and checked against Tesseract. The output has the same shape as a templated extraction, so review, corrections and export are identical. Without a template there are no required fields or formats to enforce, so the findings are only the places the readers were unsure.
 
 Three ways to get a type, none of which involves writing JSON:
 
@@ -143,7 +196,7 @@ Checkboxes on scans are judged from the pixels, never from the `☑`/`☐` chara
 
 ## Hand-written templates
 
-1. Add an entry to `DOC_TYPES` in `app/services/classify.py`: title patterns, `"extractor": "template_form"`, `"template": "<name>"`.
+1. Add an entry to `DOC_TYPES` in `app/services/documents/classify.py`: title patterns, `"extractor": "template_form"`, `"template": "<name>"`.
 2. Add `app/templates/<name>.json`: sections and fields (`type`, `required`, optional `pattern`), optional `tables`, optional `rules` (for example `date_order`), and a `canonical` section naming what other documents may also carry:
 
 ```json
@@ -171,7 +224,7 @@ On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, 
 ## Setup notes
 
 - Tesseract: `brew install tesseract` (macOS) or your package manager. Optional `TESSERACT_CMD`, `TESSERACT_LANG`. Without it scans have no highlighting.
-- Without `OPENAI_API_KEY` the app still runs: digital pages use embedded text and scans use Tesseract (single reader, marked unverified).
+- Without any model provider the app still runs: digital pages use embedded text and scans use a local OCR engine (single reader, marked unverified). Connect a provider on the **Settings** page, or with an environment variable, to read handwriting and poor scans.
 
 ## Known limits
 

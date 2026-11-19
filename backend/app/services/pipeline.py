@@ -17,10 +17,14 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from app import config
-from app.services import classify, cross, discover, form_extractor, kv, ocr, pdf_pages, remainder, router, tess, validation
+from app.engines import ladder, plan as plans
+from app.services.documents import classify
+from app.services.quality import cross, validation
+from app.services.extraction import discover, form_extractor, kv, remainder
+from app.services.reading import ocr, pdf_pages, router, tess
 
 logger = logging.getLogger("app.services.pipeline")
 
@@ -33,7 +37,7 @@ Progress = Callable[[str, int, int], None]
 
 def load_template(name: str) -> Dict[str, Any]:
     """Built-in templates ship with the app; custom ones belong to the workspace in force."""
-    from app.services import workspace_types
+    from app.services.documents import workspace_types
     f = TEMPLATE_DIR / f"{name}.json"
     if f.is_file():
         return json.loads(f.read_text())
@@ -56,28 +60,32 @@ def work_path(path: str) -> str:
     return str(Path(path).with_suffix(".work.pdf"))
 
 
-async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, reader, sem: asyncio.Semaphore) -> Dict[str, Any]:
+async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, reader, sem: asyncio.Semaphore,
+                plan: "plans.Plan", mode: str, force_vision: bool = False, tsv: Optional[str] = None) -> Dict[str, Any]:
     async with sem:
         base: Dict[str, Any] = {"page": n}
         try:
             original = await asyncio.to_thread(pdf_pages.analyze_page, path, n)
-            route = router.decide_reader(router.profile_page(original), use_llm, tess.available())
+            route = router.decide_reader(router.profile_page(original), use_llm, plan.local_engine is not None, mode)
             info = await asyncio.to_thread(pdf_pages.analyze_page, work, n)  # geometry from the work PDF (has OCR layer on scans)
             lines_meta: Dict[str, Any] = {}
             handwritten = False
-            if route["reader"] == "ocr_dual":
+            reading: Dict[str, Any] = {"engine": "text-layer"}
+            if route["reader"] in ("ocr_dual", "ocr_ladder", "ocr_local"):
                 jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, n)
-                res = await ocr.read_page(jpeg, models, reader)
-                raw = [l.text for l in res.lines]
-                lines_meta = {l.text: l for l in res.lines}
-                source, verified, handwritten = "ocr", res.cross_checked, res.handwritten
-            elif route["reader"] == "ocr_local":
-                raw = [l.strip() for l in info["text"].splitlines() if l.strip()]
-                source, verified = "ocr-local", False
+                scan = await ladder.read_scanned(
+                    mode={"ocr_dual": "vision", "ocr_ladder": "escalate"}.get(route["reader"], "local"), engine_id=plan.local_engine,
+                    jpeg=jpeg, models=models, reader=reader, threshold=plan.escalate_below, token_cap=plan.token_cap,
+                    force_vision=force_vision and route["reader"] != "ocr_local", tsv=tsv)
+                raw = [l.text for l in scan.lines]
+                lines_meta = {l.text: l for l in scan.lines}
+                source, verified, handwritten, reading = scan.source, scan.verified, scan.handwritten, scan.reading
             else:
                 raw = [l.strip() for l in original["text"].splitlines() if l.strip()]
                 source = "text-layer" if route["reader"] == "text_layer" else "text-layer-unverified"
                 verified = route["reader"] == "text_layer"
+                if source != "text-layer":
+                    reading = {"engine": "scanner text"}
             content, meta = pdf_pages.strip_fax_stamp(raw)
             out_lines = []
             for t in content:
@@ -88,24 +96,38 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": classify.classify_text(text), "text": text, "lines": out_lines,
-                    "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route}
+                    "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
         except Exception as e:
             logger.exception("Page %s failed", n)
             msg = str(e) if isinstance(e, ocr.OcrError) else "This page could not be read."
             return {**base, "size": None, "source": "failed", "verified": False, "scanned": False, "has_text_layer": False, "handwritten": False,
                     "page_meta": {}, "classification": {"type": "unknown", "label": "Unreadable", "confidence": 0.0},
-                    "text": "", "lines": [], "blocks": [], "tables": [], "form_widgets": [], "route": None, "error": msg}
+                    "text": "", "lines": [], "blocks": [], "tables": [], "form_widgets": [], "route": None, "reading": {}, "error": msg}
 
 
 async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None,
-                  template_choice: str = AUTO, read_rest: bool = False, adjudicator=None) -> Dict[str, Any]:
+                  template_choice: str = AUTO, read_rest: bool = False, adjudicator=None, plan: Optional["plans.Plan"] = None,
+                  force_vision: Iterable[int] = ()) -> Dict[str, Any]:
+    """`plan` says how scans are read (engines/plan.py); without one the server's defaults apply. `force_vision` lists pages
+    to send straight to the vision models whatever the plan says (a person asked for a better reading of them)."""
+    plan = plan or plans.current()
+    with plans.use(plan):
+        result = await _process(path, progress, ocr_reader, form_reader, model_ask, template_choice, read_rest, adjudicator, plan, set(force_vision))
+    result["reading"] = plan.describe()
+    return result
+
+
+async def _process(path: str, progress: Optional[Progress], ocr_reader, form_reader, model_ask, template_choice: str, read_rest: bool,
+                   adjudicator, plan: "plans.Plan", force_vision: "set[int]") -> Dict[str, Any]:
     progress = progress or (lambda *_: None)
     n_pages = await asyncio.to_thread(pdf_pages.page_count, path)
     if n_pages > config.MAX_PAGES:
         raise ocr.OcrError(f"PDF has {n_pages} pages; the limit is {config.MAX_PAGES}.", 413)
-    use_llm = config.llm_enabled() or ocr_reader is not None
-    ocr_models = ocr.configured_models() if use_llm else []
-    form_models = config.extraction_models() if (config.llm_enabled() or form_reader is not None) else []
+    # "local" plans never call a model. Otherwise a model is used when one is configured (or a test supplied a reader).
+    use_llm = (plan.llm or ocr_reader is not None) and plan.mode != "local"
+    mode = plan.mode if use_llm else "local"
+    ocr_models = plan.read_models if use_llm else []
+    form_models = plan.extract_models if (plan.mode != "local" and (plan.llm or form_reader is not None)) else []
     if ocr_reader is not None and not ocr_models:
         ocr_models = ["reader-a", "reader-b"]
     if form_reader is not None and not form_models:
@@ -115,7 +137,8 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
     progress("preparing", 0, n_pages)
     work = work_path(path)
     needs = await asyncio.to_thread(pdf_pages.scanned_pages, path)
-    layer = await asyncio.to_thread(pdf_pages.build_work_pdf, path, work, needs)
+    tsv_pages: Dict[int, str] = {}
+    layer = await asyncio.to_thread(pdf_pages.build_work_pdf, path, work, needs, tsv_pages)
     layer_errors = {n: m for n, m in layer.items() if m != "ok"}
 
     sem = asyncio.Semaphore(PAGE_CONCURRENCY)
@@ -123,7 +146,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
 
     async def tracked(n):
         nonlocal done
-        p = await _page(path, work, n, ocr_models, use_llm, ocr_reader, sem)
+        p = await _page(path, work, n, ocr_models, use_llm, ocr_reader, sem, plan, mode, n in force_vision, tsv_pages.get(n))
         done += 1
         progress("pages", done, n_pages)
         return p
@@ -188,7 +211,10 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
             digital = {n: {"lines": [l["text"] for l in by_num[n]["lines"]], "tables": by_num[n]["tables"]}
                        for n in usable if by_num[n]["source"] == "text-layer"}
-            res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator, digital_pages=digital)
+            # A page a local OCR engine read well is structured from its text: a few hundred tokens instead of a page image.
+            ocr_text = {n: by_num[n]["text"] for n in usable if form_models and by_num[n]["source"] == "ocr-local" and by_num[n]["text"].strip()}
+            res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator,
+                                                   text_pages=ocr_text, digital_pages=digital)
             if res["title"] and doc["type"] == "unknown":
                 doc["label"] = res["title"]
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
@@ -234,6 +260,9 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
                   # how the file was read, for the Documents page: code (digital), models (scans), handwriting seen
                   "digital_pages": sum(1 for p in pages if p["source"] == "text-layer"),
                   "scanned_pages": sum(1 for p in pages if p["source"] in ("ocr", "ocr-local", "text-layer-unverified")),
+                  "local_ocr_pages": sum(1 for p in pages if p["source"] == "ocr-local"),
+                  "vision_pages": sum(1 for p in pages if p["source"] == "ocr"),
+                  "escalated_pages": sum(1 for p in pages if (p.get("reading") or {}).get("escalated")),
                   "handwritten_pages": sum(1 for p in pages if p.get("handwritten")),
                   "unverified_tables": sum(1 for f in forms for rows in f["tables"].values()
                                            if any(c.get("method") == "text-layer" and c.get("status") == "review" for r in rows for c in r.values()))},

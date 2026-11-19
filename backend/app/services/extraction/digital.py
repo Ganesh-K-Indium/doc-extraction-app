@@ -23,7 +23,8 @@ from collections import Counter
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app import config
-from app.services import kv, labels, locate, pdf_pages
+from app.services.extraction import kv, labels
+from app.services.reading import locate, pdf_pages
 
 logger = logging.getLogger("app.services.digital")
 
@@ -71,17 +72,10 @@ Ask = Callable[[str, str], Awaitable[str]]
 
 async def default_ask(model: str, prompt: str) -> str:
     """A short text-only call (no image). Recorded in the usage tracker like every other model call."""
-    import time
-    from app.services import ocr
-    from app.services.usage_tracker import record_usage
-    start = time.perf_counter()
-    resp = await ocr._get_client().chat.completions.create(
-        model=model, temperature=0, response_format={"type": "json_object"}, messages=[{"role": "user", "content": prompt}])
-    usage = getattr(resp, "usage", None)
-    record_usage(stage="header_labels", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0, total_tokens=getattr(usage, "total_tokens", 0) or 0,
-                 duration_seconds=time.perf_counter() - start)
-    return resp.choices[0].message.content
+    from app.engines import llm
+    return await llm.complete(model, prompt, None, stage="header_labels")
+
+
 _HEADER_PROMPT = """The first rows of a table from a PDF are shown below, cells separated by " | ". A heading that spans several
 columns was split across cells. Write ONE short label per value column, combining the rows that apply to it (for example
 "Three Months Ended March 31, 2026"). The first cell of each row is the row-label column: skip it.

@@ -54,6 +54,7 @@ export default function WorkspaceLayout() {
                     <nav className="wsbar__tabs" aria-label="Workspace sections">
                         <NavLink to={`/app/w/${current.id}`} end>Documents</NavLink>
                         <NavLink to={`/app/w/${current.id}/types`}>Document types</NavLink>
+                        <NavLink to={`/app/w/${current.id}/reading`}>Reading engines</NavLink>
                     </nav>
                 </div>
             )}

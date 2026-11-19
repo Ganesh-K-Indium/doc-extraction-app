@@ -15,17 +15,14 @@ Outcome per value:
 
 Never run without a model: with an injected reader (tests) or no model configured, disputes stay for a human.
 """
-import base64
 import json
 import logging
 import os
 import re
-import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app import config
-from app.services import normalize as N, ocr
-from app.services.usage_tracker import record_usage
+from app.services.extraction import normalize as N
 
 logger = logging.getLogger("app.services.adjudicate")
 
@@ -109,22 +106,8 @@ def _describe(n: int, cell: Cell) -> str:
 
 
 async def read(model: str, jpeg: bytes, prompt: str) -> Dict[str, str]:
-    b64 = base64.b64encode(jpeg).decode()
-    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{
-        "role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}]}
-    if model.startswith(("gpt-5", "o")):
-        kwargs["reasoning_effort"] = "low"
-    else:
-        kwargs["temperature"] = 0
-    start = time.perf_counter()
-    resp = await ocr._get_client().chat.completions.create(**kwargs)
-    usage = getattr(resp, "usage", None)
-    record_usage(stage="adjudicate", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                 total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
-    return parse(resp.choices[0].message.content)
+    from app.engines import llm
+    return parse(await llm.complete(model, prompt, jpeg, stage="adjudicate"))
 
 
 async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = None) -> int:

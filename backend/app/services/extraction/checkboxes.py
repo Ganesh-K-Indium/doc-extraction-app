@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pymupdf as fitz
 
-from app.services.pdf_pages import FITZ_LOCK, open_pdf
+from app.services.reading.pdf_pages import FITZ_LOCK, open_pdf
 
 CHECKED = "☑☒✔✓■"
 EMPTY = "☐□"

@@ -30,6 +30,21 @@ class Workspace(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 
 
+class WorkspaceReading(Base):
+    """How a workspace wants scanned pages read: strategy, local OCR engine, vision models, thresholds (engines/plan.py)."""
+    __tablename__ = "workspace_reading"
+    workspace_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    settings: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
+class ProviderCredential(Base):
+    """A provider key or address saved from the Settings screen. `value` is Fernet-encrypted (engines/credentials.py)."""
+    __tablename__ = "provider_credentials"
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
 class CustomType(Base):
     """A document type a user added to ONE workspace (drafted from a blank form, or saved from an extraction)."""
     __tablename__ = "custom_types"
@@ -58,6 +73,8 @@ class Extraction(Base):
     template_choice: Mapped[str] = mapped_column(String(64), default="auto")  # auto | discover | a registered type
     read_rest: Mapped[bool] = mapped_column(Boolean, default=False)  # also read what templates do not cover
     sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    # per-upload reading choice: {"strategy": ..., "force_vision": [page numbers]} (empty = the workspace's settings)
+    reading: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     # reviewer edits: "{doc_index}:{field key}" -> value
     corrections: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
 
@@ -88,6 +105,8 @@ def _add_missing_columns() -> None:
         if "workspace_id" not in have:
             conn.execute(text("ALTER TABLE extractions ADD COLUMN workspace_id VARCHAR(36)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_extractions_workspace_id ON extractions (workspace_id)"))
+        if "reading" not in have:
+            conn.execute(text("ALTER TABLE extractions ADD COLUMN reading JSON"))
         if "sha256" not in have:
             conn.execute(text("ALTER TABLE extractions ADD COLUMN sha256 VARCHAR(64)"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_extractions_sha256 ON extractions (sha256)"))

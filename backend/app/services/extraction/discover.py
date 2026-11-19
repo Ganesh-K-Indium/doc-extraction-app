@@ -10,7 +10,6 @@ The result has the same shape as a templated form, so the review UI, JSON export
 all work unchanged. Fields are keyed "<section>.<label>" in snake case.
 """
 import asyncio
-import base64
 import json
 import logging
 import re
@@ -18,8 +17,8 @@ import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services import adjudicate, checkboxes, digital, form_extractor as fx, labels, locate, normalize as N, ocr, pdf_pages
-from app.services.usage_tracker import record_usage
+from app.services.extraction import adjudicate, checkboxes, digital, form_extractor as fx, labels, normalize as N
+from app.services.reading import locate, ocr, pdf_pages
 
 logger = logging.getLogger("app.services.discover")
 
@@ -96,23 +95,9 @@ def _canon(s: str) -> str:
 
 
 async def _read(model: str, jpeg: Optional[bytes], prompt: str) -> Dict[str, Any]:
-    """One model reads a page. `jpeg` None means a digital page read from its text (no image tokens)."""
-    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-    if jpeg is not None:
-        b64 = base64.b64encode(jpeg).decode()
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}})
-    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": content}]}
-    if model.startswith(("gpt-5", "o")):
-        kwargs["reasoning_effort"] = "low"
-    else:
-        kwargs["temperature"] = 0
-    start = time.perf_counter()
-    resp = await ocr._get_client().chat.completions.create(**kwargs)
-    usage = getattr(resp, "usage", None)
-    record_usage(stage="discover", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                 total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
-    return parse(resp.choices[0].message.content)
+    """One model reads a page. `jpeg` None means a page read from its text (no image tokens)."""
+    from app.engines import llm
+    return parse(await llm.complete(model, prompt, jpeg, stage="discover"))
 
 
 def _s(v: Any) -> Optional[str]:

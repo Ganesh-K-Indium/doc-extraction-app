@@ -13,17 +13,29 @@ export interface Summary {
     stats: Stats | null;
     /** What the file turned out to be (discovered title or classified type), first few documents. */
     labels?: string[];
+    /** The reading plan this file was read under. Absent on older results. */
+    reading?: ReadingPlan | null;
+}
+export interface ReadingPlan {
+    strategy: string; mode: 'local' | 'escalate' | 'vision'; local_engine: string | null; models: string[];
+    escalate_below: number; token_cap: number; uses_models: boolean; notes: string[]; fingerprint: string;
+}
+/** How one page was read: which engine, how sure it was, and why it was sent on to the vision models (if it was). */
+export interface PageReading {
+    engine?: string | null; confidence?: number | null; agreement?: number | null; local_confidence?: number | null;
+    escalated?: boolean; reasons?: string[]; models?: string[]; cost_capped?: boolean;
 }
 export interface Stats {
     pages: number; forms: number; needs_review: number; errors: number;
     /** How it was read: digital pages by code, scans by vision models, pages with handwriting. Absent on older results. */
     digital_pages?: number; scanned_pages?: number; handwritten_pages?: number; unverified_tables?: number;
+    local_ocr_pages?: number; vision_pages?: number; escalated_pages?: number;
     usage?: { calls: number; tokens: number; by_stage: Record<string, number> };
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }
 export interface Page {
     page: number; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
-    route?: Route; page_meta: Record<string, string | number>; classification: { type: string; label: string; confidence: number };
+    route?: Route; reading?: PageReading; page_meta: Record<string, string | number>; classification: { type: string; label: string; confidence: number };
 }
 export interface Route { reasons: string[]; reader?: string; extractor?: string }
 export interface Doc { doc_index: number; type: string; label: string; pages: number[]; route?: Route }
@@ -91,13 +103,44 @@ export const workspaces = {
     remove: (wid: string) => send<void>(ws(wid), { method: 'DELETE' }),
 };
 
+export interface Health { ok: boolean; llm: boolean; tesseract: boolean; local_only?: boolean; local_engines?: string[]; providers?: string[] }
+
 export const meta = {
     registry: (wid: string) => send<Registry>(`${ws(wid)}/registry`),
-    health: async (): Promise<{ ok: boolean; llm: boolean; tesseract: boolean }> => {
+    health: async (): Promise<Health> => {
         const res = await fetch(`${ROOT}/health`);
         if (!res.ok) throw new Error('offline');
         return res.json();
     },
+};
+
+export interface LocalEngine { id: string; label: string; summary: string; ready: boolean; status: 'ready' | 'not_installed'; hint: string; cross_checked: boolean }
+export interface Provider { id: string; label: string; cloud: boolean; ready: boolean; status: 'ready' | 'needs_setup' | 'blocked'; hint: string; models: string[] }
+export interface Strategy { id: string; label: string; mode: string; summary: string }
+export interface EnginesOverview {
+    local_only: boolean; llm_enabled: boolean; local_engines: LocalEngine[]; providers: Provider[]; strategies: Strategy[];
+    defaults: { models: string[]; escalate_below: number; plan: ReadingPlan };
+}
+export interface ReadingSettings { strategy?: string; mode?: string; local_engine?: string; models?: string[]; escalate_below?: number; token_cap?: number }
+export interface ReadingView { settings: ReadingSettings; plan: ReadingPlan; strategy_default: string }
+export interface EngineTest { ok: boolean; error?: string; seconds?: number; text?: string; confidence?: number | null; score?: number; tokens?: number }
+
+export const engines = {
+    overview: () => send<EnginesOverview>(`${ROOT}/api/engines`),
+    test: (kind: 'local' | 'model', id: string) => send<EngineTest>(`${ROOT}/api/engines/test`, json('POST', { kind, id })),
+};
+export interface SettingField { name: string; label: string; secret: boolean; kind: 'key' | 'url' | 'text'; help: string; set: boolean; source: 'saved' | 'environment' | null; preview: string }
+export interface ProviderSettings extends Provider { fields: SettingField[] }
+export interface ProvidersView { locked: boolean; encryption: 'ok' | 'unavailable'; local_only: boolean; providers: ProviderSettings[] }
+export const settings = {
+    providers: () => send<ProvidersView>(`${ROOT}/api/settings/providers`),
+    /** A string sets a value, null removes a saved one, an empty string leaves it alone. Keys are never sent back. */
+    save: (id: string, values: Record<string, string | null>) => send<ProviderSettings>(`${ROOT}/api/settings/providers/${encodeURIComponent(id)}`, json('PUT', { values })),
+};
+
+export const reading = {
+    get: (wid: string) => send<ReadingView>(`${ws(wid)}/reading`),
+    save: (wid: string, settings: ReadingSettings) => send<ReadingView>(`${ws(wid)}/reading`, json('PUT', settings)),
 };
 
 export const templates = {
@@ -113,7 +156,9 @@ export const templates = {
 export const api = {
     list: (wid: string) => send<Summary[]>(`${ws(wid)}/extractions`),
     get: (wid: string, id: string) => send<Detail>(`${ws(wid)}/extractions/${id}`),
-    upload: (wid: string, file: File, template = 'auto', readRest = false) => { const f = new FormData(); f.append('file', file); f.append('template', template); f.append('read_rest', String(readRest)); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
+    upload: (wid: string, file: File, template = 'auto', readRest = false, readingChoice = '') => { const f = new FormData(); f.append('file', file); f.append('template', template); f.append('read_rest', String(readRest)); f.append('reading', readingChoice); return send<{ id: string }>(`${ws(wid)}/extractions`, { method: 'POST', body: f }); },
+    /** Read the file again (another strategy, or chosen pages straight to the vision models). Creates a second extraction. */
+    reread: (wid: string, id: string, body: { strategy?: string; pages?: number[] }) => send<{ id: string }>(`${ws(wid)}/extractions/${id}/reread`, json('POST', body)),
     promote: (wid: string, id: string, docIndex: number, title: string) => send<{ doc_type: string; title: string; fields: number }>(`${ws(wid)}/extractions/${id}/forms/${docIndex}/promote`, json('POST', { title })),
     correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean; needs_review: number }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
     remove: (wid: string, id: string) => send<void>(`${ws(wid)}/extractions/${id}`, { method: 'DELETE' }),

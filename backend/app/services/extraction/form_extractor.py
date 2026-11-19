@@ -11,15 +11,13 @@ Every value is then grounded: located in the page's embedded words so the UI can
 vertical bands so "Tax ID" in the provider block and in the facility block resolve to different boxes.
 """
 import asyncio
-import base64
 import json
 import logging
 import re
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services import adjudicate, checkboxes, locate, normalize as N, ocr, pdf_pages
-from app.services.usage_tracker import record_usage
+from app.services.extraction import adjudicate, checkboxes, normalize as N
+from app.services.reading import locate, ocr, pdf_pages
 
 logger = logging.getLogger("app.services.form_extractor")
 
@@ -60,22 +58,8 @@ Return JSON only: {{"fields": {{"<key>": "<value or null>"}}, "table_rows": [{{.
 
 
 async def _read(model: str, jpeg: bytes, prompt: str) -> Dict[str, Any]:
-    b64 = base64.b64encode(jpeg).decode()
-    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{
-        "role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}]}
-    if model.startswith(("gpt-5", "o")):
-        kwargs["reasoning_effort"] = "low"
-    else:
-        kwargs["temperature"] = 0
-    start = time.perf_counter()
-    resp = await ocr._get_client().chat.completions.create(**kwargs)
-    usage = getattr(resp, "usage", None)
-    record_usage(stage="form_extraction", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                 total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
-    return parse_reply(resp.choices[0].message.content)
+    from app.engines import llm
+    return parse_reply(await llm.complete(model, prompt, jpeg, stage="form_extraction"))
 
 
 def parse_reply(raw: str) -> Dict[str, Any]:

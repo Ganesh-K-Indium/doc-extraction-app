@@ -105,6 +105,7 @@ def delete(workspace_id: str):
         ids = [e.id for e in s.query(db.Extraction).filter_by(workspace_id=workspace_id).all()]
         s.query(db.Extraction).filter_by(workspace_id=workspace_id).delete()
         s.query(db.CustomType).filter_by(workspace_id=workspace_id).delete()
+        s.query(db.WorkspaceReading).filter_by(workspace_id=workspace_id).delete()
         s.delete(w)
         s.commit()
     for eid in ids:

@@ -11,7 +11,9 @@ import asyncio
 import re
 from typing import Any, Dict, List, Optional
 
-from app.services import classify, discover, pdf_pages, ocr
+from app.services.documents import classify
+from app.services.extraction import discover
+from app.services.reading import pdf_pages, ocr
 
 FIELD_TYPES = {"text", "date", "phone", "state", "zip", "npi", "tax_id", "icd10", "number", "currency", "email", "id",
                "enum", "multi_enum", "checkbox"}
@@ -187,7 +189,8 @@ def locate_fields(path: str, template: Dict[str, Any]) -> None:
     block land in their own places. Fields it cannot place are left without a location."""
     import tempfile
     from pathlib import Path
-    from app.services import form_extractor, locate
+    from app.services.extraction import form_extractor
+    from app.services.reading import locate
 
     n = pdf_pages.page_count(path)
     with tempfile.TemporaryDirectory() as tmp:

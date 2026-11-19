@@ -9,8 +9,11 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
+from app.engines import plan as plans
 from app import db
-from app.services import classify, ocr, pipeline, suggest, template_draft, workspace_types
+from app.services.documents import classify, suggest, template_draft, workspace_types
+from app.services.reading import ocr
+from app.services import pipeline
 
 logger = logging.getLogger("app.api.templates")
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/templates", tags=["templates"], dependencies=[Depends(require_key), Depends(workspace)])
@@ -20,7 +23,7 @@ router = APIRouter(prefix="/api/workspaces/{workspace_id}/templates", tags=["tem
 async def draft(workspace_id: str, file: UploadFile = File(...)):
     """Upload a blank form (PDF or scan) and get a draft template back to review. Nothing is saved yet."""
     if not config.llm_enabled():
-        raise HTTPException(503, "Drafting a template reads the form with a vision model; set OPENAI_API_KEY first.")
+        raise HTTPException(503, "Drafting a template reads the form with a vision model, and none is configured on this server. Set a provider key first (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) or point OLLAMA_BASE_URL at a local vision model.")
     data = await file.read(config.MAX_UPLOAD_BYTES + 1)
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, "The file is too large.")
@@ -30,7 +33,7 @@ async def draft(workspace_id: str, file: UploadFile = File(...)):
         path = Path(tmp) / "blank.pdf"
         path.write_bytes(data)
         try:
-            drafted = await template_draft.draft_from_blank(str(path), config.extraction_models())
+            drafted = await template_draft.draft_from_blank(str(path), plans.for_workspace(workspace_id).extract_models)
             try:  # best effort: a draft without locations is still a draft
                 await asyncio.to_thread(template_draft.locate_fields, str(path), drafted["template"])
             except Exception:

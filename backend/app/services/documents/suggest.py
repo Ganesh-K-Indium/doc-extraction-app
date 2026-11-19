@@ -9,7 +9,7 @@ came from; the existing "promote" endpoint turns one of them into the template.
 from collections import Counter
 from typing import Any, Dict, List
 
-from app.services import labels
+from app.services.extraction import labels
 
 MIN_FIELDS = 3        # a "shape" of one or two keys is not a document type
 MAX_PAGES = 10        # a template describes a form or a short document, not a 68-page filing

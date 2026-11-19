@@ -23,7 +23,7 @@ MIN_CONTENT_CHARS = 40
 
 def custom_types() -> List[Dict[str, Any]]:
     """The custom document types of the workspace in force (see workspace_types)."""
-    from app.services import workspace_types
+    from app.services.documents import workspace_types
     return [d for d in workspace_types.entries() if isinstance(d, dict) and d.get("type")]
 
 
@@ -96,7 +96,6 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
     so its answer is always routable, and it says whether the page continues the previous page's document or starts a
     new one (with a short title). `ask(model, prompt) -> str` is injectable for tests."""
     import json
-    from app.services import ocr
     choices = {d["type"]: d["label"] for d in all_types()}
     prompt = ("Classify one page from a PDF that may hold several documents. Answer with JSON "
               '{"type": <one of ' + ", ".join(f'"{t}" ({l})' for t, l in choices.items())
@@ -106,16 +105,8 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
               + "This page (top):\n" + (text or "")[:1200])
 
     async def default_ask(model: str, prompt: str) -> str:
-        import time
-        from app.services.usage_tracker import record_usage
-        start = time.perf_counter()
-        resp = await ocr._get_client().chat.completions.create(
-            model=model, temperature=0, response_format={"type": "json_object"}, messages=[{"role": "user", "content": prompt}])
-        usage = getattr(resp, "usage", None)
-        record_usage(stage="classify", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                     completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                     total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
-        return resp.choices[0].message.content
+        from app.engines import llm
+        return await llm.complete(model, prompt, None, stage="classify")
 
     ask = ask or default_ask
     unknown = {"type": "unknown", "label": "Unclassified", "confidence": 0.0}

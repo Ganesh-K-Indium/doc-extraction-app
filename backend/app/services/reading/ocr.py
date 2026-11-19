@@ -11,23 +11,18 @@ independently by two different models and the lines are compared by content:
 PDF pages with a real text layer skip this entirely; only scans and image-only pages are sent to the models.
 """
 import asyncio
-import base64
 import difflib
 import io
 import json
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
-from app.services.usage_tracker import record_usage
 
 logger = logging.getLogger("app.services.ocr")
 
-# primary reader (its text is kept) , second reader (used to cross-check). Overridable via env.
-DEFAULT_MODELS = "gpt-4.1,gpt-4.1-mini"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_PAGES = 10
 MAX_SIDE_PX = 2048
@@ -252,20 +247,12 @@ def fitz_rect_area(bbox, page_rect) -> float:
 # Readers
 # ---------------------------------------------------------------------------
 
-_client = None
-
-
-def _get_client():
-    global _client
-    if _client is None:
-        from openai import AsyncOpenAI
-        _client = AsyncOpenAI(timeout=ENGINE_TIMEOUT_SECONDS)
-    return _client
-
-
 def configured_models() -> List[str]:
-    raw = os.getenv("HANDWRITING_OCR_MODELS", DEFAULT_MODELS)
-    return [m.strip() for m in raw.split(",") if m.strip()][:2]
+    raw = os.getenv("HANDWRITING_OCR_MODELS", "").strip()
+    if raw:
+        return [m.strip() for m in raw.split(",") if m.strip()][:2]
+    from app.engines import llm
+    return llm.default_models()
 
 
 class Lines(list):
@@ -292,22 +279,8 @@ def parse_lines(raw: str) -> Lines:
 
 async def read_image(model: str, jpeg: bytes) -> List[str]:
     """One model's transcription of one page image."""
-    b64 = base64.b64encode(jpeg).decode()
-    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{
-        "role": "user", "content": [
-            {"type": "text", "text": PROMPT},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}]}
-    if model.startswith(("gpt-5", "o")):
-        kwargs["reasoning_effort"] = "low"
-    else:
-        kwargs["temperature"] = 0
-    start = time.perf_counter()
-    resp = await _get_client().chat.completions.create(**kwargs)
-    usage = getattr(resp, "usage", None)
-    record_usage(stage="handwriting_ocr", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                 total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
-    return parse_lines(resp.choices[0].message.content)
+    from app.engines import llm
+    return parse_lines(await llm.complete(model, PROMPT, jpeg, stage="handwriting_ocr"))
 
 
 async def read_page(jpeg: bytes, models: List[str], reader=None) -> OcrPage:

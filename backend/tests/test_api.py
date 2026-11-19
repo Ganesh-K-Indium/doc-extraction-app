@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from tests.make_packet import build
 
 H = {"X-API-Key": "secret"}
-MODULES = ("app.config", "app.db", "app.api.deps", "app.api.extractions", "app.api.registry", "app.api.templates", "app.api.workspaces", "app.main")
+MODULES = ("app.config", "app.db", "app.api.deps", "app.api.engines", "app.api.extractions", "app.api.registry", "app.api.templates", "app.api.workspaces", "app.main")
 
 
 def reload_app(tmp_path, monkeypatch):
@@ -268,7 +268,7 @@ def test_read_the_rest_on_demand(client, pdf, monkeypatch):
     assert client.post(url, headers=H).status_code == 503                                  # no model configured here
 
     from app import config
-    from app.services import discover
+    from app.services.extraction import discover
 
     async def fake_read(model, jpeg, prompt):
         return {"title": None, "checkboxes": [], "tables": [], "fields": [
@@ -306,7 +306,8 @@ def test_read_rest_is_part_of_the_upload_identity(client, pdf):
 
 def test_table_cells_can_be_corrected_and_the_workspace_count_falls(client, pdf, monkeypatch):
     from app import config
-    from app.services import form_extractor, ocr
+    from app.services.extraction import form_extractor
+    from app.services.reading import ocr
     from tests import test_pipeline as tp
     monkeypatch.setattr(config, "llm_enabled", lambda: True)          # stubbed readers, so there are rows and flagged values to edit
     monkeypatch.setattr(form_extractor, "_read", tp.fake_form)

@@ -18,7 +18,8 @@ import re
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
-from app.services import discover, normalize as N, validation
+from app.services.extraction import discover, normalize as N
+from app.services.quality import validation
 
 LABEL_COVER = 0.9
 TABLE_COVER = 0.8

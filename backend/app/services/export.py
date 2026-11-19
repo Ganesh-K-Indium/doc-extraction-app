@@ -5,7 +5,7 @@ from typing import Any, Dict
 def pages_json(ex) -> Dict[str, Any]:
     r = ex.result or {}
     return {"extraction_id": ex.id, "filename": ex.filename, "page_count": len(r.get("pages", [])),
-            "documents": r.get("documents", []), "pages": r.get("pages", [])}
+            "reading": r.get("reading"), "documents": r.get("documents", []), "pages": r.get("pages", [])}
 
 
 def apply_corrections(form: Dict[str, Any], corrections: Dict[str, Any]) -> Dict[str, Any]:

@@ -22,7 +22,12 @@ function ReadBy({ x }: { x: Summary }) {
     return (
         <span className="kinds">
             {s.digital_pages > 0 && <span className="kind kind--digital" title="Real text in the PDF: read directly by code, exactly">Digital{s.digital_pages !== s.pages ? ` ${s.digital_pages}` : ''}</span>}
-            {(s.scanned_pages ?? 0) > 0 && <span className="kind kind--scan" title="Pictures of pages: read by vision models and compared">Scanned{s.scanned_pages !== s.pages ? ` ${s.scanned_pages}` : ''}</span>}
+            {s.local_ocr_pages !== undefined ? (
+                <>
+                    {s.local_ocr_pages > 0 && <span className="kind kind--scan" title="Pictures of pages read by a local OCR engine on this server">Local OCR{s.local_ocr_pages !== s.pages ? ` ${s.local_ocr_pages}` : ''}</span>}
+                    {(s.vision_pages ?? 0) > 0 && <span className="kind kind--vision" title={`Read by vision models and compared${s.escalated_pages ? `; ${s.escalated_pages} of them were sent on because local OCR was doubtful` : ''}`}>Vision{s.vision_pages !== s.pages ? ` ${s.vision_pages}` : ''}</span>}
+                </>
+            ) : (s.scanned_pages ?? 0) > 0 && <span className="kind kind--scan" title="Pictures of pages: read by vision models and compared">Scanned{s.scanned_pages !== s.pages ? ` ${s.scanned_pages}` : ''}</span>}
             {(s.handwritten_pages ?? 0) > 0 && <span className="kind kind--hand" title="A reader saw handwriting on these pages">Handwriting {s.handwritten_pages}</span>}
         </span>
     );
@@ -44,6 +49,7 @@ export default function ListPage() {
     const [over, setOver] = useState(false);
     const [choice, setChoice] = useState('auto');
     const [readRest, setReadRest] = useState(false);
+    const [scanReading, setScanReading] = useState('');
     const [types, setTypes] = useState<RegistryType[]>([]);
     const [llm, setLlm] = useState(true);
     const [view, setView] = useState<View>('all');
@@ -74,7 +80,7 @@ export default function ListPage() {
         let last = '';
         for (let i = 0; i < files.length; i++) {
             setBusy(files.length > 1 ? `Uploading ${i + 1} of ${files.length}` : 'Uploading');
-            try { last = (await api.upload(wid, files[i], choice, readRest && choice !== 'discover')).id; }
+            try { last = (await api.upload(wid, files[i], choice, readRest && choice !== 'discover', scanReading)).id; }
             catch (e) { failed.push(`${files[i].name}: ${(e as Error).message}`); }
         }
         setBusy(''); if (input.current) input.current.value = '';
@@ -113,6 +119,14 @@ export default function ListPage() {
                             <option value="discover">Read without a template</option>
                         </select>
                     </label>
+                    <label className="intake__pick">Scanned pages
+                        <select value={scanReading} onChange={e => setScanReading(e.target.value)}>
+                            <option value="">Workspace setting</option>
+                            <option value="economy">Economy: local OCR only</option>
+                            <option value="balanced">Balanced: models if doubtful</option>
+                            <option value="accuracy">Accuracy: vision models</option>
+                        </select>
+                    </label>
                     <button className="btn btn--primary" disabled={!!busy} onClick={() => input.current?.click()}>{busy || 'Choose PDFs'}</button>
                     {choice !== 'discover' && (
                         <label className="intake__rest">
@@ -122,7 +136,7 @@ export default function ListPage() {
                 </div>
                 <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={e => upload(e.target.files)} />
             </div>
-            {!llm && <p className="notice" role="status">No model key is set on this server. Digital PDFs are still read in full, but scans, photos and handwriting cannot be read until <code>OPENAI_API_KEY</code> is configured.</p>}
+            {!llm && <p className="notice" role="status">No vision model is connected. Digital PDFs are read in full and scans by local OCR, but handwriting and poor scans need a model. <Link to="/app/settings">Connect a provider in Settings</Link>.</p>}
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {notes.length > 0 && <div className="notice notice--error" role="alert"><b>{notes.length === 1 ? 'One file was not uploaded' : `${notes.length} files were not uploaded`}</b><ul>{notes.map(n => <li key={n}>{n}</li>)}</ul></div>}
 
