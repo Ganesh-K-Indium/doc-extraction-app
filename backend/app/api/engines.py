@@ -7,7 +7,6 @@ Reading engines and the per-workspace reading plan.
     PUT  /api/workspaces/{id}/reading       save them (validated; keys for cloud models stay in the server's environment)
 """
 import asyncio
-import io
 import logging
 import time
 from typing import Any, Dict
@@ -17,7 +16,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.engines import llm, local, plan
+from app.engines import llm, local, plan, sample
 from app.services.reading import ocr
 from app.services.usage_tracker import track_usage
 
@@ -26,8 +25,9 @@ logger = logging.getLogger("app.api.engines")
 router = APIRouter(prefix="/api/engines", tags=["engines"], dependencies=[Depends(require_key)])
 ws_router = APIRouter(prefix="/api/workspaces/{workspace_id}/reading", tags=["engines"], dependencies=[Depends(require_key), Depends(workspace)])
 
-SAMPLE_LINES = ["Invoice No. 48213", "Date: 03/14/2026", "Total due $1,250.75", "Ref AB-9071"]
-SAMPLE_TOKENS = ["48213", "03/14/2026", "1,250.75", "AB-9071"]
+SAMPLE_TOKENS = sample.TOKENS
+_found = sample.found
+sample_page = sample.page
 
 
 def overview() -> Dict[str, Any]:
@@ -40,24 +40,6 @@ def overview() -> Dict[str, Any]:
 @router.get("")
 def engines():
     return overview()
-
-
-def sample_page() -> bytes:
-    """A small clean page with a few labelled values, drawn here so the test needs no file."""
-    from PIL import Image, ImageDraw, ImageFont
-    img = Image.new("RGB", (900, 420), "white")
-    d = ImageDraw.Draw(img)
-    font = ImageFont.load_default(size=40)
-    for i, t in enumerate(SAMPLE_LINES):
-        d.text((50, 40 + i * 85), t, fill="black", font=font)
-    out = io.BytesIO()
-    img.save(out, "JPEG", quality=92)
-    return out.getvalue()
-
-
-def _found(text: str) -> float:
-    compact = text.replace(" ", "").lower()
-    return sum(1 for t in SAMPLE_TOKENS if t.replace(" ", "").lower() in compact) / len(SAMPLE_TOKENS)
 
 
 class TestIn(BaseModel):

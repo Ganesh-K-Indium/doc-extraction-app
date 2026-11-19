@@ -267,6 +267,41 @@ def test_neural_engines_run_one_page_at_a_time_and_tesseract_in_parallel():
     assert [e.serial for e in local.engines()] == [False, True, True, True]
 
 
+def test_warmup_reports_each_engine_and_signals_failure(capsys, monkeypatch):
+    from app.engines import warmup
+
+    class Good(FakeLocal):
+        id, label = "rapidocr", "RapidOCR"
+
+        async def read(self, jpeg):
+            r = local.build_reading([W(0, 0, 90, 20, "Invoice No. 48213 Date: 03/14/2026 Total due $1,250.75 Ref AB-9071", 0.9)], "rapidocr")
+            return r
+
+    class Bad(FakeLocal):
+        id, label = "doctr", "docTR"
+
+    class Poor(FakeLocal):
+        id, label = "paddleocr", "PaddleOCR"
+
+        async def read(self, jpeg):
+            return local.build_reading([W(0, 0, 90, 20, "nothing useful", 0.9)], "paddleocr")
+
+    class Missing(FakeLocal):
+        id, label, install = "tesseract", "Tesseract", "install it"
+        available = lambda self: False
+    monkeypatch.setattr(local, "_ENGINES", {"tesseract": Missing(), "rapidocr": Good(), "paddleocr": Poor(), "doctr": Bad(fail=True)})
+    assert warmup.main(["rapidocr"]) == 0
+    out = capsys.readouterr().out
+    assert "OK" in out and "RapidOCR" in out and "found 100%" in out
+    assert warmup.main(["paddleocr"]) == 1                                                   # reads, but not the sample's values
+    assert warmup.main(["doctr"]) == 1                                                       # raises
+    assert warmup.main(["tesseract"]) == 1                                                   # asked for, not installed
+    assert warmup.main(["nope"]) == 2
+    assert warmup.main([]) == 1                                                              # the report as a whole: one engine failed
+    monkeypatch.setattr(local, "_ENGINES", {"tesseract": Missing(), "rapidocr": Good()})
+    assert warmup.main([]) == 0                                                              # listing everything: a missing optional engine is only reported
+
+
 def test_engine_listing_names_every_engine():
     ids = [e["id"] for e in local.listing()]
     assert ids == ["tesseract", "rapidocr", "paddleocr", "doctr"]

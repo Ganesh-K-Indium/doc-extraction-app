@@ -7,19 +7,63 @@ Turns any PDF (scanned or digital forms, fax packets, statements, applications) 
 
 A review UI shows the source PDF next to the fields. Values both readers agree on are quiet; anything else goes in a review queue (`j`/`k` to move, `Enter` to confirm, or click the second reader's value).
 
-## Run
+## Install and run
+
+Needs Python 3.11 or newer (tested on 3.13), Node 18 or newer, and Tesseract. Digital PDFs work with nothing else; scans, photos and handwriting use the OCR engines and models below.
+
+**1. Tesseract** (the built-in local OCR engine; it also gives scanned pages the text layer used for highlighting)
 
 ```bash
-# backend (venv lives at the project root, outside backend/)
+brew install tesseract                      # macOS
+sudo apt install tesseract-ocr              # Debian / Ubuntu
+# Windows: install from https://github.com/UB-Mannheim/tesseract/wiki and set TESSERACT_CMD to tesseract.exe
+tesseract --version                         # check it is on the PATH
+```
+
+Other languages: install the language pack (`sudo apt install tesseract-ocr-deu`) and set `TESSERACT_LANG=eng+deu`.
+
+**2. Backend**
+
+```bash
+# the venv lives at the project root, outside backend/
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
-cd backend && cp .env.example .env   # optional: models can also be connected later on the Settings page
+cd backend && cp .env.example .env          # optional: models can also be connected on the Settings page
 uvicorn app.main:app --reload
-pytest -q                            # offline, no network
+```
 
-# frontend
+**3. Frontend**
+
+```bash
 cd frontend && npm install && cp .env.example .env && npm run dev
 ```
+
+**4. Optional: more local OCR engines.** Tesseract is enough to start. Each of these appears on the *Reading engines* page once installed, and you can install any subset (or all with `pip install -r backend/requirements-ocr.txt`):
+
+| Engine | Install | Size | First use |
+|---|---|---|---|
+| RapidOCR | `pip install rapidocr-onnxruntime` | about 100 MB | none: its models ship inside the package |
+| PaddleOCR | `pip install paddlepaddle paddleocr` | about 430 MB | downloads about 130 MB of models |
+| docTR | `pip install "python-doctr[torch]"` | about 630 MB (PyTorch) | downloads about 125 MB of models |
+
+Install the engines first, then **check them** (this also downloads the models now, instead of during your first upload):
+
+```bash
+cd backend
+python -m app.engines.warmup                # every installed engine
+python -m app.engines.warmup doctr          # or just one; exits 1 if it fails or is missing
+```
+
+```
+  OK    Tesseract  found 100% of the sample values; first page 0.2s (includes loading the model), then 0.2s
+  --    RapidOCR   not installed. pip install rapidocr-onnxruntime
+  OK    PaddleOCR  found 100% of the sample values; first page 6.3s (includes loading the model), then 2.6s
+  OK    docTR      found 100% of the sample values; first page 7.2s (includes loading the model), then 2.0s
+```
+
+The same check is the **Test** button next to each engine on the Reading engines page. Models are cached under your home folder; set `DOCTR_CACHE_DIR` and `PADDLE_PDX_CACHE_HOME` to choose where. For a server with no internet, run the check on a connected machine and copy those two folders across. Without a GPU the engines run on the CPU, one page at a time.
+
+**5. Tests** (offline, no network): `cd backend && python -m pytest -q`
 
 ## Reviewing a document
 
@@ -87,7 +131,7 @@ Scanned pages and handwriting can be read three ways, and each workspace chooses
 
 **How "doubtful" is decided.** Tesseract reports a confidence per word: clean print scores about 90 to 95%, handwriting 40 to 50%, a badly degraded scan about 40%. A page is escalated when its confidence is below the threshold (85% by default), many words or numbers were hard to read, nothing was recognised on a page that has marks, or the text is garbled. Other engines (RapidOCR, PaddleOCR, docTR) report confidences that look alike on clean print and handwriting, so their pages are accepted only when Tesseract's reading, which the preparation step already produces, agrees with them (75% word overlap; clean pages score 80 to 90%, handwriting under 35%). The lines they disagree on are the ones flagged. Every decision and its reason is stored per page and shown on the review screen, where any page can also be sent to the vision models by hand, or the whole file read again under another strategy (this makes a second copy; the first is kept).
 
-**Local OCR engines.** Tesseract is built in. RapidOCR, PaddleOCR and docTR appear on the page once installed (`pip install -r backend/requirements-ocr.txt`, or just the ones you want). All four were run here on a sample page and on real scans: they read the sample's values correctly (about 1 to 2 seconds a page warm; the first page also loads the model, 15 to 20 seconds) and their cross-checks separated clean print (agreement 85 to 99%) from handwriting (6 to 34%). The neural engines run one page at a time. Their models download on first use, so for an air-gapped server pre-download them and point `DOCTR_CACHE_DIR` / `PADDLE_PDX_CACHE_HOME` at the folder.
+**Local OCR engines.** Tesseract is built in. RapidOCR, PaddleOCR and docTR appear on the page once installed (see *Install and run*). All four were run here on a sample page and on real scans: they read the sample's values correctly (about 1 to 2 seconds a page warm; the first page also loads the model, 15 to 20 seconds) and their cross-checks separated clean print (agreement 85 to 99%) from handwriting (6 to 34%). The neural engines run one page at a time. Their models download on first use; `python -m app.engines.warmup` fetches them in advance (see *Install and run* for air-gapped servers).
 
 **Region-level re-reads.** Doubtfulness is judged line by line, because a page average hides one bad line. When only a few lines are doubtful (an engine unsure of the line or of a number in it, or a second engine disagreeing), just those regions are cropped and read by the two vision models, and their lines replace the local ones; the rest of the page keeps its local reading. That costs a couple of small images instead of a full page. If the doubt is scattered (more than three separate regions, more than half the page, or more than 40% of the lines), the page is poor as a whole and is read whole. A failed region read keeps the local reading, flagged, when the page otherwise passed.
 
@@ -227,7 +271,7 @@ On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, 
 
 ## Setup notes
 
-- Tesseract: `brew install tesseract` (macOS) or your package manager. Optional `TESSERACT_CMD`, `TESSERACT_LANG`. Without it scans have no highlighting.
+- Tesseract is covered under *Install and run*. Without it scans have no highlighting and there is no default local OCR engine.
 - Without any model provider the app still runs: digital pages use embedded text and scans use a local OCR engine (single reader, marked unverified). Connect a provider on the **Settings** page, or with an environment variable, to read handwriting and poor scans.
 
 ## Known limits
