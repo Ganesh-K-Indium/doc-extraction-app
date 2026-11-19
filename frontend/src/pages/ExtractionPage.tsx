@@ -178,9 +178,9 @@ export default function ExtractionPage() {
                                 restDone={f => forms.some(x => x.remainder_of === f.doc_index) || (data.fields?.rest_checked ?? []).includes(f.doc_index)}
                                 readingDoc={reading} restNote={active ? restNote[active.doc_index] : undefined} savedAs={active ? saved[active.doc_index] : undefined}
                                 onOpenDoc={openDoc} onSelect={select} onSave={save} onJump={jump} onPromote={promote} onReadRest={readRest} />)}
-                        {tab === 'pages' && data.pages && <PagesTab pages={data.pages} busy={rereading} onOpen={n => jump(n)} onReread={n => reread({ pages: [n] })} />}
+                        {tab === 'pages' && data.pages && <PagesTab pages={data.pages} busy={rereading} onOpen={n => jump(n)} onJump={jump} onReread={n => reread({ pages: [n] })} />}
                         {tab === 'findings' && <FindingsTab findings={findings} onOpen={findingJump} />}
-                        {tab === 'json' && <JsonView fields={data.fields} pages={data.pages} onDownload={kind => api.download(wid, id, kind, data.filename)} />}
+                        {tab === 'json' && <JsonView fields={data.fields} pages={data.pages} structure={data.structure} onDownload={kind => api.download(wid, id, kind, data.filename)} />}
                     </div>
                     {showStep && <StepBar position={at + 1} total={queue.length} canConfirm={at >= 0 && selectedValue !== null && selectedValue !== undefined} onStep={step} onConfirm={confirm} />}
                 </>

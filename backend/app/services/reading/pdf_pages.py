@@ -33,6 +33,10 @@ def round_rect(r) -> List[float]:
     return [round(float(v), 2) for v in r]
 
 
+def is_fax_stamp(text: str) -> bool:
+    return bool(_FAX_HEADER_RE.match(text) or _FAX_FOOTER_RE.match(text))
+
+
 def strip_fax_stamp(lines: List[str]) -> Tuple[List[str], Dict[str, Any]]:
     """Split transmission stamps off a page's lines -> (content lines, page_meta)."""
     content, meta = [], {}

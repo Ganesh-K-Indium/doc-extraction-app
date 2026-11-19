@@ -79,7 +79,7 @@ def test_workspaces_are_isolated(client, pdf):
     assert wait(client, a, eid)["status"] == "done"
     # B cannot see, fetch or change A's document
     assert client.get(f"/api/workspaces/{b}/extractions", headers=H).json() == []
-    for path in (f"/{eid}", f"/{eid}/fields.json", f"/{eid}/pages.json", f"/{eid}/pdf", f"/{eid}/truth.json"):
+    for path in (f"/{eid}", f"/{eid}/fields.json", f"/{eid}/pages.json", f"/{eid}/structure.json", f"/{eid}/pdf", f"/{eid}/truth.json"):
         assert client.get(f"/api/workspaces/{b}/extractions{path}", headers=H).status_code == 404, path
     assert client.patch(f"/api/workspaces/{b}/extractions/{eid}/fields", json={"doc_index": 0, "key": "x", "value": 1}, headers=H).status_code == 404
     assert client.delete(f"/api/workspaces/{b}/extractions/{eid}", headers=H).status_code == 404
@@ -156,6 +156,9 @@ def test_upload_to_download(client, pdf):
     again = up(client, wid, pdf, name="copy.pdf").json()                            # same bytes, same choice: reuse, no second OCR bill
     assert again == {"id": eid, "status": "done", "reused": True}
     assert len(client.get(f"{base}/{eid}/pages.json", headers=H).json()["pages"]) == 6
+    structure = client.get(f"{base}/{eid}/structure.json", headers=H).json()                        # built from layout, whether or not a template matched
+    assert structure["documents"] and any(p["blocks"] for d in structure["documents"] for p in d["pages"])
+    assert client.get(f"{base}/{eid}", headers=H).json()["structure"] == structure
     fields = client.get(f"{base}/{eid}/fields.json", headers=H).json()
     assert fields["forms"][0]["values"]["review_type"] == "ROUTINE"
 

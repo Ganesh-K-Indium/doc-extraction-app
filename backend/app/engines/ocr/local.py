@@ -70,6 +70,8 @@ class Reading:
     # what region-level re-reads need (see doubtful_lines and plan_regions)
     line_boxes: Optional[List[Tuple[float, float, float, float]]] = None
     line_digit_low: Optional[List[bool]] = None
+    # each line's cells (the pieces joined by " | "), as (text, x0, y0, x1, y1) in page fractions: the layout the structure builder reads
+    line_cells: Optional[List[List[Tuple[str, float, float, float, float]]]] = None
 
     @property
     def text(self) -> str:
@@ -100,14 +102,22 @@ def build_reading(words: List[Word], engine: str, seconds: float = 0.0, size: Op
     line_conf: List[Optional[float]] = []
     boxes: List[Tuple[float, float, float, float]] = []
     digit_low: List[bool] = []
+    cells: List[List[Tuple[str, float, float, float, float]]] = []
     for row in rows:
         row.sort(key=lambda w: w.x0)
-        text = row[0].text.strip()
+        groups: List[List[Word]] = [[row[0]]]
         for prev, w in zip(row, row[1:]):
             gap = w.x0 - prev.x1
             h = max(prev.y1 - prev.y0, typical, 1.0)
-            text += (" | " if gap > h * GAP_FACTOR else " ") + w.text.strip()
+            if gap > h * GAP_FACTOR:
+                groups.append([w])
+            else:
+                groups[-1].append(w)
+        text = " | ".join(" ".join(x.text.strip() for x in g) for g in groups)
         lines.append(text)
+        if size and size[0] > 0 and size[1] > 0:
+            cells.append([(" ".join(x.text.strip() for x in g), min(x.x0 for x in g) / size[0], min(x.y0 for x in g) / size[1],
+                           max(x.x1 for x in g) / size[0], max(x.y1 for x in g) / size[1]) for g in groups])
         confs = [w.conf for w in row if w.conf is not None and _ALNUM.search(w.text)]
         line_conf.append(statistics.fmean(confs) if confs else None)
         digit_low.append(any(w.conf is not None and w.conf < LOW_DIGIT and _DIGIT.search(w.text) for w in row))
@@ -121,7 +131,8 @@ def build_reading(words: List[Word], engine: str, seconds: float = 0.0, size: Op
         confidence=statistics.fmean(w.conf for w in real) if real else None,
         low_share=(sum(1 for w in real if w.conf < LOW_WORD) / len(real)) if real else 0.0,
         digit_low_share=(sum(1 for w in digits if w.conf < LOW_DIGIT) / len(digits)) if digits else 0.0,
-        seconds=seconds, line_boxes=boxes if len(boxes) == len(lines) else None, line_digit_low=digit_low)
+        seconds=seconds, line_boxes=boxes if len(boxes) == len(lines) else None, line_digit_low=digit_low,
+        line_cells=cells if len(cells) == len(lines) else None)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -214,14 +225,18 @@ def respace(primary: Reading, reference: Reading) -> Reading:
     if not vocab:
         return primary
     longest = max(len(t) for t in vocab)
-    lines: List[str] = []
-    for line in primary.lines:
-        parts = line.split(" ")
+    def fix(text: str) -> str:
         out: List[str] = []
-        for tok in parts:
+        for tok in text.split(" "):
             cut = _split_glued(tok, vocab, longest) if len(tok) >= MIN_GLUED and tok.lower() not in vocab and tok != "|" else None
             out.extend(cut if cut else [tok])
-        lines.append(" ".join(out))
+        return " ".join(out)
+
+    if primary.line_cells is not None:                  # fix each cell, so the layout keeps the same text as the lines
+        primary.line_cells = [[(fix(c[0]),) + tuple(c[1:]) for c in row] for row in primary.line_cells]   # type: ignore[misc]
+        lines = [" | ".join(c[0] for c in row) for row in primary.line_cells]
+    else:
+        lines = [" | ".join(fix(part) for part in line.split(" | ")) for line in primary.lines]
     primary.lines = lines
     return primary
 

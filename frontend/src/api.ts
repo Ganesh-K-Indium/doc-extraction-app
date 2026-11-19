@@ -39,9 +39,20 @@ export interface Stats {
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }
 export interface Page {
-    page: number; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
+    page: number; size?: { width: number; height: number } | null; structure?: { layout: boolean; blocks: Block[]; entities: Entity[] }; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
     route?: Route; reading?: PageReading; page_meta: Record<string, string | number>; classification: { type: string; label: string; confidence: number };
 }
+/** One piece of a page, in reading order. `bbox` is a fraction of the page (x0, y0, x1, y1); absent when the page had no layout. */
+export type Block =
+    | { type: 'heading'; level: number; text: string; bbox?: BBox }
+    | { type: 'paragraph'; text: string; bbox?: BBox }
+    | { type: 'key_value'; items: { label: string; value: string | null; bbox?: BBox }[]; bbox?: BBox }
+    | { type: 'table'; columns: string[]; header: boolean; rows: string[][]; bbox?: BBox }
+    | { type: 'list'; ordered: boolean; items: string[]; bbox?: BBox };
+export interface Entity { type: string; value: string; block: number }
+export interface StructurePage { page: number; source: string | null; layout: boolean; blocks: Block[]; entities: Entity[] }
+export interface StructureDoc { doc_index: number; type: string; label: string; pages: StructurePage[] }
+export interface Structure { documents: StructureDoc[] }
 export interface Route { reasons: string[]; reader?: string; extractor?: string }
 export interface Doc { doc_index: number; type: string; label: string; pages: number[]; route?: Route }
 export interface Cell {
@@ -60,6 +71,7 @@ export interface Form {
 export interface Finding { rule: string; severity: 'error' | 'warn' | 'info'; detail: string; field?: string; doc_index?: number }
 export interface Detail extends Summary {
     pages?: { documents: Doc[]; pages: Page[] };
+    structure?: Structure;
     fields?: { forms: Form[]; validation: Finding[]; rest_checked?: number[]; other_documents: { doc_index: number; doc_type: string; pages: number[]; canonical: Record<string, string> }[] };
 }
 
@@ -177,7 +189,7 @@ export const api = {
     readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
     /** Download a JSON file (fetch + blob so the API key header is sent). */
-    download: async (wid: string, id: string, kind: 'pages' | 'fields' | 'truth', name: string) => {
+    download: async (wid: string, id: string, kind: 'pages' | 'fields' | 'structure' | 'truth', name: string) => {
         const res = await fetch(`${ws(wid)}/extractions/${id}/${kind}.json`, { headers: authHeaders() });
         if (!res.ok) throw new Error(`Download failed (${res.status})`);
         const url = URL.createObjectURL(await res.blob());

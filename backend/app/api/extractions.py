@@ -154,6 +154,7 @@ def get_extraction(workspace_id: str, extraction_id: str):
         if ex.status == "done":
             out["pages"] = export.pages_json(ex)
             out["fields"] = export.fields_json(ex, _templates(workspace_id))
+            out["structure"] = export.structure_json(ex)
         return out
 
 
@@ -161,6 +162,12 @@ def get_extraction(workspace_id: str, extraction_id: str):
 def download_pages(workspace_id: str, extraction_id: str):
     with db.session() as s:
         return export.pages_json(_get(s, workspace_id, extraction_id))
+
+
+@router.get("/{extraction_id}/structure.json")
+def download_structure(workspace_id: str, extraction_id: str):
+    with db.session() as s:
+        return export.structure_json(_get(s, workspace_id, extraction_id))
 
 
 @router.get("/{extraction_id}/fields.json")

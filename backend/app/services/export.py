@@ -4,8 +4,29 @@ from typing import Any, Dict
 
 def pages_json(ex) -> Dict[str, Any]:
     r = ex.result or {}
-    return {"extraction_id": ex.id, "filename": ex.filename, "page_count": len(r.get("pages", [])),
-            "reading": r.get("reading"), "documents": r.get("documents", []), "pages": r.get("pages", [])}
+    pages = r.get("pages", [])         # each page: how it was read, its text and lines, and its structure (blocks, entities)
+    return {"extraction_id": ex.id, "filename": ex.filename, "page_count": len(pages),
+            "reading": r.get("reading"), "documents": r.get("documents", []), "pages": pages}
+
+
+def structure_json(ex) -> Dict[str, Any]:
+    """Each document's pages as blocks in reading order: headings, paragraphs, label/value groups, tables, lists, and the
+    dates, amounts and so on found in them. Built from layout alone, so it exists for every document whether or not a
+    template matched it. This is the content-only view of what pages.json holds page by page, grouped by document."""
+    r = ex.result or {}
+    by_page = {p["page"]: p for p in r.get("pages", [])}
+    docs = []
+    for d in r.get("documents", []):
+        pages = []
+        for n in d.get("pages", []):
+            p = by_page.get(n)
+            if not p:
+                continue
+            st = p.get("structure") or {"blocks": [], "entities": [], "layout": False}
+            pages.append({"page": n, "source": p.get("source"), "layout": st.get("layout", False), "blocks": st.get("blocks", []),
+                          "entities": st.get("entities", [])})
+        docs.append({"doc_index": d.get("doc_index"), "type": d.get("type"), "label": d.get("label"), "pages": pages})
+    return {"extraction_id": ex.id, "filename": ex.filename, "reading": r.get("reading"), "documents": docs}
 
 
 def apply_corrections(form: Dict[str, Any], corrections: Dict[str, Any]) -> Dict[str, Any]:

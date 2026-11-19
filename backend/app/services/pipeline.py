@@ -20,10 +20,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from app import config
+from app.engines.ocr import local
 from app.engines.strategy import ladder, plan as plans
 from app.services.documents import classify
 from app.services.quality import cross, validation
-from app.services.extraction import discover, form_extractor, kv, remainder
+from app.services.extraction import discover, form_extractor, kv, remainder, structure
 from app.services.reading import ocr, pdf_pages, router, tess
 
 logger = logging.getLogger("app.services.pipeline")
@@ -69,6 +70,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             route = router.decide_reader(router.profile_page(original), use_llm, plan.local_engine is not None, mode)
             info = await asyncio.to_thread(pdf_pages.analyze_page, work, n)  # geometry from the work PDF (has OCR layer on scans)
             lines_meta: Dict[str, Any] = {}
+            layout = None
             handwritten = False
             reading: Dict[str, Any] = {"engine": "text-layer"}
             if route["reader"] in ("ocr_dual", "ocr_ladder", "ocr_local"):
@@ -79,7 +81,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     force_vision=force_vision and route["reader"] != "ocr_local", tsv=tsv)
                 raw = [l.text for l in scan.lines]
                 lines_meta = {l.text: l for l in scan.lines}
-                source, verified, handwritten, reading = scan.source, scan.verified, scan.handwritten, scan.reading
+                source, verified, handwritten, reading, layout = scan.source, scan.verified, scan.handwritten, scan.reading, scan.layout
             else:
                 raw = [l.strip() for l in original["text"].splitlines() if l.strip()]
                 source = "text-layer" if route["reader"] == "text_layer" else "text-layer-unverified"
@@ -93,16 +95,25 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                 out_lines.append({"text": t, "status": l.status if l else "agreed",
                                   "alternatives": l.alternatives if l else [], "reason": l.reason if l else None})
             text = "\n".join(content)
+            if source == "text-layer" and info["words"]:
+                layout = local.build_reading([local.Word(*w["bbox"], w["text"]) for w in info["words"]], "text-layer",
+                                             size=(info["size"]["width"], info["size"]["height"])).line_cells
+            given = []
+            if source == "text-layer" and info["size"]["width"] and info["size"]["height"]:
+                w, h = info["size"]["width"], info["size"]["height"]
+                given = [{"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": t.get("headers"),
+                          "rows": t.get("rows"), "method": t.get("method")} for t in info["tables"] if t.get("bbox")]
+            structure_page = structure.build_page(layout, tables=given) if layout else structure.build_from_lines(content)
             return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": classify.classify_text(text), "text": text, "lines": out_lines,
-                    "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
+                    "structure": structure_page, "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
         except Exception as e:
             logger.exception("Page %s failed", n)
             msg = str(e) if isinstance(e, ocr.OcrError) else "This page could not be read."
             return {**base, "size": None, "source": "failed", "verified": False, "scanned": False, "has_text_layer": False, "handwritten": False,
                     "page_meta": {}, "classification": {"type": "unknown", "label": "Unreadable", "confidence": 0.0},
-                    "text": "", "lines": [], "blocks": [], "tables": [], "form_widgets": [], "route": None, "reading": {}, "error": msg}
+                    "text": "", "lines": [], "structure": {"blocks": [], "entities": [], "layout": False}, "blocks": [], "tables": [], "form_widgets": [], "route": None, "reading": {}, "error": msg}
 
 
 async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None,

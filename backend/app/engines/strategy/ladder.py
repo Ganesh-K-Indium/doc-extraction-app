@@ -34,6 +34,7 @@ class Scan:
     verified: bool                   # two readers compared
     handwritten: bool
     reading: Dict[str, Any] = field(default_factory=dict)
+    layout: Optional[List[Any]] = None          # the page as rows of positioned cells, when the lines are the local engine's own (see structure.py)
 
 
 def tokens_used() -> int:
@@ -126,7 +127,7 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
         info["confidence"] = reading.confidence
         info["reasons"] = list(verdict.reasons)
         if mode == "local":
-            return Scan(_local_lines(reading), "ocr-local", False, False, info)
+            return Scan(_local_lines(reading), "ocr-local", False, False, info, reading.line_cells)
         # Doubtful lines are re-read on their own, whether or not the page as a whole passed: an average hides one bad line.
         regions = None
         if reading.words > 0 and not ocr.text_is_garbled(reading.text):
@@ -135,17 +136,17 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
             if over_budget(token_cap):
                 info["cost_capped"] = True
                 info["reasons"].append("the token cap for this document was reached, so doubtful lines were not re-read by a vision model")
-                return Scan(_local_lines(reading), "ocr-local", False, False, info)
+                return Scan(_local_lines(reading), "ocr-local", False, False, info, reading.line_cells)
             done = await _read_regions(reading, regions, jpeg, models, reader, info)
             if done is not None:
                 return done
             info["reasons"].append("the vision models could not re-read the doubtful lines")
         if verdict.ok:
-            return Scan(_local_lines(reading), "ocr-local", False, False, info)
+            return Scan(_local_lines(reading), "ocr-local", False, False, info, reading.line_cells)
         if over_budget(token_cap):
             info["cost_capped"] = True
             info["reasons"].append("the token cap for this document was reached, so a vision model was not used")
-            return Scan(_local_lines(reading), "ocr-local", False, False, info)
+            return Scan(_local_lines(reading), "ocr-local", False, False, info, reading.line_cells)
     elif local_error:
         info["reasons"].append(local_error)
     elif force_vision:
@@ -156,7 +157,7 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
     except ocr.OcrError as e:
         if reading is not None:                                   # keep what the local engine got rather than fail the page
             info["reasons"].append("the vision models were unavailable, so the local reading was kept")
-            return Scan(_local_lines(reading), "ocr-local", False, False, info)
+            return Scan(_local_lines(reading), "ocr-local", False, False, info, reading.line_cells)
         raise e
     info.update({"escalated": reading is not None or bool(local_error) or force_vision, "scope": "page", "engine": "vision", "models": models[:2]})
     if reading is not None:

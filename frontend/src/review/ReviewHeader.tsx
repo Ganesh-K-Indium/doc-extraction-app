@@ -18,7 +18,7 @@ interface Props {
     onShowCheck: () => void;
     onShowFindings: () => void;
     onReread: (strategy: string) => void;
-    onDownload: (kind: 'fields' | 'pages' | 'truth') => void;
+    onDownload: (kind: 'fields' | 'pages' | 'structure' | 'truth') => void;
 }
 
 /** Who this is, what is left to do, and the two things you may want to do with the file: export it, or read it again. */
@@ -32,6 +32,7 @@ export function ReviewHeader(p: Props) {
                     <div className="rv-head__actions">
                         <Menu label="Export ▾">
                             <button onClick={() => p.onDownload('fields')}>fields.json<small>Values for each document</small></button>
+                            <button onClick={() => p.onDownload('structure')}>structure.json<small>Headings, text, tables and lists in reading order</small></button>
                             <button onClick={() => p.onDownload('pages')}>pages.json<small>Text and layout of every page</small></button>
                             <button onClick={() => p.onDownload('truth')}>Answer key<small>Your reviewed values, for accuracy scoring</small></button>
                         </Menu>

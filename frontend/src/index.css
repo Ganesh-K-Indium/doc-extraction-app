@@ -428,19 +428,11 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
 /* pages */
 .rv-pgroup { margin-bottom: 18px; }
 .rv-pgroup__head { font-size: 13px; margin: 4px 0 2px; } .rv-pgroup__how { margin: 0 0 6px; font-size: 12px; color: var(--ink-2); }
-.rv-pgroup ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
-.rv-page { border-bottom: 1px solid var(--rule); }
-.rv-page > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 8px; align-items: center; padding: 8px 4px; }
-.rv-page > summary::-webkit-details-marker { display: none; } .rv-page > summary:hover, .rv-page[open] > summary { background: var(--sunk); }
-.rv-page__n { text-align: center; font-size: 12px; color: var(--ink-2); }
-.rv-page__type { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-page__chips { display: inline-flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
-.rv-page__flag { font-size: 12px; font-weight: 600; color: var(--pink); }
 .rv-chip { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--sunk); color: var(--ink); white-space: nowrap; }
 .rv-chip--ok { background: var(--teal-bg); color: var(--teal); } .rv-chip--warn { background: var(--amber-bg); color: var(--amber); }
 .rv-chip--hand { background: var(--pink-bg); color: var(--pink); } .rv-chip--muted { color: var(--ink-2); }
-.rv-page__body { padding: 6px 4px 12px 38px; font-size: 13px; color: var(--ink-2); } .rv-page__body p { margin: 0 0 8px; }
-.rv-page__err { color: var(--pink); } .rv-page__lines { margin: 4px 0 10px; padding-left: 18px; color: var(--ink); }
+.rv-page__err { color: var(--pink); margin: 4px 0; }
 
 /* findings */
 .rv-findings section { margin-bottom: 16px; }
@@ -456,3 +448,28 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
   .rv-step__keys { display: none; }
 }
 .rd__sub--warn { color: var(--amber); } .rd__sub--bad { color: var(--pink); }
+
+/* structure */
+.rs { max-width: 760px; } .rs-doc { margin-bottom: 22px; }
+.rs-page { margin-top: 4px; } .rs-nolayout { font-size: 12px; margin: 0 0 6px; }
+.rs-page > :is(h3, h4, h5, p, dl, ol, ul, .rs-tablewrap) { cursor: pointer; } .rs-page > :is(h3, h4, h5, p, dl, ol, ul, .rs-tablewrap):hover { background: var(--sunk); }
+.rs-h { margin: 12px 0 4px; font-weight: 600; letter-spacing: -.005em; } .rs-h1 { font-size: 17px; } .rs-h2 { font-size: 15px; } .rs-h3 { font-size: 13px; text-transform: none; color: var(--ink-2); }
+.rs-p { margin: 4px 0; color: var(--ink); }
+.rs-kv { margin: 6px 0; display: grid; gap: 2px; } .rs-kv > div { display: grid; grid-template-columns: minmax(120px, 34%) minmax(0, 1fr); gap: 10px; }
+.rs-kv dt { color: var(--ink-2); font-size: 12px; padding-top: 1px; } .rs-kv dd { margin: 0; overflow-wrap: anywhere; }
+.rs-tablewrap { overflow-x: auto; margin: 6px 0; }
+.rs-table { border-collapse: collapse; font-size: 13px; width: 100%; } .rs-table th, .rs-table td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.rs-table th { color: var(--ink-2); font-weight: 600; font-size: 12px; }
+.rs-list { margin: 4px 0; padding-left: 20px; }
+.rs-entities { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--rule); font-size: 12px; color: var(--ink-2); } .rs-entities p { margin: 2px 0; } .rs-entities b { color: var(--ink); margin-right: 6px; }
+@media (max-width: 700px) { .rs-kv > div { grid-template-columns: 1fr; gap: 0; } }
+
+/* pages: one open card per page */
+.rv-pages { max-width: 760px; }
+.rp-card { border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); padding: 10px 14px 12px; margin-top: 10px; }
+.rp-card__head { display: flex; align-items: center; gap: 10px; cursor: pointer; flex-wrap: wrap; }
+.rp-card__n { font-size: 12px; font-weight: 600; color: var(--ink-2); } .rp-card__type { font-weight: 600; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.rp-card__how { margin: 4px 0 8px; font-size: 12px; color: var(--ink-2); } .rp-card__how .link { margin-left: 4px; }
+.rp-card__unsure { margin: 0 0 8px; padding: 8px 10px; border-radius: var(--r); background: var(--pink-bg); color: var(--ink); font-size: 12px; }
+.rp-card__unsure b { color: var(--pink); } .rp-card__unsure ul { margin: 4px 0 0; padding-left: 18px; }
+.rp-card > .rs-page { border-top: 1px solid var(--rule); padding-top: 6px; }
