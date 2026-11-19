@@ -80,7 +80,7 @@ export default function Landing() {
                     <div className="lp-wrap">
                         <h2>Any document, read the right way</h2>
                         <p className="lp-sub">No template to write first. Each page is routed by what it is, so you do not pay model prices for text the PDF already holds.</p>
-                        <div className="lp-points">
+                        <div className="lp-points lp-points--cols">
                             <div><h3>Digital PDFs: read by code</h3><p>Statements, filings and reports have real text and real table cells. They are copied exactly, and every number in a table is checked against the page. No model calls, unless a form-like page cannot be proven complete.</p></div>
                             <div><h3>Scans and handwriting: two readers</h3><p>Two vision models transcribe the page independently and are compared. A disputed value gets one focused third look, and what is still in doubt goes to the review queue.</p></div>
                             <div><h3>Anything else: discovered, then remembered</h3><p>Fields and tables are found from the page itself, with stable names ("Invoice No." and "Inv #" are one key). When a layout keeps recurring, save it as a document type in one click.</p></div>

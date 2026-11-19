@@ -221,3 +221,13 @@ def test_prose_with_a_heading_and_colon_is_not_turned_into_fields(tmp_path):
     lines = ["Cybersecurity: Our board of directors oversees the risks that arise from cyber threats to the company.", "Invoice No: 1001", "Customer: Acme Corp"]
     res = asyncio.run(digital.read_page(pdf, 1, lines, []))
     assert set(res["fields"]) == {"invoice_number", "customer"}
+
+
+def test_a_table_only_layout_counts_its_columns_as_its_shape():
+    def table_form(label, cols, idx=0):
+        return {"doc_index": idx, "label": label, "discovered": True, "fields": {}, "pages": [1], "table_columns": {"results": cols}}
+    rows = [{"extraction_id": str(i), "filename": f"{i}.pdf", "sha": str(i), "forms": [table_form("Quarterly Results", ["Item", "2026", "2025"])]} for i in range(2)]
+    out = suggest.recurring_shapes(rows)
+    assert len(out) == 1 and out[0]["count"] == 2 and out[0]["tables"] == ["results"] and out[0]["fields"] == []
+    other = [{"extraction_id": "z", "filename": "z.pdf", "sha": "z", "forms": [table_form("Other", ["Name", "Qty", "Price"])]}]
+    assert len(suggest.recurring_shapes(rows + other)) == 1                      # a different table does not join the cluster

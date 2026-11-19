@@ -9,6 +9,8 @@ came from; the existing "promote" endpoint turns one of them into the template.
 from collections import Counter
 from typing import Any, Dict, List
 
+from app.services import labels
+
 MIN_FIELDS = 3        # a "shape" of one or two keys is not a document type
 MAX_PAGES = 10        # a template describes a form or a short document, not a 68-page filing
 MAX_KEYS = 80
@@ -22,6 +24,7 @@ def signature(form: Dict[str, Any]) -> frozenset:
             if c.get("type") != "checkbox" and not _is_page_repeat(k)}
     for t, cols in (form.get("table_columns") or {}).items():
         keys.add(f"table:{t}")
+        keys.update(f"col:{t}:{labels.key(c)}" for c in cols if c)          # a table's columns are part of the layout
     return frozenset(keys)
 
 
@@ -62,6 +65,6 @@ def recurring_shapes(rows: List[Dict[str, Any]], existing_titles: List[str] = ()
         title = c["titles"].most_common(1)[0][0] if c["titles"] else None
         if len(c["members"]) < MIN_DOCUMENTS or (title and title.strip().lower() in taken):
             continue
-        out.append({"title": title, "count": len(c["members"]), "fields": sorted(k for k in c["sig"] if not k.startswith("table:")),
+        out.append({"title": title, "count": len(c["members"]), "fields": sorted(k for k in c["sig"] if not k.startswith(("table:", "col:"))),
                     "tables": sorted(k[6:] for k in c["sig"] if k.startswith("table:")), "examples": [{k: v for k, v in m.items() if k != "sha"} for m in c["members"][:5]]})
     return sorted(out, key=lambda s: -s["count"])

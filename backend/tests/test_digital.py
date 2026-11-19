@@ -199,3 +199,9 @@ def test_a_documents_title_prefers_a_form_name_over_a_letterhead():
     assert digital.page_title(["UNITED STATES", "SECURITIES AND EXCHANGE COMMISSION", "Washington, D.C. 20549", "FORM 10-Q"]) == "FORM 10-Q"
     assert digital.page_title(["ACME CORPORATION", "INVOICE", "Invoice No: 7"]) == "Acme Corporation"      # no form name: the longest heading
     assert digital.page_title(["just some prose that is mixed case and has no heading at all"]) is None
+
+
+def test_table_titles_skip_running_headers_and_never_guess_a_footer():
+    lines = ["PART I", "Item 1", "BALANCE SHEETS", "(In millions)", "Assets", "Cash 5", "SIGNATURE"]
+    assert digital.table_title(lines, "Assets") == "Balance Sheets"                  # the section marker is skipped, the real heading is used
+    assert digital.table_title(["PART I", "Item 1", "Cash 5", "SIGNATURE"], "Unfound label") is None   # cannot place the table: no title, not "Signature"

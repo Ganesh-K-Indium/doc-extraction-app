@@ -31,6 +31,17 @@ The review screen puts the source PDF on the left (zoom, fit width, page control
 - **See the JSON.** The JSON tab shows `fields.json` and `pages.json` as a collapsible tree or raw text, with your edits applied, and can copy or download either.
 - **Export** (fields.json, pages.json, answer key) is in the menu beside the file name.
 
+## The Documents page
+
+Built for many different files at once:
+
+- **Upload many PDFs at once** (drop or choose several); each is read in turn, and a failure names the file and the reason.
+- **Search, filter, sort.** Filters (All, To check, Reading, Failed, Clean) show counts; search matches the file name and what the file turned out to be; sort by newest, most to check, or name. Long lists page in blocks of 50.
+- **How each file was read**: *Digital* (read by code), *Scanned* (vision models), *Handwriting*, plus **model use** per file (`None`, or tokens, with a per-stage breakdown on hover). The review screen repeats it ("68 digital pages read by code · no model calls") and says how each document's values were obtained.
+- **Recurring layouts are suggested as document types** (the same file uploaded twice, and long filings, are not counted). One click saves it; the same suggestions appear under *Document types*.
+- A notice appears when no model key is configured, saying what still works (digital PDFs) and what does not (scans and handwriting).
+- On the review screen a file with many tables gets a *Jump to* menu; long tables scroll inside themselves with column headings and row labels kept in view, and a label repeated on a later page shows its page number.
+
 ## Checking and editing a template
 
 Uploading a blank form opens the form beside what was read from it. Click a field to see where it was found on the form. Everything is editable: labels, types, required marks, choices, tables and their columns, links to other documents, date rules, and section headings; *View template JSON* shows the raw template. Your own types can be reopened later with *Edit* (changes apply to files uploaded afterwards); built-in types open read-only, with *Make an editable copy*.

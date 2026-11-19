@@ -329,7 +329,7 @@ body.is-resizing { cursor: col-resize; user-select: none; }
 .gridwrap--tall .grid.editable td:nth-child(2) { position: sticky; left: 28px; z-index: 1; background: var(--panel); box-shadow: 1px 0 0 var(--rule); }
 .gridwrap--tall .grid.editable thead th:nth-child(2) { left: 28px; z-index: 4; }
 .gridwrap--tall .grid.editable td.is-flag:nth-child(2) { background: var(--pink-bg); }
-.grid.editable td:nth-child(2) input { min-width: 180px; }
+.grid.editable td:nth-child(2) input { min-width: 260px; text-overflow: ellipsis; }
 
 @media (max-width: 720px) {
   .listbar__sort { margin-left: 0; } .suggest li { align-items: flex-start; }

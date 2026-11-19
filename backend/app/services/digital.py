@@ -113,14 +113,22 @@ async def header_labels(header_rows: List[List[str]], ncols: int, model: Optiona
 
 
 _TITLE_OK = re.compile(r"[A-Za-z]{3}")
+_SECTION_MARKER = re.compile(r"^(?:(?:PART|ITEM|NOTE|SECTION|PAGE)\s+[IVX\d]+\.?|TABLE OF CONTENTS)$", re.I)
 
 
 def table_title(lines: List[str], first_label: str = "") -> Optional[str]:
     """The heading just above a table: the last mostly-capitalised short line before the table's first row label."""
-    stop = next((i for i, l in enumerate(lines) if first_label and l.strip().startswith(first_label[:20])), len(lines))
+    first_word = first_label.split()[0] if first_label.split() else ""
+    stop = next((i for i, l in enumerate(lines) if first_label and l.strip().startswith(first_label[:20])), None)
+    if stop is None and len(first_word) >= 4:         # a merged row label ("Assets Current assets:") is several lines in the text
+        stop = next((i for i, l in enumerate(lines) if l.strip().split()[:1] == [first_word]), None)
+    if stop is None:
+        return None                                   # cannot place the table in the text: leave it untitled rather than guess a footer
     for line in reversed(lines[:stop]):
         t = line.strip()
         letters = [c for c in t if c.isalpha()]
+        if _SECTION_MARKER.match(t):
+            continue                                   # "PART I", "ITEM 2", "Table of Contents": running headers, not a table's name
         if 4 <= len(t) <= 80 and _TITLE_OK.search(t) and letters and sum(c.isupper() for c in letters) / len(letters) >= 0.7:
             return t.title() if t.isupper() else t
     return None

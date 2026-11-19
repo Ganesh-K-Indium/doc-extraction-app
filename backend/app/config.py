@@ -40,7 +40,7 @@ def adjudicator_model() -> str:
     return os.getenv("ADJUDICATION_MODEL", "").strip() or (extraction_models() or [""])[0]
 
 
-PIPELINE_VERSION = "2026.11-handwriting-discovery-v4"  # bump when extraction behaviour changes: older cached results are then not reused
+PIPELINE_VERSION = "2026.11-handwriting-discovery-v5"  # bump when extraction behaviour changes: older cached results are then not reused
 
 
 def long_doc_pages() -> int:

@@ -74,3 +74,6 @@
   .lp-sec { padding: 56px 0; } .lp-foot .lp-wrap { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .lp { scroll-behavior: auto; } .lp-sheet, .lp-group { animation: none; } }
+
+.lp-points--cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; margin-top: 8px; }
+@media (max-width: 860px) { .lp-points--cols { grid-template-columns: 1fr; gap: 18px; } }

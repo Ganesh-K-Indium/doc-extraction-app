@@ -5,7 +5,8 @@ import { cellKey, display, FLAGGED, rowId, type Value } from './helpers';
 function GridCell({ id, cell, selected, onFocus, onSave }: { id: string; cell: Cell; selected: boolean; onFocus: () => void; onSave: (v: Value) => void }) {
     const [edit, setEdit] = useState<string | null>(null);
     const flagged = FLAGGED.has(cell.status);
-    const tip = [cell.reason, cell.alternatives.length ? `Other reading: ${cell.alternatives.join(' / ')}` : ''].filter(Boolean).join('. ');
+    const long = typeof cell.value === 'string' && cell.value.length > 28 ? cell.value : '';   // a clipped row label: hover shows all of it
+    const tip = [cell.reason, cell.alternatives.length ? `Other reading: ${cell.alternatives.join(' / ')}` : ''].filter(Boolean).join('. ') || long;
     return (
         <td id={id} className={`${flagged ? 'is-flag ' : ''}${cell.status === 'corrected' ? 'is-done ' : ''}${selected ? 'is-on' : ''}`} title={tip || undefined}>
             <input aria-label={cell.label ?? 'Cell'} value={edit ?? display(cell.value)} onFocus={onFocus} spellCheck={false}
