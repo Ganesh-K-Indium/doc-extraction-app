@@ -18,7 +18,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services import checkboxes, locate, normalize as N, ocr, pdf_pages
+from app.services import adjudicate, checkboxes, locate, normalize as N, ocr, pdf_pages
 from app.services.usage_tracker import record_usage
 
 logger = logging.getLogger("app.services.form_extractor")
@@ -44,6 +44,7 @@ def _prompt(template: Dict[str, Any]) -> str:
 
 Return the value written or printed for each field below, exactly as it appears. For check boxes, a box is checked only if it contains a tick, cross or fill.
 - Copy digits and letters exactly. If a character is unreadable write [?] in its place. Never guess or complete.
+- Keep a leading decimal point (.2% is not 2%), percent and currency signs, ranges (7-20) and units exactly as written. Copy names letter by letter.
 - If a field is blank, return null. Do not infer a value from another section.
 - The same label (for example Tax ID, Phone, Street Address, City, First/Last Name) can occur in more than one section; use the section given for each key.
 - Dates stay in the written format (mm/dd/yyyy).
@@ -252,14 +253,17 @@ def _prefer_page_text(cell: Dict[str, Any], ftype: str, page_alnum: str) -> None
         cell["reason"] = "only this reading also appears in the page's scanned text"
 
 
-async def extract_form(path: str, page_num: int, text: str, template: Dict[str, Any], models: List[str], reader=None) -> Dict[str, Any]:
+async def extract_form(path: str, page_num: int, text: str, template: Dict[str, Any], models: List[str], reader=None,
+                       handwritten: bool = False, adjudicator=None) -> Dict[str, Any]:
     """One page against a template -> {"fields": {key: cell}, "tables": {key: [row, ...]}, "readers": [...]}."""
+    injected = reader is not None
     reader = reader or _read
     bands = await asyncio.to_thread(_bands, path, page_num, template)
     fields = await asyncio.to_thread(_checkbox_fields, path, page_num, text, template, bands)
     page_alnum = await asyncio.to_thread(locate.page_alnum, path, page_num)
 
     replies: List[Dict[str, Any]] = []
+    jpeg = None
     if models:
         jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page_num)
         prompt = _prompt(template)
@@ -291,7 +295,7 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
                         cur["reason"] = "some boxes could not be located; the model reading differs"
                 continue
             merged = merge_field(a, b, f["type"], two)
-            if two:
+            if two and not handwritten:           # Tesseract cannot read handwriting: it must not outvote the models
                 _prefer_page_text(merged, f["type"], page_alnum)
             merged["normalized"] = N.normalize(merged["value"], f["type"])
             fields[f["key"]] = merged
@@ -310,6 +314,13 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
             rows.append(row)
         tables[tbl["key"]] = rows
 
+    if two and jpeg is not None and (adjudicator is not None or not injected):
+        kinds = {f["key"]: f["type"] for sec in template["sections"] for f in sec["fields"]}
+        items = [(f"f:{k}", c, kinds.get(k, "text") if kinds.get(k) in ("date", "phone", "npi", "tax_id", "zip", "state", "icd10") else "text")
+                 for k, c in fields.items() if kinds.get(k) not in CHECKBOX_TYPES]
+        items += [(f"t:{k}:{r}:{ck}", c, "text") for k, rows in tables.items() for r, row in enumerate(rows) for ck, c in row.items()]
+        await adjudicate.settle(jpeg, items, adjudicator)
+
     def ground_all():
         for sec in template["sections"]:
             band = bands.get(sec["id"], (0.0, 1e9))
@@ -318,7 +329,8 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
                 if got and isinstance(got.get("value"), str) and got["value"]:
                     hit = locate.find_with_text(path, page_num, got["value"], f["label"], band)
                     got["bbox"] = hit[0] if hit else None
-                    _third_opinion(got, hit)
+                    if not handwritten:
+                        _third_opinion(got, hit)
         for tbl in template.get("tables", []):
             band = next((bands[sec["id"]] for sec in template["sections"] if sec["id"] in bands and sec["header"] == tbl.get("header")), (0.0, 1e9))
             for row in tables.get(tbl["key"], []):
@@ -326,7 +338,8 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
                     if isinstance(cell.get("value"), str) and cell["value"]:
                         hit = locate.find_with_text(path, page_num, cell["value"], "", band)
                         cell["bbox"] = hit[0] if hit else None
-                        _third_opinion(cell, hit)
+                        if not handwritten:
+                            _third_opinion(cell, hit)
     await asyncio.to_thread(ground_all)
     for sec in template["sections"]:
         for f in sec["fields"]:
@@ -350,7 +363,7 @@ _RANK = {"agreed": 0, "corrected": 0, "single": 1, "review": 2, "undetermined": 
 
 
 async def extract_document(path: str, pages: List[int], texts: Dict[int, str], template: Dict[str, Any],
-                           models: List[str], reader=None) -> Dict[str, Any]:
+                           models: List[str], reader=None, handwritten: Any = (), adjudicator=None) -> Dict[str, Any]:
     """A whole (possibly multi-page) document against one template.
 
     Each page is read for every field; a field's final cell is the best-supported reading across pages (agreed beats
@@ -358,7 +371,7 @@ async def extract_document(path: str, pages: List[int], texts: Dict[int, str], t
     Templates with "single_page": true read only the first page (a fixed form that never continues).
     """
     use = pages[:1] if template.get("single_page") else pages
-    results = await asyncio.gather(*[extract_form(path, n, texts.get(n, ""), template, models, reader) for n in use])
+    results = await asyncio.gather(*[extract_form(path, n, texts.get(n, ""), template, models, reader, n in handwritten, adjudicator) for n in use])
     fields: Dict[str, Dict[str, Any]] = {}
     for res in results:
         for key, cell in res["fields"].items():

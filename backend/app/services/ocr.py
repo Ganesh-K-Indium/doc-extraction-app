@@ -42,13 +42,17 @@ Rules:
 - Transcribe exactly what is written, line by line, in reading order. Keep the original line breaks.
 - Do NOT correct, complete, summarise, translate or calculate. Keep spelling, abbreviations, symbols and units exactly as written (for example $215, 6%, 94.9B, 10/12/2026).
 - Digits are critical: copy every digit exactly as written. If you cannot read a character or number with certainty, write [?] in its place. Never guess.
+- Keep a leading decimal point (.2% is not 2%), percent and currency signs, ranges (7-20) and fractions (1 1/2) exactly as written.
+- Names and rare words: copy letter by letter. Do not replace an unusual spelling with a common word.
 - Include printed text as well as handwriting.
 - For a table, put each row on one line with the cells separated by " | ".
-- Ignore page borders, ruled lines, stains and shadows.
+- Ignore page borders, ruled lines, stains and shadows. Faint or mirrored writing showing through from the other side of the paper is not part of this page: leave it out.
+- Set "handwriting" to true if any meaningful part of the page is handwritten, false if everything is printed or typed.
 
-Return JSON only, in this shape: {"lines": ["first line", "second line"]}"""
+Return JSON only, in this shape: {"handwriting": true, "lines": ["first line", "second line"]}"""
 
-_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# a number with the marks that change its meaning: .2 (not 2), 20% , $215 (see normalize._MARKS)
+_NUM_RE = re.compile(r"\$?\.?\d[\d,]*(?:\.\d+)?%?")
 _WS_RE = re.compile(r"\s+")
 
 
@@ -74,6 +78,7 @@ class OcrPage:
     source: str  # ocr | text-layer
     lines: List[OcrLine]
     cross_checked: bool = True  # False when only one reader produced this page
+    handwritten: bool = False   # a reader saw handwriting: Tesseract is a poor judge of such a page, so it is not used as a tie-break
 
 
 _PUNCT_RE = re.compile(r"(?<!\d)[^\w\s]|[^\w\s](?!\d)")  # keeps 9.5 and 10/12/2026, drops stars, colons, specks
@@ -241,7 +246,13 @@ def configured_models() -> List[str]:
     return [m.strip() for m in raw.split(",") if m.strip()][:2]
 
 
-def parse_lines(raw: str) -> List[str]:
+class Lines(list):
+    """The lines of one reading. `handwriting` is the reader's own report that the page holds handwriting; it costs no
+    extra call, and a plain list (tests, other readers) simply means "not reported"."""
+    handwriting: bool = False
+
+
+def parse_lines(raw: str) -> Lines:
     """Lines from a model reply: the JSON `lines` array, tolerating code fences and a plain-text reply."""
     text = (raw or "").strip()
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text)
@@ -249,10 +260,12 @@ def parse_lines(raw: str) -> List[str]:
         data = json.loads(text)
         lines = data.get("lines") if isinstance(data, dict) else data
         if isinstance(lines, list):
-            return [str(l).strip() for l in lines if str(l).strip()]
+            out = Lines(str(l).strip() for l in lines if str(l).strip())
+            out.handwriting = bool(data.get("handwriting")) if isinstance(data, dict) else False
+            return out
     except (ValueError, AttributeError):
         pass
-    return [l.strip() for l in text.splitlines() if l.strip()]
+    return Lines(l.strip() for l in text.splitlines() if l.strip())
 
 
 async def read_image(model: str, jpeg: bytes) -> List[str]:
@@ -288,6 +301,8 @@ async def read_page(jpeg: bytes, models: List[str], reader=None) -> OcrPage:
         raise OcrError("The transcription service is unavailable right now. Try again in a minute.", 502)
     primary = results[0] if not isinstance(results[0], BaseException) else ok[0][1]
     secondary = next((r for m, r in ok if r is not primary), None) if len(ok) > 1 else None
-    return OcrPage(page=0, source="ocr", lines=merge_readings(primary, secondary), cross_checked=secondary is not None)
+    handwritten = any(getattr(r, "handwriting", False) for _, r in ok)
+    return OcrPage(page=0, source="ocr", lines=merge_readings(primary, secondary), cross_checked=secondary is not None,
+                   handwritten=handwritten)
 
 

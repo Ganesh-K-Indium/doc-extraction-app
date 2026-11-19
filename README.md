@@ -61,6 +61,17 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 Uploading the same file twice reuses the first result (SHA-256), so you don't pay for the same OCR again.
 
+## Handwriting and poor scans
+
+Handwriting goes through the same two-reader path as any scan; these rules exist because two models can share a misread.
+
+- **The readers report handwriting** (in the same reply, no extra call). On such a page Tesseract is not used as a tie-break or "second opinion": it cannot read handwriting and would outvote the models with a wrong reading.
+- **Numbers are compared strictly.** A leading decimal point (`.2%` vs `2%`), a range (`7-20` vs `720`), `%` and `$` are differences, not noise.
+- **One focused third look per page, only when something is disputed** (`adjudicate.py`). The page is shown once with just the disputed values and their candidate readings. A third reading that matches a candidate settles it (two of three); a new reading stays in review; an unsure reading changes nothing. Pages where the readers agree on everything never pay for it.
+- **Fields are paired by value as well as label**, since handwriting has no fixed labels; repeats of one value (same place, or one label inside the other) and empty "fields" that are really the page title or a sentence are dropped.
+
+Cost: vision calls dominate (roughly 3 to 4k tokens per page image per call). A scanned page costs two reads for the transcript, two for the fields, and one more only if a value is disputed (about 10% extra on the samples tried). Knobs: `ADJUDICATE=0` turns the third look off; `ADJUDICATION_MODEL` picks its model (default: the first of `EXTRACTION_MODELS`); `HANDWRITING_OCR_MODELS` set to one model halves the transcript cost at the price of an unverified transcript. Pages with a real text layer cost nothing, and an identical file is never read twice.
+
 ## Forms inside other content
 
 Real files mix things: a cover letter, a form, free-text notes, another form. How each case is handled:

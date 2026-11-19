@@ -32,5 +32,13 @@ def extraction_models() -> list:
     return [m.strip() for m in raw.split(",") if m.strip()][:2]
 
 
+def adjudicator_model() -> str:
+    """Model for the third look at disputed values (see services/adjudicate.py). Empty when no model is available.
+    Defaults to the primary extraction model: it is called once per page that has a dispute, never for pages that agree."""
+    if not llm_enabled():
+        return ""
+    return os.getenv("ADJUDICATION_MODEL", "").strip() or (extraction_models() or [""])[0]
+
+
 def ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

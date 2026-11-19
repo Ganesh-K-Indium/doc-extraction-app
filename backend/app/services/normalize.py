@@ -16,6 +16,22 @@ def parse_date(s: str) -> Optional[str]:
     return None
 
 
+# Marks that change what a number means. Stripping them made ".2%" equal "2%" and "7-20" equal "720",
+# so two readers that disagreed on a decimal point or a range counted as agreeing. Kept only where they touch a digit:
+#   .5 and 9.5 (decimal point)   7-20 and 10/12 (range, date)   20% (percent)   $215 (currency)
+# A sentence-ending "1992." or a bullet "- 1 min" is not one of these, so it still does not count as a difference.
+_MARKS = {"-": "\ue000", "/": "\ue001", ".": "\ue002", "%": "\ue003", "$": "\ue004"}
+_MARKS_BACK = {v: k for k, v in _MARKS.items()}
+_MARK_RE = re.compile(r"(?<=\d)[-/](?=\d)|\.(?=\d)|(?<=\d)%|\$(?=\d)")
+
+
+def text_form(s: str) -> str:
+    """Comparison form of free text: lower case, letters and digits, plus the digit-bearing marks above."""
+    s = _MARK_RE.sub(lambda m: _MARKS[m.group()], re.sub(r"\s+", "", s.lower()))
+    s = re.sub(r"[^a-z0-9\ue000-\ue004]", "", s)
+    return re.sub(r"[\ue000-\ue004]", lambda m: _MARKS_BACK[m.group()], s)
+
+
 def digits(s: str) -> str:
     return re.sub(r"\D", "", s or "")
 
@@ -35,4 +51,4 @@ def normalize(value: Any, ftype: str) -> Optional[str]:
         return digits(s) or None
     if ftype in ("state", "icd10"):
         return re.sub(r"[^A-Z0-9]", "", s.upper()) or None
-    return re.sub(r"[^a-z0-9]", "", s.lower()) or None
+    return text_form(s) or None

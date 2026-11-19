@@ -18,7 +18,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services import checkboxes, form_extractor as fx, locate, normalize as N, ocr, pdf_pages
+from app.services import adjudicate, checkboxes, form_extractor as fx, locate, normalize as N, ocr, pdf_pages
 from app.services.usage_tracker import record_usage
 
 logger = logging.getLogger("app.services.discover")
@@ -39,6 +39,11 @@ Return JSON only:
 
 Rules:
 - Copy values exactly, digit for digit. If a character is unreadable write [?]. Never guess or complete.
+- Keep a leading decimal point (.2% is not 2%), percent and currency signs, ranges (7-20), fractions and units exactly as written.
+- Names and rare words: copy letter by letter, never swap in a common word. When a value is written both in digits and in words, give the digits.
+- Each value belongs to ONE field. Never list the same value under two labels, and do not list a value again as a table cell.
+- Some pages (handwritten notes, sketches, free-form records) have no printed labels: use the writer's own words as the label, short and in the same wording every time.
+- Faint or mirrored writing showing through from the other side of the paper is not part of this page.
 - Include labelled blanks that are empty (value null): an empty field is information.
 - A label is something printed that names a value ("Date of Birth", "Invoice No."). Do not turn sentences of running text into fields.
 - A checkbox is checked only if the box contains a tick, cross or fill.
@@ -143,7 +148,8 @@ def _pair(a_items, a_keys, b_items, b_keys) -> List[Tuple[Optional[int], Optiona
     """Match the second reader's items to the first's, in three passes:
        1. the same key (section and label),
        2. a close label in the same section,
-       3. a very close label in ANY section (the readers often file a field under different headings).
+       3. a very close label in ANY section (the readers often file a field under different headings),
+       4. the same value under a different label (handwritten notes, where the labels are the writer's own words).
     Among several candidates the one at the nearest relative position on the page wins, so a repeated label ("Tax ID"
     in two blocks) pairs with its own twin."""
     used: set = set()
@@ -157,9 +163,16 @@ def _pair(a_items, a_keys, b_items, b_keys) -> List[Tuple[Optional[int], Optiona
         cands = [(abs(i / na - j / nb), j) for j in range(len(b_items)) if j not in used and ok(j)]
         return min(cands)[1] if cands else None
 
+    def same_value(i, j):
+        """Handwritten notes have no fixed labels, so two readers name the same value differently ("Name" / "President").
+        An identical, substantial value is the same field whatever each reader called it."""
+        va, vb = a_items[i].get("value"), b_items[j].get("value")
+        return bool(va and vb) and len(_canon(va)) >= 3 and N.normalize(va, "text") == N.normalize(vb, "text")
+
     passes = (lambda i, j: a_keys[i] == b_keys[j],
               lambda i, j: slug(a_items[i].get("section")) == slug(b_items[j].get("section")) and sim(i, j) >= LABEL_MATCH,
-              lambda i, j: sim(i, j) >= 0.92)
+              lambda i, j: sim(i, j) >= 0.92,
+              same_value)
     for ok in passes:
         for i in range(len(a_items)):
             if i in match:
@@ -333,9 +346,59 @@ def merge_checkboxes(path: str, page_num: int, a: List[Dict[str, Any]], b: Optio
     return out
 
 
-async def discover_page(path: str, page_num: int, models: List[str], reader=None) -> Dict[str, Any]:
+def _tokens(label: Optional[str]) -> set:
+    return set(re.findall(r"[a-z0-9]+", (label or "").lower()))
+
+
+def prune_empty_noise(fields: Dict[str, Dict[str, Any]], title: Optional[str]) -> int:
+    """Models sometimes list the page title, or a whole sentence of running text, as an empty "blank". A blank is a short
+    printed label with nothing written after it; neither of those is one. Filled fields are never touched."""
+    drop = [k for k, c in fields.items() if c.get("status") == "empty" and c.get("type") != "checkbox"
+            and ((title and _canon(c.get("label") or "") == _canon(title)) or len(re.findall(r"\S+", c.get("label") or "")) >= 7)]
+    for k in drop:
+        del fields[k]
+    return len(drop)
+
+
+def dedupe(fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, Any]]]) -> int:
+    """Drop repeats of one value that discovery lists twice, the way handwritten pages tend to produce them.
+
+    A field repeats another when it has the same value and either the same place on the page or labels that are one
+    inside the other ("Corporation" / "Corporation Name", "Day" / "Date - day"). A flat field whose long text is already
+    a table cell is the table's data in another shape. The better-supported cell is kept. Returns how many were dropped."""
+    rank = lambda c: fx._RANK.get(c.get("status"), 4)
+    keys = [k for k, c in fields.items() if c.get("type") != "checkbox" and isinstance(c.get("value"), str)
+            and len(_canon(c["value"])) >= 4 and c.get("status") not in ("empty", "corrected")]
+    drop: set = set()
+    for x, a in enumerate(keys):
+        for b in keys[x + 1:]:
+            if a in drop or b in drop:
+                continue
+            ca, cb = fields[a], fields[b]
+            if N.normalize(ca["value"], "text") != N.normalize(cb["value"], "text"):
+                continue
+            ta, tb = _tokens(ca.get("label")), _tokens(cb.get("label"))
+            same_place = bool(ca.get("bbox")) and ca.get("bbox") == cb.get("bbox")
+            nested = bool(ta and tb) and (ta <= tb or tb <= ta)
+            if same_place or nested:
+                drop.add(b if rank(cb) >= rank(ca) else a)
+    cells = {N.normalize(c.get("value"), "text") or "" for rows in tables.values() for r in rows for c in r.values()
+             if isinstance(c.get("value"), str)}
+    for k in keys:
+        v = N.normalize(fields[k]["value"], "text") or ""
+        if k not in drop and len(v) >= 12 and any(v in cell for cell in cells):
+            drop.add(k)
+    for k in drop:
+        del fields[k]
+    return len(drop)
+
+
+async def discover_page(path: str, page_num: int, models: List[str], reader=None, handwritten: bool = False,
+                        adjudicator=None) -> Dict[str, Any]:
+    injected = reader is not None          # a caller-supplied reader (tests) means no real model calls, so no real third look either
     reader = reader or _read
     replies: List[Dict[str, Any]] = []
+    jpeg = None
     if models:
         jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page_num)
         results = await asyncio.gather(*[asyncio.wait_for(reader(m, jpeg, PAGE_PROMPT), ocr.ENGINE_TIMEOUT_SECONDS + 5) for m in models],
@@ -356,29 +419,39 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
 
     page_alnum = await asyncio.to_thread(locate.page_alnum, path, page_num)
 
+    if two and jpeg is not None and (adjudicator is not None or not injected):
+        # one focused extra call for this page, only because the readers left something in dispute
+        items = [(f"f:{k}", c, TYPE_MAP.get(c.get("type"), "text")) for k, c in fields.items()]
+        items += [(f"t:{k}:{r}:{ck}", c, "text") for k, rows in tables.items() for r, row in enumerate(rows) for ck, c in row.items()]
+        await adjudicate.settle(jpeg, items, adjudicator)
+
     def ground():
         for cell in list(fields.values()) + [c for rows in tables.values() for r in rows for c in r.values()]:
             v = cell.get("value")
             if isinstance(v, str) and v:
                 hit = locate.find_with_text(path, page_num, v, cell.get("label"))
                 cell["bbox"] = hit[0] if hit else None
-                fx._third_opinion(cell, hit)
+                if not handwritten:                  # Tesseract cannot read handwriting: its "second opinion" would only add noise
+                    fx._third_opinion(cell, hit)
             elif cell.get("method") == "pixel" or isinstance(v, bool):
                 hit = locate.find(path, page_num, cell.get("label") or "")
                 cell["bbox"] = hit
-            if two and cell.get("status") == "review":
+            if two and cell.get("status") == "review" and not handwritten:
                 fx._prefer_page_text(cell, "text", page_alnum)
     await asyncio.to_thread(ground)
     for cell in list(fields.values()) + [c for rows in tables.values() for r in rows for c in r.values()]:
         cell.setdefault("bbox", None)
         cell["page"] = page_num
+    prune_empty_noise(fields, a["title"])
+    dedupe(fields, tables)
     return {"title": a["title"], "fields": fields, "tables": tables, "table_columns": columns,
             "readers": models[:len(replies)] if models else []}
 
 
-async def discover_document(path: str, pages: List[int], models: List[str], reader=None) -> Dict[str, Any]:
+async def discover_document(path: str, pages: List[int], models: List[str], reader=None, handwritten: Any = (),
+                            adjudicator=None) -> Dict[str, Any]:
     """All pages of one untemplated document, merged: the best-supported reading per field wins, tables continue."""
-    results = await asyncio.gather(*[discover_page(path, n, models, reader) for n in pages])
+    results = await asyncio.gather(*[discover_page(path, n, models, reader, n in handwritten, adjudicator) for n in pages])
     fields: Dict[str, Dict[str, Any]] = {}
     tables: Dict[str, List[Dict[str, Any]]] = {}
     columns: Dict[str, List[str]] = {}

@@ -64,12 +64,13 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             route = router.decide_reader(router.profile_page(original), use_llm, tess.available())
             info = await asyncio.to_thread(pdf_pages.analyze_page, work, n)  # geometry from the work PDF (has OCR layer on scans)
             lines_meta: Dict[str, Any] = {}
+            handwritten = False
             if route["reader"] == "ocr_dual":
                 jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, n)
                 res = await ocr.read_page(jpeg, models, reader)
                 raw = [l.text for l in res.lines]
                 lines_meta = {l.text: l for l in res.lines}
-                source, verified = "ocr", res.cross_checked
+                source, verified, handwritten = "ocr", res.cross_checked, res.handwritten
             elif route["reader"] == "ocr_local":
                 raw = [l.strip() for l in info["text"].splitlines() if l.strip()]
                 source, verified = "ocr-local", False
@@ -85,19 +86,19 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                                   "alternatives": l.alternatives if l else [], "reason": l.reason if l else None})
             text = "\n".join(content)
             return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
-                    "has_text_layer": bool(info["words"]), "page_meta": meta,
+                    "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": classify.classify_text(text), "text": text, "lines": out_lines,
                     "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route}
         except Exception as e:
             logger.exception("Page %s failed", n)
             msg = str(e) if isinstance(e, ocr.OcrError) else "This page could not be read."
-            return {**base, "size": None, "source": "failed", "verified": False, "scanned": False, "has_text_layer": False,
+            return {**base, "size": None, "source": "failed", "verified": False, "scanned": False, "has_text_layer": False, "handwritten": False,
                     "page_meta": {}, "classification": {"type": "unknown", "label": "Unreadable", "confidence": 0.0},
                     "text": "", "lines": [], "blocks": [], "tables": [], "form_widgets": [], "route": None, "error": msg}
 
 
 async def process(path: str, progress: Optional[Progress] = None, ocr_reader=None, form_reader=None, model_ask=None,
-                  template_choice: str = AUTO, read_rest: bool = False) -> Dict[str, Any]:
+                  template_choice: str = AUTO, read_rest: bool = False, adjudicator=None) -> Dict[str, Any]:
     progress = progress or (lambda *_: None)
     n_pages = await asyncio.to_thread(pdf_pages.page_count, path)
     if n_pages > config.MAX_PAGES:
@@ -151,6 +152,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
                 single_page.add(t)
         except FileNotFoundError:
             pass
+    handwritten = {p["page"] for p in pages if p.get("handwritten")}
     documents = classify.segment(pages, single_page)
     by_num = {p["page"]: p for p in pages}
 
@@ -169,7 +171,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             # Box glyphs (☑ ☐) are only evidence on a born-digital page. In a vision model's transcript they are the model's
             # own guess about the box, so on scans the boxes are judged from the pixels instead.
             glyph_texts = {p["page"]: (p["text"] if p["source"] == "text-layer" else "") for p in doc_pages}
-            res = await form_extractor.extract_document(work, usable, glyph_texts, tpl, form_models, form_reader)
+            res = await form_extractor.extract_document(work, usable, glyph_texts, tpl, form_models, form_reader, handwritten, adjudicator)
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": tpl["template_id"],
                           "pages": doc["pages"], "readers": res["readers"], "fields": res["fields"], "tables": res["tables"],
                           "validation": validation.validate_form(tpl, res["fields"], res["tables"]),
@@ -177,7 +179,7 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             templated.append((forms[-1], tpl))
         elif decision["extractor"] == "discover":
             usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
-            res = await discover.discover_document(work, usable, form_models, form_reader)
+            res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator)
             if res["title"] and doc["type"] == "unknown":
                 doc["label"] = res["title"]
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
