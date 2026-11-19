@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from app import config
 from app.services.reading import ocr, tess
 
-logger = logging.getLogger("app.engines.local")
+logger = logging.getLogger("app.engines.ocr.local")
 
 IN_WORKER = False      # True inside an engine's own process (worker.py), where the engine runs directly
 LOW_WORD = 0.60        # a word read with less confidence than this is doubtful
@@ -360,7 +360,7 @@ class Engine:
 
     def _run(self, jpeg: bytes) -> List[Word]:
         if self.isolated and not IN_WORKER:
-            from app.engines import isolated
+            from app.engines.ocr import isolated
             with self._turn:
                 return [Word(r[0], r[1], r[2], r[3], r[4], r[5]) for r in isolated.call(self.id, self.label, jpeg)]
         if not self.serial:

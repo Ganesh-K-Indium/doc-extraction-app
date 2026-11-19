@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.engines import plan as plans
+from app.engines.strategy import plan as plans
 from app import db
 from app.services.documents import classify, suggest, template_draft, workspace_types
 from app.services.reading import ocr

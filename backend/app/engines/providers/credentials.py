@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app import config
 
-logger = logging.getLogger("app.engines.credentials")
+logger = logging.getLogger("app.engines.providers.credentials")
 
 CACHE_SECONDS = 15
 MAX_LENGTH = 512

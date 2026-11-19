@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from app import config
-from app.engines import llm, local
+from app.engines.providers import llm
+from app.engines.ocr import local
 
 STRATEGIES: List[Dict[str, Any]] = [
     {"id": "economy", "label": "Economy", "mode": "local",

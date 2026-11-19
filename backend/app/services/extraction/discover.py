@@ -96,7 +96,7 @@ def _canon(s: str) -> str:
 
 async def _read(model: str, jpeg: Optional[bytes], prompt: str) -> Dict[str, Any]:
     """One model reads a page. `jpeg` None means a page read from its text (no image tokens)."""
-    from app.engines import llm
+    from app.engines.providers import llm
     return parse(await llm.complete(model, prompt, jpeg, stage="discover"))
 
 

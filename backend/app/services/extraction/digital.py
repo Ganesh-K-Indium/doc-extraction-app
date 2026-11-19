@@ -72,7 +72,7 @@ Ask = Callable[[str, str], Awaitable[str]]
 
 async def default_ask(model: str, prompt: str) -> str:
     """A short text-only call (no image). Recorded in the usage tracker like every other model call."""
-    from app.engines import llm
+    from app.engines.providers import llm
     return await llm.complete(model, prompt, None, stage="header_labels")
 
 

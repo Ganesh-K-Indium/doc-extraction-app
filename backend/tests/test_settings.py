@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
-from app.engines import credentials, llm
+from app.engines.providers import credentials, llm
 from tests.test_api import H, reload_app
 
 KEYS = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OLLAMA_BASE_URL", "LLM_CUSTOM_BASE_URL", "LLM_CUSTOM_API_KEY",

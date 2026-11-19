@@ -16,7 +16,9 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.engines import credentials, llm, local, plan, prepare, sample
+from app.engines.providers import credentials, llm
+from app.engines.ocr import local, prepare, sample
+from app.engines.strategy import plan
 from app.services.reading import ocr
 from app.services.usage_tracker import track_usage
 

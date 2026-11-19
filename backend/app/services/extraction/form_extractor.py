@@ -58,7 +58,7 @@ Return JSON only: {{"fields": {{"<key>": "<value or null>"}}, "table_rows": [{{.
 
 
 async def _read(model: str, jpeg: bytes, prompt: str) -> Dict[str, Any]:
-    from app.engines import llm
+    from app.engines.providers import llm
     return parse_reply(await llm.complete(model, prompt, jpeg, stage="form_extraction"))
 
 

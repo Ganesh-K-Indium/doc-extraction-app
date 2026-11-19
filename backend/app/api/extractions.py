@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app import config, db
 from app.api.deps import require_key, workspace
-from app.engines import plan as plans
+from app.engines.strategy import plan as plans
 from app.services import export, pipeline
 from app.services.reading import ocr, pdf_pages
 from app.services.extraction import remainder

@@ -185,12 +185,12 @@ backend/app
   main.py, config.py, db.py          app wiring, settings from the environment, tables
   api/                               HTTP: workspaces, extractions, templates, registry, engines (strategies, tests), settings (provider keys)
   engines/                           how pages get read, and by whom
-    llm.py                           one call to any model provider (OpenAI, Anthropic, Gemini, Ollama, custom)
-    local.py                         local OCR engines, word confidence, "is this reading good enough"
-    isolated.py, worker.py           run PaddleOCR / docTR each in a process of their own (they cannot share one)
-    ladder.py                        escalation for one scanned page: local first, vision models if doubtful, token cap
-    plan.py                          strategies and the per-workspace reading plan
-    credentials.py                   provider keys saved in the app, encrypted
+    providers/                       llm (one call to any model provider), credentials (keys saved in the app, encrypted)
+    ocr/                             local (Tesseract, RapidOCR, PaddleOCR, docTR; is a reading good enough), isolated (neural engines
+                                     in their own process), prepare (model downloads), sample (the built-in test page)
+    strategy/                        plan (Economy / Balanced / Accuracy / Custom per workspace), ladder (one page: local first,
+                                     models only if doubtful, region re-reads, token cap)
+    warmup.py, worker.py             command-line entry points, kept here so the commands stay stable
   services/
     pipeline.py                      orchestrates one upload end to end;  export.py, usage_tracker.py
     reading/                         PDF to page text: pdf_pages, tess (text layer for scans), ocr (two-reader transcription),

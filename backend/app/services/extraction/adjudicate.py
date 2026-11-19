@@ -106,7 +106,7 @@ def _describe(n: int, cell: Cell) -> str:
 
 
 async def read(model: str, jpeg: bytes, prompt: str) -> Dict[str, str]:
-    from app.engines import llm
+    from app.engines.providers import llm
     return parse(await llm.complete(model, prompt, jpeg, stage="adjudicate"))
 
 

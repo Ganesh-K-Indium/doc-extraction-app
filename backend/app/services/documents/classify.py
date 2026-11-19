@@ -105,7 +105,7 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
               + "This page (top):\n" + (text or "")[:1200])
 
     async def default_ask(model: str, prompt: str) -> str:
-        from app.engines import llm
+        from app.engines.providers import llm
         return await llm.complete(model, prompt, None, stage="classify")
 
     ask = ask or default_ask

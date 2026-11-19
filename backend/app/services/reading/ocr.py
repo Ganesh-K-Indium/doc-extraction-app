@@ -251,7 +251,7 @@ def configured_models() -> List[str]:
     raw = os.getenv("HANDWRITING_OCR_MODELS", "").strip()
     if raw:
         return [m.strip() for m in raw.split(",") if m.strip()][:2]
-    from app.engines import llm
+    from app.engines.providers import llm
     return llm.default_models()
 
 
@@ -279,7 +279,7 @@ def parse_lines(raw: str) -> Lines:
 
 async def read_image(model: str, jpeg: bytes) -> List[str]:
     """One model's transcription of one page image."""
-    from app.engines import llm
+    from app.engines.providers import llm
     return parse_lines(await llm.complete(model, PROMPT, jpeg, stage="handwriting_ocr"))
 
 

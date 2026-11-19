@@ -14,7 +14,7 @@ import asyncio
 import sys
 import time
 
-from app.engines import local, sample
+from app.engines.ocr import local, sample
 
 
 def status() -> int:

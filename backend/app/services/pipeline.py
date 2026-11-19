@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from app import config
-from app.engines import ladder, plan as plans
+from app.engines.strategy import ladder, plan as plans
 from app.services.documents import classify
 from app.services.quality import cross, validation
 from app.services.extraction import discover, form_extractor, kv, remainder

@@ -82,7 +82,7 @@ def test_the_web_server_template_only_uses_variables_the_image_defines():
 
 
 def test_the_backend_image_checks_every_engine_it_installs():
-    from app.engines import local
+    from app.engines.ocr import local
     line = next(l for l in stage("backend").splitlines() if "app.engines.warmup" in l)
     named = line.split("app.engines.warmup")[1].split()
     assert named and all(local.get(n) is not None for n in named)

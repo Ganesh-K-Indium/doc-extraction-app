@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app import config
 from app.services.usage_tracker import record_usage
 
-logger = logging.getLogger("app.engines.llm")
+logger = logging.getLogger("app.engines.providers.llm")
 
 TIMEOUT_SECONDS = 120
 MAX_REPLY_TOKENS = 8192
@@ -81,7 +81,7 @@ def valid_spec(spec: Any) -> bool:
 
 def _env(name: str) -> str:
     """A provider setting: saved in the app's Settings screen, else the server's environment (engines/credentials.py)."""
-    from app.engines import credentials
+    from app.engines.providers import credentials
     return credentials.get(name)
 
 

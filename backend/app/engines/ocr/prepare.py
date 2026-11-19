@@ -12,9 +12,9 @@ import time
 from typing import Any, Dict, Optional, Set
 
 from app import config
-from app.engines import local, sample
+from app.engines.ocr import local, sample
 
-logger = logging.getLogger("app.engines.prepare")
+logger = logging.getLogger("app.engines.ocr.prepare")
 
 _state: Dict[str, Dict[str, Any]] = {}
 _tasks: Set["asyncio.Task[None]"] = set()
@@ -47,7 +47,7 @@ async def _work(eng: local.Engine) -> None:
 
 
 def start(engine_id: str) -> Dict[str, Any]:
-    from app.engines import credentials
+    from app.engines.providers import credentials
     eng = local.get(engine_id)
     if eng is None:
         raise Refused("No such engine.", 404)

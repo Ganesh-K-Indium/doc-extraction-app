@@ -16,13 +16,14 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import app as _app
 from app import config
 
-logger = logging.getLogger("app.engines.isolated")
+logger = logging.getLogger("app.engines.ocr.isolated")
 
 FIRST_TIMEOUT = 900.0     # the first page includes loading, and possibly downloading, the model
 TIMEOUT = 180.0
-_BACKEND_ROOT = Path(__file__).resolve().parents[2]
+_BACKEND_ROOT = Path(_app.__file__).resolve().parents[1]      # the folder that holds the `app` package, wherever this file sits
 _io = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ocr-worker-io")
 
 
@@ -121,7 +122,7 @@ _registry_lock = threading.Lock()
 def worker_for(engine_id: str, label: str) -> Worker:
     with _registry_lock:
         if engine_id not in _workers:
-            from app.engines import local
+            from app.engines.ocr import local
             env = {**os.environ, "DATA_DIR": str(config.data_dir()), "MODELS_DIR": str(local.models_dir()), "PYTHONUNBUFFERED": "1"}
             _workers[engine_id] = Worker(label, [sys.executable, "-m", "app.engines.worker", engine_id], env, config.data_dir() / "logs" / f"ocr-{engine_id}.log")
         return _workers[engine_id]

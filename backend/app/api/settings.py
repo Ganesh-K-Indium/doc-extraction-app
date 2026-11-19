@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key
-from app.engines import credentials, llm
+from app.engines.providers import credentials, llm
 
 logger = logging.getLogger("app.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["settings"], dependencies=[Depends(require_key)])

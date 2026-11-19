@@ -38,7 +38,7 @@ def llm_enabled() -> bool:
     """True when models may be called at all: not switched off, and at least one provider is configured."""
     if os.getenv("LLM_ENABLED", "1").lower() in ("0", "false", "no"):
         return False
-    from app.engines import llm
+    from app.engines.providers import llm
     return llm.any_ready()
 
 
@@ -47,7 +47,7 @@ def extraction_models() -> list:
     raw = os.getenv("EXTRACTION_MODELS", "").strip()
     if raw:
         return [m.strip() for m in raw.split(",") if m.strip()][:2]
-    from app.engines import llm
+    from app.engines.providers import llm
     return llm.default_models()
 
 
@@ -60,7 +60,7 @@ def adjudicator_model() -> str:
     explicit = os.getenv("ADJUDICATION_MODEL", "").strip()
     if explicit:
         return explicit
-    from app.engines import plan
+    from app.engines.strategy import plan
     return (plan.current().extract_models or [""])[0]
 
 

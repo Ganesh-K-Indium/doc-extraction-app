@@ -20,11 +20,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from app.engines import local
+from app.engines.ocr import local
 from app.services.reading import ocr
 from app.services.usage_tracker import get_current_tracker
 
-logger = logging.getLogger("app.engines.ladder")
+logger = logging.getLogger("app.engines.strategy.ladder")
 
 
 @dataclass

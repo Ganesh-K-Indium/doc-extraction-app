@@ -18,7 +18,7 @@ import struct
 import sys
 from typing import Any, BinaryIO, Optional
 
-from app.engines import local
+from app.engines.ocr import local
 
 
 def read_frame(stream: BinaryIO) -> Optional[bytes]:

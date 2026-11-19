@@ -7,7 +7,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import config
-from app.engines import ladder, llm, local, plan
+from app.engines.strategy import ladder, plan
+from app.engines.providers import llm
+from app.engines.ocr import local
 from app.services.reading import ocr, pdf_pages
 from app.services import pipeline
 from app.services.reading.tess import available as tess_available
@@ -950,7 +952,7 @@ def test_reread_makes_a_second_extraction_and_leaves_the_first(client, tmp_path,
 
 @pytest.fixture()
 def preparing(monkeypatch, tmp_path):
-    from app.engines import prepare
+    from app.engines.ocr import prepare
     monkeypatch.setattr(prepare, "_state", {})
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
@@ -1082,7 +1084,7 @@ while True:
 @pytest.fixture()
 def fake_worker(tmp_path):
     import sys
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     made = []
 
     def make(**kw):
@@ -1102,7 +1104,7 @@ def test_a_worker_process_answers_page_after_page(fake_worker):
 
 
 def test_a_bad_page_is_reported_and_the_process_carries_on(fake_worker):
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     w = fake_worker()
     pid = w.call(b"ok")[0][4]
     with pytest.raises(isolated.WorkerError, match="could not read the page: ValueError: nope"):
@@ -1111,7 +1113,7 @@ def test_a_bad_page_is_reported_and_the_process_carries_on(fake_worker):
 
 
 def test_a_crashed_worker_fails_that_page_and_the_next_one_starts_fresh(fake_worker):
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     w = fake_worker()
     pid = w.call(b"ok")[0][4]
     with pytest.raises(isolated.WorkerError, match="stopped unexpectedly"):
@@ -1121,7 +1123,7 @@ def test_a_crashed_worker_fails_that_page_and_the_next_one_starts_fresh(fake_wor
 
 
 def test_a_worker_that_hangs_is_killed(fake_worker):
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     w = fake_worker(first_timeout=0.6, timeout=0.6)
     with pytest.raises(isolated.WorkerError, match="did not answer within"):
         w.call(b"hang")
@@ -1129,7 +1131,7 @@ def test_a_worker_that_hangs_is_killed(fake_worker):
 
 
 def test_an_unreadable_answer_is_an_error_not_a_crash(fake_worker):
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     w = fake_worker()
     with pytest.raises(isolated.WorkerError, match="could not be read"):
         w.call(b"junk")
@@ -1160,7 +1162,7 @@ def test_the_worker_loop_answers_frames_and_survives_an_engine_error():
 
 
 def test_only_the_engines_that_cannot_share_a_process_are_isolated(monkeypatch):
-    from app.engines import isolated
+    from app.engines.ocr import isolated
     assert {e.id: e.isolated for e in local.engines()} == {"tesseract": False, "rapidocr": False, "paddleocr": True, "doctr": True}
 
     class Heavy(local.Engine):
@@ -1176,3 +1178,14 @@ def test_only_the_engines_that_cannot_share_a_process_are_isolated(monkeypatch):
     class Inside(Heavy):
         def _words(self, jpeg): return [W(0, 0, 10, 10, "direct")]
     assert run(Inside().read(jpeg_of(False))).lines == ["direct"]                                     # inside the worker it runs the engine itself
+
+
+def test_the_worker_is_started_from_the_folder_that_holds_the_app_package():
+    """Moving isolated.py a level deeper once left the child process unable to import `app` (it started in the wrong folder).
+    The command that starts it must resolve from the folder it is given."""
+    import subprocess
+    import sys
+    from app.engines.ocr import isolated
+    assert (isolated._BACKEND_ROOT / "app" / "engines" / "worker.py").is_file()
+    out = subprocess.run([sys.executable, "-m", "app.engines.worker"], cwd=str(isolated._BACKEND_ROOT), capture_output=True, timeout=60)
+    assert out.returncode == 2 and b"usage: python -m app.engines.worker" in out.stderr                # it started, imported app, and asked for an engine

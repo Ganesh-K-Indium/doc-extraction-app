@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config, db
-from app.engines import llm, local
+from app.engines.providers import llm
+from app.engines.ocr import local
 from app.api import engines, extractions, registry, settings, templates, workspaces
 
 
