@@ -44,6 +44,18 @@ export default function ReadingPage() {
             .catch(e => setError(e.message));
     }, [wid]);
 
+    const downloading = info?.local_engines.some(e => e.prepare?.state === 'running') ?? false;
+    useEffect(() => {
+        if (!downloading) return;
+        const t = setInterval(() => { engines.overview().then(setInfo).catch(() => undefined); }, 2500);
+        return () => clearInterval(t);
+    }, [downloading]);
+    const download = async (id: string) => {
+        setError('');
+        try { await engines.prepare(id); setInfo(await engines.overview()); }
+        catch (e) { setError((e as Error).message); }
+    };
+
     const strategy = draft.strategy ?? view?.strategy_default ?? 'balanced';
     const mode = strategy === 'custom' ? (draft.mode ?? 'escalate') : strategy === 'economy' ? 'local' : strategy === 'accuracy' ? 'vision' : 'escalate';
     const usesLocal = mode !== 'vision';
@@ -121,9 +133,17 @@ export default function ReadingPage() {
                                     <input type="radio" name="engine" disabled={!e.ready} checked={engine === e.id} onChange={() => set({ local_engine: e.id })} />
                                     <span><b>{e.label}</b> <span className={`rd__chip rd__chip--${e.ready ? 'ok' : 'off'}`}>{e.ready ? 'Installed' : 'Not installed'}</span>
                                         <span className="rd__sub">{e.summary}{e.cross_checked && e.ready ? ' Its pages are checked against Tesseract before they are trusted.' : ''}</span>
-                                        {!e.ready && <span className="rd__sub">Install: <code>{e.hint}</code></span>}</span>
+                                        {!e.ready && <span className="rd__sub">Install: <code>{e.hint}</code></span>}
+                                        {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
+                                            <span className="rd__sub rd__sub--warn">Models not downloaded yet (about {e.models.approx_mb} MB). They are saved in the app’s data folder.</span>)}
+                                        {e.ready && e.models.state === 'downloaded' && <span className="rd__sub">Models ready ({Math.round((e.models.bytes ?? 0) / 1e6)} MB in the app’s data folder).</span>}
+                                        {e.prepare?.state === 'running' && <span className="rd__sub" role="status">Downloading the models. This can take a minute or two.</span>}
+                                        {e.prepare?.state === 'failed' && <span className="rd__sub rd__sub--bad" role="alert">{e.prepare.error}</span>}</span>
                                 </label>
-                                {e.ready && <button className="btn" onClick={() => test('local', e.id)} disabled={tests[`local:${e.id}`] === 'running'}>Test</button>}
+                                {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
+                                    <button className="btn" onClick={() => download(e.id)} disabled={downloading || info.local_only || info.locked}
+                                        title={info.local_only ? 'Local-only mode: this server downloads nothing' : info.locked ? 'Settings are locked on this server' : undefined}>Download models</button>)}
+                                {e.ready && <button className="btn" onClick={() => test('local', e.id)} disabled={tests[`local:${e.id}`] === 'running' || e.prepare?.state === 'running'}>Test</button>}
                                 <Result t={tests[`local:${e.id}`]} />
                             </div>))}
                     </div>

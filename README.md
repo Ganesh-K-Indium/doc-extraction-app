@@ -46,6 +46,12 @@ cd frontend && npm install && cp .env.example .env && npm run dev
 | PaddleOCR | `pip install paddlepaddle paddleocr` | about 430 MB | downloads about 130 MB of models |
 | docTR | `pip install "python-doctr[torch]"` | about 630 MB (PyTorch) | downloads about 125 MB of models |
 
+`pip` installs the code only. PaddleOCR and docTR fetch their models the first time they run, so "requirement already satisfied" says nothing about them. To see whether the models are on disk (this reads nothing and downloads nothing):
+
+```bash
+cd backend && python -m app.engines.warmup --status
+```
+
 Install the engines first, then **check them** (this also downloads the models now, instead of during your first upload):
 
 ```bash
@@ -61,9 +67,32 @@ python -m app.engines.warmup doctr          # or just one; exits 1 if it fails o
   OK    docTR      found 100% of the sample values; first page 7.2s (includes loading the model), then 2.0s
 ```
 
-The same check is the **Test** button next to each engine on the Reading engines page. Models are cached under your home folder; set `DOCTR_CACHE_DIR` and `PADDLE_PDX_CACHE_HOME` to choose where. For a server with no internet, run the check on a connected machine and copy those two folders across. Without a GPU the engines run on the CPU, one page at a time.
+The same check is the **Test** button next to each engine on the Reading engines page, and the page also has a **Download models** button per engine, so a client can do this step without a terminal (it is blocked in local-only mode, and when `LOCK_SETTINGS=1`).
+
+**Where the models live.** Inside the app's own data folder, `backend/data/models` (so they travel with the app and no hidden `~/.cache` is involved). Change it with `MODELS_DIR`; `DOCTR_CACHE_DIR` and `PADDLE_PDX_CACHE_HOME` still override each engine individually. For a server with no internet, run the check on a connected machine and copy `data/models` across. Without a GPU the engines run on the CPU, one page at a time.
+
+The Python packages themselves are installed with `pip` (or the Dockerfile), not from the web page: letting a page change the server's own software would be a risk.
+
+**Optional: everything in Docker.** See *Run it all with Docker Compose* below.
 
 **5. Tests** (offline, no network): `cd backend && python -m pytest -q`
+
+## Run it all with Docker Compose (optional)
+
+One command starts the web app and the backend, with Tesseract, every OCR engine and their models already inside the backend image:
+
+```bash
+cp .env.example .env          # optional: keys and options (provider keys can also be entered on the Settings page)
+docker compose up --build     # first build is large (PyTorch, Paddle) and downloads the models once
+# then open http://localhost:8080
+```
+
+- **One address.** nginx serves the web app and forwards `/api` to the backend over the internal network. Only the web app's port is published (`WEB_PORT`, default 8080); the backend is not reachable from outside.
+- **One Dockerfile.** The root `Dockerfile` has a `backend` target (the API with every OCR engine) and a `frontend` target (the built web app behind nginx); compose builds one of each.
+- **Data.** Uploads, the database and saved settings live in the `pagewise-data` volume. The OCR models are baked into the image (`/opt/models`), so the containers download nothing when they start and work with no internet.
+- **`APP_API_KEY`.** If set, nginx adds it to every API call on the server side, so it is not inside the JavaScript the browser downloads. That also means anyone who can open the web app can use the API: put the web app behind your own login or VPN if that matters. Set `APP_SECRET_KEY` too, so saved provider keys are encrypted with a key that is not stored in the data volume.
+- **Models on your own machine.** From inside a container, reach Ollama at `http://host.docker.internal:11434`.
+- **Status.** These files (`docker-compose.yml`, the single root `Dockerfile` with its `backend` and `frontend` targets, `.dockerignore`, `frontend/nginx.conf.template`) were written and checked for consistency by tests, but **never built or run**, so expect to adjust them on the first real build. Running the app without Docker, as described above, is what has been exercised.
 
 ## Reviewing a document
 
@@ -131,7 +160,7 @@ Scanned pages and handwriting can be read three ways, and each workspace chooses
 
 **How "doubtful" is decided.** Tesseract reports a confidence per word: clean print scores about 90 to 95%, handwriting 40 to 50%, a badly degraded scan about 40%. A page is escalated when its confidence is below the threshold (85% by default), many words or numbers were hard to read, nothing was recognised on a page that has marks, or the text is garbled. Other engines (RapidOCR, PaddleOCR, docTR) report confidences that look alike on clean print and handwriting, so their pages are accepted only when Tesseract's reading, which the preparation step already produces, agrees with them (75% word overlap; clean pages score 80 to 90%, handwriting under 35%). The lines they disagree on are the ones flagged. Every decision and its reason is stored per page and shown on the review screen, where any page can also be sent to the vision models by hand, or the whole file read again under another strategy (this makes a second copy; the first is kept).
 
-**Local OCR engines.** Tesseract is built in. RapidOCR, PaddleOCR and docTR appear on the page once installed (see *Install and run*). All four were run here on a sample page and on real scans: they read the sample's values correctly (about 1 to 2 seconds a page warm; the first page also loads the model, 15 to 20 seconds) and their cross-checks separated clean print (agreement 85 to 99%) from handwriting (6 to 34%). The neural engines run one page at a time. Their models download on first use; `python -m app.engines.warmup` fetches them in advance (see *Install and run* for air-gapped servers).
+**Local OCR engines.** Tesseract is built in. RapidOCR, PaddleOCR and docTR appear on the page once installed (see *Install and run*). All four were run here on a sample page and on real scans: they read the sample's values correctly (about 1 to 2 seconds a page warm; the first page also loads the model, 15 to 20 seconds) and their cross-checks separated clean print (agreement 85 to 99%) from handwriting (6 to 34%). The neural engines run one page at a time. Their models download on first use into `backend/data/models`; `python -m app.engines.warmup`, or the *Download models* button, fetches them in advance (see *Install and run*).
 
 **Region-level re-reads.** Doubtfulness is judged line by line, because a page average hides one bad line. When only a few lines are doubtful (an engine unsure of the line or of a number in it, or a second engine disagreeing), just those regions are cropped and read by the two vision models, and their lines replace the local ones; the rest of the page keeps its local reading. That costs a couple of small images instead of a full page. If the doubt is scattered (more than three separate regions, more than half the page, or more than 40% of the lines), the page is poor as a whole and is read whole. A failed region read keeps the local reading, flagged, when the page otherwise passed.
 
@@ -168,6 +197,7 @@ backend/app
     documents/                       what a document is: classify, template_draft, suggest (recurring layouts), workspace_types
     quality/                         validation (per-document rules), cross (consistency across documents)
   templates/                         built-in document templates
+docker-compose.yml, Dockerfile, .env.example   run everything with Docker Compose (see above); frontend/nginx.conf.template
 frontend/src
   pages/                             Documents, review, Document types, Reading engines, Settings, Landing
   components/, review/               shared pieces; the review screen's field rows, tables and PDF pane

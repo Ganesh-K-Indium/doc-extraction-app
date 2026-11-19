@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app import config
 from app.services.reading import ocr, tess
 
 logger = logging.getLogger("app.engines.local")
@@ -265,6 +266,48 @@ def assess_cross(reading: Reading, jpeg: Optional[bytes] = None) -> Verdict:
 # Engines
 # ---------------------------------------------------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Where the neural engines keep their models
+# ---------------------------------------------------------------------------------------------------------------------
+# Inside the app's own data folder by default, so everything the backend needs travels with it: copy DATA_DIR (or MODELS_DIR) to
+# another server and the models go too. An explicit DOCTR_CACHE_DIR / PADDLE_PDX_CACHE_HOME still wins.
+
+APPROX_MB = {"paddleocr": 130, "doctr": 125}
+
+
+def models_dir() -> Path:
+    return Path(os.getenv("MODELS_DIR") or config.data_dir() / "models")
+
+
+def model_folders() -> Dict[str, Path]:
+    return {"paddleocr": Path(os.getenv("PADDLE_PDX_CACHE_HOME") or models_dir() / "paddlex") / "official_models",
+            "doctr": Path(os.getenv("DOCTR_CACHE_DIR") or models_dir() / "doctr") / "models"}
+
+
+def configure_caches() -> None:
+    """Point the libraries at the app's models folder. Must run before they are first imported (they read these at import)."""
+    os.environ.setdefault("DOCTR_CACHE_DIR", str(models_dir() / "doctr"))
+    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(models_dir() / "paddlex"))
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")      # no connectivity probe before loading
+
+
+def folder_size(path: Path) -> Tuple[int, int]:
+    """(files, bytes) under a folder; (0, 0) when it does not exist."""
+    files = [f for f in path.rglob("*") if f.is_file()] if path.is_dir() else []
+    return len(files), sum(f.stat().st_size for f in files)
+
+
+def model_status(engine_id: str) -> Dict[str, Any]:
+    """Whether an engine's models are on disk. `state` is "bundled" (inside the package), "downloaded", "missing" or "none"."""
+    if engine_id == "rapidocr":
+        return {"state": "bundled"}
+    if engine_id not in APPROX_MB:
+        return {"state": "none"}
+    path = model_folders()[engine_id]
+    files, size = folder_size(path)
+    return {"state": "downloaded" if files else "missing", "files": files, "bytes": size, "approx_mb": APPROX_MB[engine_id], "path": str(path)}
+
+
 class Engine:
     serial = False        # True: one page at a time. The neural engines are not guaranteed safe to run from several threads at once
     calibrated = True     # False: its confidence cannot tell clean print from handwriting, so a second engine must agree
@@ -299,6 +342,7 @@ class Engine:
     def info(self) -> Dict[str, Any]:
         ok = self.available()
         return {"id": self.id, "label": self.label, "summary": self.summary, "ready": ok, "cross_checked": not self.calibrated,
+                "models": model_status(self.id) if ok else {"state": "none"},
                 "status": "ready" if ok else "not_installed", "hint": "" if ok else self.install}
 
 
@@ -447,6 +491,7 @@ class PaddleOCR(Engine):
 
     @staticmethod
     def _load():
+        configure_caches()
         from paddleocr import PaddleOCR as P
         try:                                                         # 3.x
             return P(lang="en", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)
@@ -486,6 +531,7 @@ class DocTR(Engine):
 
     @staticmethod
     def _load():
+        configure_caches()
         from doctr.models import ocr_predictor
         return ocr_predictor(pretrained=True)
 

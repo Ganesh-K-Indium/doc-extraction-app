@@ -455,3 +455,4 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
   .rf { grid-template-columns: minmax(0, 1fr) auto; } .rf__label { grid-column: 1 / 3; padding-top: 6px; } .rf__detail { grid-column: 1 / 3; }
   .rv-step__keys { display: none; }
 }
+.rd__sub--warn { color: var(--amber); } .rd__sub--bad { color: var(--pink); }

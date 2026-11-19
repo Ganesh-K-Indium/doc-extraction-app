@@ -1,6 +1,7 @@
 """Reading engines: model providers, local OCR, the reading plan, the escalation ladder and the API. All offline."""
 import asyncio
 import io
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -300,6 +301,48 @@ def test_warmup_reports_each_engine_and_signals_failure(capsys, monkeypatch):
     assert warmup.main([]) == 1                                                              # the report as a whole: one engine failed
     monkeypatch.setattr(local, "_ENGINES", {"tesseract": Missing(), "rapidocr": Good()})
     assert warmup.main([]) == 0                                                              # listing everything: a missing optional engine is only reported
+
+
+def test_status_says_whether_models_are_on_disk(capsys, monkeypatch, tmp_path):
+    from app.engines import warmup
+
+    class Ready(FakeLocal):
+        pass
+    paddle, doctr = Ready(), Ready()
+    paddle.id, paddle.label, doctr.id, doctr.label = "paddleocr", "PaddleOCR", "doctr", "docTR"
+    monkeypatch.setattr(local, "_ENGINES", {"paddleocr": paddle, "doctr": doctr})
+    monkeypatch.setenv("PADDLE_PDX_CACHE_HOME", str(tmp_path / "px"))
+    monkeypatch.setenv("DOCTR_CACHE_DIR", str(tmp_path / "dt"))
+    assert warmup.main(["--status"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("NOT downloaded yet") == 2 and "warmup paddleocr" in out                    # pip alone does not fetch them
+    (tmp_path / "dt" / "models").mkdir(parents=True)
+    (tmp_path / "dt" / "models" / "m.pt").write_bytes(b"x" * 2_000_000)
+    warmup.main(["--status"])
+    out = capsys.readouterr().out
+    assert "docTR" in out and "models downloaded (1 files, 2 MB)" in out and out.count("NOT downloaded yet") == 1
+
+
+def test_models_live_in_the_apps_data_folder_unless_told_otherwise(monkeypatch, tmp_path):
+    for k in ("MODELS_DIR", "DOCTR_CACHE_DIR", "PADDLE_PDX_CACHE_HOME"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    assert local.models_dir() == tmp_path.resolve() / "models"
+    assert local.model_folders()["doctr"] == tmp_path.resolve() / "models" / "doctr" / "models"
+    assert local.model_folders()["paddleocr"] == tmp_path.resolve() / "models" / "paddlex" / "official_models"
+    local.configure_caches()
+    import os
+    assert os.environ["DOCTR_CACHE_DIR"] == str(tmp_path.resolve() / "models" / "doctr")           # the libraries are pointed at it
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path / "elsewhere"))
+    assert local.models_dir() == tmp_path / "elsewhere"
+    monkeypatch.setenv("DOCTR_CACHE_DIR", str(tmp_path / "mine"))
+    local.configure_caches()
+    assert os.environ["DOCTR_CACHE_DIR"] == str(tmp_path / "mine")                                  # an explicit setting wins
+    assert local.model_status("rapidocr")["state"] == "bundled" and local.model_status("tesseract")["state"] == "none"
+    assert local.model_status("doctr")["state"] == "missing" and local.model_status("doctr")["approx_mb"] == 125
+    (tmp_path / "mine" / "models").mkdir(parents=True)
+    (tmp_path / "mine" / "models" / "a.pt").write_bytes(b"x" * 1000)
+    assert local.model_status("doctr")["state"] == "downloaded" and local.model_status("doctr")["bytes"] == 1000
 
 
 def test_engine_listing_names_every_engine():
@@ -805,8 +848,11 @@ def test_engine_test_endpoint(client, monkeypatch):
     assert client.post("/api/engines/test", json={"kind": "local", "id": "nope"}, headers=H).status_code == 404
     assert client.post("/api/engines/test", json={"kind": "other", "id": "x"}, headers=H).status_code == 422
     assert client.post("/api/engines/test", json={"kind": "model", "id": "no spaces allowed"}, headers=H).status_code == 422
-    missing = next(e for e in client.get("/api/engines", headers=H).json()["local_engines"] if not e["ready"])
-    r = client.post("/api/engines/test", json={"kind": "local", "id": missing["id"]}, headers=H).json()
+    gone = FakeLocal()                                                                           # whatever is installed on this machine
+    gone.id, gone.label, gone.install = "doctr", "docTR", "pip install doctr"
+    gone.available = lambda: False
+    monkeypatch.setitem(local._ENGINES, "doctr", gone)
+    r = client.post("/api/engines/test", json={"kind": "local", "id": "doctr"}, headers=H).json()
     assert r["ok"] is False and "not installed" in r["error"]
     r = client.post("/api/engines/test", json={"kind": "model", "id": "anthropic:claude-haiku-5-5"}, headers=H).json()
     assert r["ok"] is False and "not available" in r["error"]                                    # no key: a clear message, not a 500
@@ -867,3 +913,115 @@ def test_reread_makes_a_second_extraction_and_leaves_the_first(client, tmp_path,
     assert len(client.get(base, headers=H).json()) == 2
     other = mk(client, "Other")
     assert client.post(f"/api/workspaces/{other}/extractions/{first}/reread", json={}, headers=H).status_code == 404
+
+
+# ---- downloading models from the page ---------------------------------------------------------------------------------
+
+@pytest.fixture()
+def preparing(monkeypatch, tmp_path):
+    from app.engines import prepare
+    monkeypatch.setattr(prepare, "_state", {})
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
+    for k in ("DOCTR_CACHE_DIR", "PADDLE_PDX_CACHE_HOME", "LOCAL_ONLY", "LOCK_SETTINGS"):
+        monkeypatch.delenv(k, raising=False)
+    return prepare
+
+
+class Downloader(FakeLocal):
+    """An engine whose first read 'downloads its models' into the app's models folder."""
+    id, label = "doctr", "docTR"
+
+    def __init__(self, fail=False, gate=None):
+        super().__init__()
+        self.fail, self.gate = fail, gate
+
+    async def read(self, jpeg):
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail:
+            raise RuntimeError("no network")
+        folder = local.model_folders()["doctr"]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "m.pt").write_bytes(b"x" * 10)
+        return local.build_reading([W(0, 0, 90, 20, "Invoice No. 48213 Date: 03/14/2026 Total due $1,250.75 Ref AB-9071", 0.9)], "doctr")
+
+
+def test_a_download_refuses_what_it_should(preparing, monkeypatch):
+    monkeypatch.setitem(local._ENGINES, "doctr", Downloader())
+    with pytest.raises(preparing.Refused) as e:
+        preparing.start("nope")
+    assert e.value.status == 404
+    for engine, status in (("tesseract", 409), ("rapidocr", 409)):                                  # nothing to download
+        monkeypatch.setitem(local._ENGINES, "tesseract", FakeLocal())
+        with pytest.raises(preparing.Refused) as e:
+            preparing.start(engine)
+        assert e.value.status == status
+    absent = Downloader()
+    absent.available = lambda: False
+    monkeypatch.setitem(local._ENGINES, "doctr", absent)
+    with pytest.raises(preparing.Refused, match="not installed") as e:
+        preparing.start("doctr")
+    assert e.value.status == 409
+    monkeypatch.setitem(local._ENGINES, "doctr", Downloader())
+    monkeypatch.setenv("LOCAL_ONLY", "1")
+    with pytest.raises(preparing.Refused, match="Local-only") as e:
+        preparing.start("doctr")                                                                    # nothing leaves a local-only server
+    assert e.value.status == 403
+    monkeypatch.delenv("LOCAL_ONLY")
+    monkeypatch.setenv("LOCK_SETTINGS", "1")
+    with pytest.raises(preparing.Refused, match="locked") as e:
+        preparing.start("doctr")
+    assert e.value.status == 403
+
+
+def test_a_download_runs_in_the_background_and_reports(preparing, monkeypatch):
+    async def go():
+        gate = asyncio.Event()
+        monkeypatch.setitem(local._ENGINES, "doctr", Downloader(gate=gate))
+        assert local.model_status("doctr")["state"] == "missing"
+        assert preparing.start("doctr")["state"] == "running" and preparing.running()
+        with pytest.raises(preparing.Refused, match="already running"):
+            preparing.start("doctr")
+        gate.set()
+        for _ in range(100):
+            if preparing.current("doctr")["state"] != "running":
+                break
+            await asyncio.sleep(0.02)
+        return preparing.current("doctr")
+    state = run(go())
+    assert state["state"] == "done" and not preparing.running()
+    assert local.model_status("doctr")["state"] == "downloaded"                                     # the models are now in the app's folder
+
+
+def test_a_failed_download_says_so_and_can_be_retried(preparing, monkeypatch):
+    async def go(eng):
+        monkeypatch.setitem(local._ENGINES, "doctr", eng)
+        preparing.start("doctr")
+        for _ in range(100):
+            if preparing.current("doctr")["state"] != "running":
+                break
+            await asyncio.sleep(0.02)
+        return preparing.current("doctr")
+    bad = run(go(Downloader(fail=True)))
+    assert bad["state"] == "failed" and "internet" in bad["error"] and "no network" not in bad["error"]   # a safe message, not the exception
+    assert run(go(Downloader()))["state"] == "done"
+
+
+def test_the_download_endpoint_and_overview(client, preparing, monkeypatch):
+    monkeypatch.setitem(local._ENGINES, "doctr", Downloader())
+    assert client.post("/api/engines/doctr/prepare").status_code == 401
+    assert client.post("/api/engines/nope/prepare", headers=H).status_code == 404
+    assert client.post("/api/engines/tesseract/prepare", headers=H).status_code == 409
+    over = client.get("/api/engines", headers=H).json()
+    doctr = next(e for e in over["local_engines"] if e["id"] == "doctr")
+    assert doctr["models"]["state"] == "missing" and doctr["prepare"] is None and over["models_dir"] and over["locked"] is False
+    assert next(e for e in over["local_engines"] if e["id"] == "tesseract")["models"]["state"] == "none"
+    r = client.post("/api/engines/doctr/prepare", headers=H)
+    assert r.status_code == 202 and r.json()["state"] == "running"
+    for _ in range(100):
+        doctr = next(e for e in client.get("/api/engines", headers=H).json()["local_engines"] if e["id"] == "doctr")
+        if doctr["prepare"]["state"] != "running":
+            break
+        time.sleep(0.05)
+    assert doctr["prepare"]["state"] == "done" and doctr["models"]["state"] == "downloaded"

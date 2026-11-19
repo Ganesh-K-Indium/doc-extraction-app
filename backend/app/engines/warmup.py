@@ -3,17 +3,38 @@ Check that the local OCR engines work on this machine, and download their models
 
     python -m app.engines.warmup                  every installed engine
     python -m app.engines.warmup rapidocr doctr   just these
+    python -m app.engines.warmup --status         where each engine's models are, and whether they are downloaded yet (reads nothing)
 
 For each engine it reads a small built-in page, then prints whether the page's values were found, how long it took, and the
 first-use time (which includes loading, and downloading, the model). Exit status is 1 when a requested engine fails, so it can
 gate a deployment. Run it on a connected machine to fill the model cache, then copy the cache to an air-gapped server (see
-DOCTR_CACHE_DIR and PADDLE_PDX_CACHE_HOME in the README).
+MODELS_DIR in the README). Models are kept in DATA_DIR/models, inside the app's own data folder.
 """
 import asyncio
 import sys
 import time
 
 from app.engines import local, sample
+
+
+def status() -> int:
+    """Installed or not, and whether the models are on disk yet. pip installs the code only: a neural engine downloads its
+    models the first time it runs, so "already installed" says nothing about them."""
+    folders = local.model_folders()
+    for eng in local.engines():
+        if not eng.available():
+            print(f"  --    {eng.label:10} not installed. {eng.install}")
+        elif eng.id == "tesseract":
+            print(f"  ready {eng.label:10} installed (language data comes with Tesseract itself)")
+        elif eng.id == "rapidocr":
+            print(f"  ready {eng.label:10} installed; its models are inside the package, nothing to download")
+        else:
+            files, size = local.folder_size(folders[eng.id])
+            if files:
+                print(f"  ready {eng.label:10} installed, models downloaded ({files} files, {size / 1e6:.0f} MB) in {folders[eng.id]}")
+            else:
+                print(f"  TODO  {eng.label:10} installed, but the models are NOT downloaded yet. They download on first use, or now with:  python -m app.engines.warmup {eng.id}")
+    return 0
 
 
 async def check(eng: local.Engine) -> bool:
@@ -31,6 +52,9 @@ async def check(eng: local.Engine) -> bool:
 
 
 def main(argv: list) -> int:
+    local.configure_caches()
+    if "--status" in argv:
+        return status()
     wanted = [a.lower() for a in argv]
     unknown = [a for a in wanted if local.get(a) is None]
     if unknown:

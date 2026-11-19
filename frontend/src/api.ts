@@ -1,4 +1,7 @@
-export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const configured = import.meta.env.VITE_API_BASE_URL;
+/** Where the API is. Unset: the dev backend. Set but empty: the page and the API share one address (the Docker setup serves both and
+ *  forwards /api to the backend), so requests are relative. */
+export const API_BASE: string = (configured === undefined ? 'http://localhost:8000' : configured).replace(/\/+$/, '');
 const KEY = import.meta.env.VITE_API_KEY || '';
 const ROOT = `${API_BASE}`;
 
@@ -116,11 +119,16 @@ export const meta = {
     },
 };
 
-export interface LocalEngine { id: string; label: string; summary: string; ready: boolean; status: 'ready' | 'not_installed'; hint: string; cross_checked: boolean }
+export interface ModelStatus { state: 'bundled' | 'downloaded' | 'missing' | 'none'; files?: number; bytes?: number; approx_mb?: number; path?: string }
+export interface Prepare { state: 'running' | 'done' | 'failed'; error: string }
+export interface LocalEngine {
+    id: string; label: string; summary: string; ready: boolean; status: 'ready' | 'not_installed'; hint: string; cross_checked: boolean;
+    models: ModelStatus; prepare: Prepare | null;
+}
 export interface Provider { id: string; label: string; cloud: boolean; ready: boolean; status: 'ready' | 'needs_setup' | 'blocked'; hint: string; models: string[] }
 export interface Strategy { id: string; label: string; mode: string; summary: string }
 export interface EnginesOverview {
-    local_only: boolean; llm_enabled: boolean; local_engines: LocalEngine[]; providers: Provider[]; strategies: Strategy[];
+    local_only: boolean; llm_enabled: boolean; locked: boolean; models_dir: string; local_engines: LocalEngine[]; providers: Provider[]; strategies: Strategy[];
     defaults: { models: string[]; escalate_below: number; plan: ReadingPlan };
 }
 export interface ReadingSettings { strategy?: string; mode?: string; local_engine?: string; models?: string[]; escalate_below?: number; token_cap?: number }
@@ -129,6 +137,8 @@ export interface EngineTest { ok: boolean; error?: string; seconds?: number; tex
 
 export const engines = {
     overview: () => send<EnginesOverview>(`${ROOT}/api/engines`),
+    /** Download an installed engine's models into the app's models folder, in the background. */
+    prepare: (id: string) => send<Prepare>(`${ROOT}/api/engines/${encodeURIComponent(id)}/prepare`, { method: 'POST' }),
     test: (kind: 'local' | 'model', id: string) => send<EngineTest>(`${ROOT}/api/engines/test`, json('POST', { kind, id })),
 };
 export interface SettingField { name: string; label: string; secret: boolean; kind: 'key' | 'url' | 'text'; help: string; set: boolean; source: 'saved' | 'environment' | null; preview: string }

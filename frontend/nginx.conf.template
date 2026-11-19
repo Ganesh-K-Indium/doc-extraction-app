@@ -1,0 +1,30 @@
+server {
+    listen 80;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Uploads: a little above the backend's own limit (MAX_UPLOAD_MB, 50 by default), which gives the readable error.
+    client_max_body_size 60m;
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # The API. The key, when the backend has one, is added here on the server, so it is never inside the JavaScript the browser downloads.
+    location /api/ {
+        proxy_pass ${BACKEND_URL};
+        proxy_set_header Host $host;
+        proxy_set_header X-API-Key "${APP_API_KEY}";
+        proxy_read_timeout 600s;
+    }
+    location = /health {
+        proxy_pass ${BACKEND_URL};
+    }
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+    # Every other address is a screen of the app: let its router handle it.
+    location / {
+        try_files $uri /index.html;
+    }
+}

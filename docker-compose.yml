@@ -1,0 +1,57 @@
+# The whole product: the backend (with every OCR engine and its models) and the web app in front of it.
+#   cp .env.example .env        # optional: set keys and options (they can also be entered in the app's Settings page)
+#   docker compose up --build   # then open http://localhost:8080
+#
+# Only the web app is published. It forwards /api to the backend over the internal network, so the backend is not reachable from outside.
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    restart: unless-stopped
+    environment:
+      # fixed for the container (an .env file must not move them)
+      DATA_DIR: /data
+      MODELS_DIR: /opt/models
+      # everything below is optional and comes from the .env file next to this one
+      APP_API_KEY: ${APP_API_KEY:-}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      LOCAL_ONLY: ${LOCAL_ONLY:-0}
+      LOCK_SETTINGS: ${LOCK_SETTINGS:-0}
+      LLM_ENABLED: ${LLM_ENABLED:-1}
+      READING_STRATEGY: ${READING_STRATEGY:-balanced}
+      LOCAL_OCR_ENGINE: ${LOCAL_OCR_ENGINE:-tesseract}
+      ESCALATE_BELOW: ${ESCALATE_BELOW:-0.85}
+      TOKEN_CAP: ${TOKEN_CAP:-0}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      LLM_CUSTOM_BASE_URL: ${LLM_CUSTOM_BASE_URL:-}
+      LLM_CUSTOM_API_KEY: ${LLM_CUSTOM_API_KEY:-}
+      LLM_CUSTOM_MODEL: ${LLM_CUSTOM_MODEL:-}
+    volumes:
+      - pagewise-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    environment:
+      BACKEND_URL: http://backend:8000
+      APP_API_KEY: ${APP_API_KEY:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pagewise-data:

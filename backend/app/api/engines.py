@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.engines import llm, local, plan, sample
+from app.engines import credentials, llm, local, plan, prepare, sample
 from app.services.reading import ocr
 from app.services.usage_tracker import track_usage
 
@@ -31,8 +31,9 @@ sample_page = sample.page
 
 
 def overview() -> Dict[str, Any]:
-    return {"local_only": config.local_only(), "llm_enabled": config.llm_enabled(),
-            "local_engines": local.listing(), "providers": llm.providers_status(),
+    engines_ = [{**e, "prepare": prepare.current(e["id"])} for e in local.listing()]
+    return {"local_only": config.local_only(), "llm_enabled": config.llm_enabled(), "locked": credentials.locked(),
+            "models_dir": str(local.models_dir()), "local_engines": engines_, "providers": llm.providers_status(),
             "strategies": [dict(s) for s in plan.STRATEGIES],
             "defaults": {"models": llm.default_models(), "escalate_below": plan.DEFAULT_THRESHOLD, "plan": plan.resolve().describe()}}
 
@@ -40,6 +41,15 @@ def overview() -> Dict[str, Any]:
 @router.get("")
 def engines():
     return overview()
+
+
+@router.post("/{engine_id}/prepare", status_code=202)
+async def prepare_engine(engine_id: str):
+    """Start downloading an installed engine's models into the app's models folder. Poll GET /api/engines for progress."""
+    try:
+        return prepare.start(engine_id)
+    except prepare.Refused as e:
+        raise HTTPException(e.status, str(e))
 
 
 class TestIn(BaseModel):
