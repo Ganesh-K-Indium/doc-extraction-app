@@ -17,6 +17,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.extraction import adjudicate, checkboxes, normalize as N
+from app.services.extraction import local_reader
 from app.services.reading import locate, ocr, pdf_pages
 
 logger = logging.getLogger("app.services.form_extractor")
@@ -238,7 +239,7 @@ def _prefer_page_text(cell: Dict[str, Any], ftype: str, page_alnum: str) -> None
 
 
 async def extract_form(path: str, page_num: int, text: str, template: Dict[str, Any], models: List[str], reader=None,
-                       handwritten: bool = False, adjudicator=None) -> Dict[str, Any]:
+                       handwritten: bool = False, adjudicator=None, page_text: str = "") -> Dict[str, Any]:
     """One page against a template -> {"fields": {key: cell}, "tables": {key: [row, ...]}, "readers": [...]}."""
     injected = reader is not None
     reader = reader or _read
@@ -258,6 +259,9 @@ async def extract_form(path: str, page_num: int, text: str, template: Dict[str, 
                 logger.warning("Form reader %s failed: %s", m, r)
             else:
                 replies.append(r)
+    if not replies and page_text.strip():
+        # No model is in use (or none answered): the page's own text, read locally, fills the text fields from their printed labels.
+        replies.append(local_reader.read_fields(page_text, template))
     two = len(replies) > 1
 
     for sec in template["sections"]:
@@ -347,7 +351,8 @@ _RANK = {"agreed": 0, "corrected": 0, "single": 1, "review": 2, "undetermined": 
 
 
 async def extract_document(path: str, pages: List[int], texts: Dict[int, str], template: Dict[str, Any],
-                           models: List[str], reader=None, handwritten: Any = (), adjudicator=None) -> Dict[str, Any]:
+                           models: List[str], reader=None, handwritten: Any = (), adjudicator=None,
+                           page_texts: Optional[Dict[int, str]] = None) -> Dict[str, Any]:
     """A whole (possibly multi-page) document against one template.
 
     Each page is read for every field; a field's final cell is the best-supported reading across pages (agreed beats
@@ -355,7 +360,7 @@ async def extract_document(path: str, pages: List[int], texts: Dict[int, str], t
     Templates with "single_page": true read only the first page (a fixed form that never continues).
     """
     use = pages[:1] if template.get("single_page") else pages
-    results = await asyncio.gather(*[extract_form(path, n, texts.get(n, ""), template, models, reader, n in handwritten, adjudicator) for n in use])
+    results = await asyncio.gather(*[extract_form(path, n, texts.get(n, ""), template, models, reader, n in handwritten, adjudicator, (page_texts or {}).get(n, "")) for n in use])
     fields: Dict[str, Dict[str, Any]] = {}
     for res in results:
         for key, cell in res["fields"].items():

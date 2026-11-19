@@ -116,7 +116,7 @@ async def read_scanned(*, mode: str, engine_id: Optional[str], jpeg: bytes, mode
         else:                              # this engine's own confidence is not trustworthy: Tesseract has to agree with it
             reference = await _reference(jpeg, tsv)
             if reference is not None:
-                reading = local.cross_check(reading, reference)
+                reading = local.cross_check(local.respace(reading, reference), reference)
                 verdict = local.assess_cross(reading, jpeg)
                 info["agreement"] = reading.agreement
             else:

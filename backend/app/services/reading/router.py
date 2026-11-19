@@ -75,7 +75,7 @@ def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: boo
                                                      + (" (a model only steps in for pages code cannot read completely)" if llm_available else "")]}
     if llm_available:
         return {"extractor": "discover", "reasons": ["no template matches this document, so its fields, checkboxes and tables are read from the page itself"]}
-    return {"extractor": "kv", "reasons": ["no template matches this document and no model is configured, so only plain label and value lines are read"]}
+    return {"extractor": "kv", "reasons": ["no template matches this document and no model is in use, so its \"Label: value\" lines are read. Add a template for this type, or let a model read it, to capture more"]}
 
 
 READERS = [

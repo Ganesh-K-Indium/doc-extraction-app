@@ -5,7 +5,7 @@ Rule-based on purpose: the document types are few and have stable titles, a rule
 costs nothing. Rules are data (DOC_TYPES) so a new form is one more entry, not new code.
 """
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # type -> (all-of regexes, score). First type with a hit wins; ties go to the higher score.
 DOC_TYPES: List[Dict[str, Any]] = [
@@ -32,10 +32,16 @@ def all_types() -> List[Dict[str, Any]]:
     return DOC_TYPES + [dict(d, custom=True) for d in custom_types() if d["type"] not in built_in]
 
 
+def _loose(pattern: str) -> str:
+    """A rule's pattern with its required spaces made optional. Some OCR engines drop the spaces between words
+    ("ProviderPriorAuthorizationRequestForm"), and a title must still be recognised."""
+    return pattern.replace(r"\s+", r"\s*")
+
+
 def _matches(rule: Dict[str, Any], text: str) -> bool:
-    if "all" in rule and not all(re.search(p, text, re.I) for p in rule["all"]):
+    if "all" in rule and not all(re.search(_loose(p), text, re.I) for p in rule["all"]):
         return False
-    if "any" in rule and not any(re.search(p, text, re.I) for p in rule["any"]):
+    if "any" in rule and not any(re.search(_loose(p), text, re.I) for p in rule["any"]):
         return False
     return True
 
@@ -43,24 +49,45 @@ def _matches(rule: Dict[str, Any], text: str) -> bool:
 def _span(rule: Dict[str, Any], text: str) -> int:
     """Characters of `text` the rule's patterns actually matched (the title itself)."""
     if "all" in rule:
-        return sum(len(m.group(0)) for p in rule["all"] if (m := re.search(p, text, re.I)))
-    hits = [m for p in rule.get("any", []) if (m := re.search(p, text, re.I))]
+        return sum(len(m.group(0)) for p in rule["all"] if (m := re.search(_loose(p), text, re.I)))
+    hits = [m for p in rule.get("any", []) if (m := re.search(_loose(p), text, re.I))]
     return max((len(m.group(0)) for m in hits), default=0)
+
+
+COLUMN_SEP = " | "      # how a reading joins the pieces that sit side by side on one line
+
+
+def _column_views(lines: List[str]) -> List[List[Tuple[int, str]]]:
+    """The page as the whole lines, then as each column on its own. A title set beside an address block
+    ("Physical Therapy / Initial / Examination" in the right column) is three short lines only when the columns
+    are read apart. Each entry keeps the index of the line it came from."""
+    views: List[List[Tuple[int, str]]] = [[(i, l.strip()) for i, l in enumerate(lines)]]
+    width = max((len(l.split(COLUMN_SEP)) for l in lines), default=1)
+    for col in range(min(width, 4)):
+        cells = [(i, l.split(COLUMN_SEP)[col].strip()) for i, l in enumerate(lines) if len(l.split(COLUMN_SEP)) > col and len(l.split(COLUMN_SEP)) > 1]
+        if cells:
+            views.append(cells)
+    return views
 
 
 def _title_position(rule: Dict[str, Any], lines: List[str]) -> Optional[int]:
     """Index of the first line where `rule` matches as a TITLE: one to three consecutive lines that are mostly the
     title and little else. Anywhere on the page, so a form below a letter is found; but a sentence that merely
     mentions the form's name ("please return the Prior Authorization Request Form within ten days") is not a title."""
-    clean = [l.strip() for l in lines]
-    for i in range(len(clean)):
-        for size in (1, 2, 3):
-            window = " ".join(x for x in clean[i:i + size] if x)
-            if not window or not _matches(rule, window):
+    best: Optional[int] = None
+    for view in _column_views(lines):
+        for i in range(len(view)):
+            for size in (1, 2, 3):
+                window = " ".join(x for _, x in view[i:i + size] if x)
+                if not window or not _matches(rule, window):
+                    continue
+                if len(window) <= _span(rule, window) * 2.2 + 15:
+                    best = view[i][0] if best is None else min(best, view[i][0])
+                    break
+            else:
                 continue
-            if len(window) <= _span(rule, window) * 2.2 + 15:
-                return i
-    return None
+            break
+    return best
 
 
 def classify_text(text: str) -> Dict[str, Any]:

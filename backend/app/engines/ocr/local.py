@@ -155,6 +155,77 @@ def agreement(a: str, b: str) -> float:
     return 2 * sum((ca & cb).values()) / (na + nb) if na and nb else 0.0
 
 
+MIN_GLUED = 9          # a token shorter than this is not worth splitting
+MAX_UNMATCHED = 0.12   # share of a glued token's characters that no reference word explains, at most
+
+
+def _split_glued(token: str, vocab: set, longest: int) -> Optional[List[str]]:
+    """Cut one run-together token ("25TestwayAveSte201") into the words another engine read ("25", "Testway", "Ave", ...).
+    Best cut = fewest characters no reference word explains, then fewest pieces. None when no cut explains most of it."""
+    n = len(token)
+    low = token.lower()
+    INF = (float("inf"), 0)
+    best: List[Tuple[float, int]] = [INF] * (n + 1)    # (unmatched chars, pieces) for the first i characters
+    best[0] = (0, 0)
+    back: List[Optional[Tuple[int, bool]]] = [None] * (n + 1)
+    for i in range(1, n + 1):
+        cand = best[i - 1]
+        if cand != INF:                                 # leave one character unexplained
+            best[i], back[i] = (cand[0] + 1, cand[1]), (i - 1, False)
+        for j in range(max(0, i - longest), i):
+            if best[j] != INF and low[j:i] in vocab and (i - j >= 2 or low[j:i].isdigit()):
+                c = (best[j][0], best[j][1] + 1)
+                if c < best[i]:
+                    best[i], back[i] = c, (j, True)
+    if best[n][0] > n * MAX_UNMATCHED or best[n][1] < 2:
+        return None
+    pieces: List[str] = []
+    i, loose = n, ""
+    while i > 0:
+        j, matched = back[i]                            # type: ignore[misc]
+        if matched:
+            if loose:
+                pieces.append(loose)
+                loose = ""
+            pieces.append(token[j:i])
+        else:
+            loose = token[j:i] + loose
+        i = j
+    if loose:
+        pieces.append(loose)
+    pieces.reverse()
+    if sum(1 for p in pieces if p.lower() in vocab) < 2:
+        return None
+    # an unexplained fragment stays attached to the word beside it instead of standing alone
+    out: List[str] = []
+    for p in pieces:
+        if p.lower() in vocab or not out:
+            out.append(p)
+        else:
+            out[-1] += p
+    return out
+
+
+def respace(primary: Reading, reference: Reading) -> Reading:
+    """Put back the spaces an engine dropped. Some read a line as one run-together word ("WedNov1109:21:382026MSTPage4of9");
+    Tesseract's words for the same page say where the breaks belong. Only long tokens are touched, only when a cut
+    explains nearly all of the token, and only a space is ever added: no character is changed."""
+    vocab = {t.lower() for line in reference.lines for t in line.replace(" | ", " ").split() if len(t) >= 1}
+    if not vocab:
+        return primary
+    longest = max(len(t) for t in vocab)
+    lines: List[str] = []
+    for line in primary.lines:
+        parts = line.split(" ")
+        out: List[str] = []
+        for tok in parts:
+            cut = _split_glued(tok, vocab, longest) if len(tok) >= MIN_GLUED and tok.lower() not in vocab and tok != "|" else None
+            out.extend(cut if cut else [tok])
+        lines.append(" ".join(out))
+    primary.lines = lines
+    return primary
+
+
 def cross_check(primary: Reading, other: Reading) -> Reading:
     """Judge `primary` by how well a second, independent engine agrees with it. Some engines (RapidOCR, PaddleOCR, docTR) report
     confidences that look the same on clean print and on handwriting, so their own number cannot decide anything; two

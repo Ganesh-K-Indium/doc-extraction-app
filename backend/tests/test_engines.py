@@ -1189,3 +1189,118 @@ def test_the_worker_is_started_from_the_folder_that_holds_the_app_package():
     assert (isolated._BACKEND_ROOT / "app" / "engines" / "worker.py").is_file()
     out = subprocess.run([sys.executable, "-m", "app.engines.worker"], cwd=str(isolated._BACKEND_ROOT), capture_output=True, timeout=60)
     assert out.returncode == 2 and b"usage: python -m app.engines.worker" in out.stderr                # it started, imported app, and asked for an engine
+
+
+# -- run-together words (RapidOCR) and titles set beside other columns ---------------------------------------------------
+
+def test_respace_restores_spaces_from_the_reference_reading_without_changing_a_character():
+    ref = local.Reading("tesseract", ["Date of Initial Examination: 08/12/2026 | 25 Testway Ave Ste 201", "Provider Prior Authorization Request Form"], [])
+    glued = ["DateofInitialExamination:08/12/2026 | 25TestwayAveSte201", "ProviderPriorAuthorizationRequestForm"]
+    out = local.respace(local.Reading("rapidocr", list(glued), [None, None]), ref)
+    assert out.lines[1] == "Provider Prior Authorization Request Form"
+    assert out.lines[0].startswith("Date of Initial") and "25 Testway Ave Ste 201" in out.lines[0]
+    assert [l.replace(" ", "") for l in out.lines] == [l.replace(" ", "") for l in glued]
+
+
+def test_respace_leaves_words_the_reference_does_not_explain():
+    ref = local.Reading("tesseract", ["Sample Health Associates"], [])
+    odd = ["Xylophonemaestroqrstuvw", "Sample"]
+    assert local.respace(local.Reading("rapidocr", list(odd), [None, None]), ref).lines == odd
+
+
+def test_a_form_title_without_spaces_still_classifies():
+    from app.services.documents import classify
+    assert classify.classify_text("MAGNACARE\nProviderPriorAuthorizationRequestForm\n" + "x" * 60)["type"] == "prior_auth_form"
+
+
+def test_a_title_in_a_side_column_classifies():
+    from app.services.documents import classify
+    page = "\n".join(["Sample Health Associates", "25 Testway Ave Ste 201 | Physical Therapy", "Testville NJ 07001-1718 | Initial",
+                      "Phone: (201) 447-5757", "Fax: (201) 447-5750 | Examination", "Patient Name: Morgan Taylor | Visit No.: 1"])
+    assert classify.classify_text(page)["type"] == "pt_initial_exam"
+
+
+def test_a_sentence_that_mentions_a_form_is_still_not_its_title():
+    from app.services.documents import classify
+    page = "Dear Sir,\nPlease return the Prior Authorization Request Form within ten business days of receiving this letter.\n" + "text " * 30
+    assert classify.classify_text(page)["type"] == "unknown"
+
+
+def test_a_fax_stamp_without_spaces_is_still_a_stamp():
+    from app.services.reading import pdf_pages
+    content, meta = pdf_pages.strip_fax_stamp(["From Sample HealthAssociates1.201.555.0121 | WedNov1109:21:382026MSTPage4of9", "real line"])
+    assert content == ["real line"] and meta["fax_page"] == 4 and meta["fax_pages"] == 9
+
+
+def test_label_value_reading_does_not_carry_the_column_gap_into_values():
+    from app.services.extraction import kv
+    pairs = kv.parse_kv(["Patient Name: Morgan Taylor | Date of Initial Examination: 08/12/2026", "Visit No.: 1 | Initial"])
+    assert {p["label"]: p["value"] for p in pairs} == {"Patient Name": "Morgan Taylor", "Date of Initial Examination": "08/12/2026", "Visit No.": "1"}
+
+
+# -- reading a template's fields from OCR text, no model -----------------------------------------------------------------
+
+_PT_TEXT = "\n".join([
+    "Sample Health Associates",
+    "25 Testway Ave Ste 201 | Physical Therapy",
+    "Patient Name: Morgan Taylor | Date of Initial Examination:08/12/2026",
+    "Date of Birth:01/15/1975 | Injury/Onset/Change of Status Date:03/10/2025",
+    "Referring Physician/NPP: Jones, Stephen DC | Diagnosis: ICD10: M54.2: Cervicalgia",
+    "Surgery: (Date/Type) 03/10/2025 peroneal tendon repair, | Visit No.: 1",
+    "ostectomy of fibula, calcaneal osteotomy",
+    "Treatment Diagnosis:ICD10: M54.2: Cervicalgia",
+    "Treatment Side: Left",
+])
+
+
+def _pt_template():
+    import json
+    from pathlib import Path
+    return json.loads((Path(__file__).resolve().parent.parent / "app" / "templates" / "pt_initial_exam.json").read_text())
+
+
+def test_local_reader_fills_template_fields_from_their_printed_labels():
+    from app.services.extraction import local_reader
+    got = local_reader.read_fields(_PT_TEXT, _pt_template())["fields"]
+    assert got["patient.name"] == "Morgan Taylor"
+    assert got["exam_date"] == "08/12/2026" and got["patient.dob"] == "01/15/1975" and got["onset_date"] == "03/10/2025"
+    assert got["referring_physician"] == "Jones, Stephen DC" and got["visit_no"] == "1" and got["treatment_side"] == "Left"
+    assert got["surgery"] == "03/10/2025 peroneal tendon repair, ostectomy of fibula, calcaneal osteotomy"
+
+
+def test_local_reader_values_must_suit_the_field_type_and_blanks_stay_blank():
+    from app.services.extraction import local_reader
+    got = local_reader.read_fields("Date of Birth: unknown\nPatient Name:", _pt_template())["fields"]
+    assert "patient.dob" not in got and "patient.name" not in got
+
+
+def test_local_reader_survives_glued_labels():
+    from app.services.extraction import local_reader
+    got = local_reader.read_fields("PatientName:Morgan Taylor | DateofBirth:01/15/1975", _pt_template())["fields"]
+    assert got["patient.name"] == "Morgan Taylor" and got["patient.dob"] == "01/15/1975"
+
+
+def test_a_template_page_read_locally_gets_its_text_fields_without_a_model():
+    import asyncio
+    from app.services.extraction import form_extractor
+    from app.services import pipeline
+    tpl = _pt_template()
+    from pathlib import Path
+    pdf = Path(__file__).resolve().parent.parent.parent / "sample_data" / "short_p3-5.pdf"
+    if not pdf.exists():
+        pytest.skip("sample PDF not present")
+    res = asyncio.run(form_extractor.extract_form(str(pdf), 2, "", tpl, [], page_text=_PT_TEXT))
+    assert res["fields"]["patient.name"]["value"] == "Morgan Taylor" and res["fields"]["patient.name"]["status"] == "single"
+
+
+def test_local_reader_never_borrows_a_value_from_another_section():
+    import json
+    from pathlib import Path
+    from app.services.extraction import local_reader
+    tpl = json.loads((Path(__file__).resolve().parent.parent / "app" / "templates" / "magnacare_prior_auth.json").read_text())
+    text = "MEMBER INFORMATION\nLast Name*: Morgan | First Name*: Taylor\nORDERING/SERVICE PROVIDER INFORMATION\nTax ID*: 99-9999999"
+    got = local_reader.read_fields(text, tpl)["fields"]
+    assert got["member.last_name"] == "Morgan"
+    assert "ordering_provider.last_name" not in got and "ordering_provider.first_name" not in got
+    assert got["ordering_provider.tax_id"] == "999999999"
+    assert "ordering_provider.last_name" not in local_reader.read_fields("Last Name*: Morgan", tpl)["fields"]      # header missing: no guess

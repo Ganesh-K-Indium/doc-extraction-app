@@ -153,9 +153,13 @@ def test_clinical_documents_use_templates(result):
 
 
 def test_pipeline_without_models(pdf):
-    r = asyncio.run(pipeline.process(pdf))  # LLM disabled: embedded text + checkboxes only
-    assert r["forms"][0]["fields"]["review_type"]["value"] == "ROUTINE"
-    assert r["forms"][0]["fields"]["member.last_name"]["status"] == "empty"
+    r = asyncio.run(pipeline.process(pdf))  # LLM disabled: checkboxes from pixels, text fields from the page's own text by their labels
+    f = r["forms"][0]["fields"]
+    assert f["review_type"]["value"] == "ROUTINE"
+    assert f["member.last_name"]["value"] == "Morgan" and f["member.last_name"]["status"] == "single"   # one reader: not verified
+    assert f["clinical.dx_code_1"]["value"] == "M54.2"
+    # the ordering provider's own names are not on the page: the member's must not be borrowed
+    assert f["ordering_provider.first_name"]["status"] == "empty" and f["ordering_provider.last_name"]["status"] == "empty"
 
 
 # ---- router / decision layer ------------------------------------------------------------------------------------

@@ -16,8 +16,9 @@ FITZ_LOCK = threading.RLock()
 
 # Fax machines stamp every page twice: a header ("From <name> <number>  <date>  Page 1 of 9") and a footer
 # ("PAGE 1/9 * RCVD AT ... * DURATION ..."). They are transmission metadata, not content.
-_FAX_HEADER_RE = re.compile(r"^\s*From\b.*\bPage\s+(\d+)\s+of\s+(\d+)\s*$", re.I)
-_FAX_FOOTER_RE = re.compile(r"^\s*PAGE\s+(\d+)\s*/\s*(\d+)\s*\*\s*RCVD AT\b", re.I)
+# Spaces are optional throughout: some OCR engines drop them ("WedNov1109:21:382026MSTPage3of9").
+_FAX_HEADER_RE = re.compile(r"^\s*From\b.*Page\s*(\d+)\s*of\s*(\d+)\s*$", re.I)
+_FAX_FOOTER_RE = re.compile(r"^\s*PAGE\s*(\d+)\s*/\s*(\d+)\s*\*\s*RCVD\s*AT", re.I)
 _FOOTER_FIELDS = {
     "received_at": re.compile(r"RCVD AT\s+(.+?)\s*\*\s*SVR", re.I),
     "server": re.compile(r"SVR:\s*(\S+)", re.I),

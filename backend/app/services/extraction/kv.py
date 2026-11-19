@@ -47,7 +47,8 @@ def parse_kv(lines: List[str]) -> List[Dict[str, Any]]:
         matches = _anchors(line)
         for i, m in enumerate(matches):
             end = matches[i + 1].start() if i + 1 < len(matches) else len(line)
-            value = line[m.end():end].strip()
+            # a value stops at the next column: " | " is where the reading found a gap, not part of the value
+            value = line[m.end():end].split(" | ")[0].strip(" |\t")
             if value:
                 pairs.append({"label": m.group(1).strip(), "value": value, "line": ln})
     return pairs
