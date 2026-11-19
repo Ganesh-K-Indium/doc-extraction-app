@@ -592,5 +592,7 @@ async def discover_document(path: str, pages: List[int], models: List[str], read
             tables.setdefault(key, []).extend(rows)
             columns.setdefault(key, res["table_columns"][k])
     title = next((r["title"] for r in results if r["title"]), None)
+    if len(pages) > 3 and results and results[0].get("heading"):
+        title = results[0]["heading"]          # a long document is named by its first page, not by whichever table came first
     return {"title": title, "fields": fields, "tables": tables, "table_columns": columns,
             "readers": results[0]["readers"] if results else []}

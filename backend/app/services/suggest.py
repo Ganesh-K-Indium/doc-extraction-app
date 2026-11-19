@@ -10,6 +10,8 @@ from collections import Counter
 from typing import Any, Dict, List
 
 MIN_FIELDS = 3        # a "shape" of one or two keys is not a document type
+MAX_PAGES = 10        # a template describes a form or a short document, not a 68-page filing
+MAX_KEYS = 80
 MIN_DOCUMENTS = 2     # recurring means at least twice
 SIMILARITY = 0.6      # share of keys two documents must have in common (Jaccard)
 
@@ -37,10 +39,10 @@ def recurring_shapes(rows: List[Dict[str, Any]], existing_titles: List[str] = ()
     clusters: List[Dict[str, Any]] = []
     for row in rows:
         for form in row.get("forms") or []:
-            if not form.get("discovered"):
+            if not form.get("discovered") or len(form.get("pages") or []) > MAX_PAGES:
                 continue
             sig = signature(form)
-            if len(sig) < MIN_FIELDS:
+            if not MIN_FIELDS <= len(sig) <= MAX_KEYS:
                 continue
             home = next((c for c in clusters if _similar(c["sig"], sig) >= SIMILARITY), None)
             if home is None:
@@ -48,7 +50,10 @@ def recurring_shapes(rows: List[Dict[str, Any]], existing_titles: List[str] = ()
                 clusters.append(home)
             else:
                 home["sig"] = home["sig"] | sig       # the cluster's shape grows to every key any member had
-            home["members"].append({"extraction_id": row["extraction_id"], "doc_index": form["doc_index"], "filename": row["filename"]})
+            sha = row.get("sha")
+            if sha and any(m.get("sha") == sha for m in home["members"]):
+                continue                              # the same file uploaded again is not a second example of a layout
+            home["members"].append({"extraction_id": row["extraction_id"], "doc_index": form["doc_index"], "filename": row["filename"], "sha": sha})
             if form.get("label"):
                 home["titles"][form["label"]] += 1
     taken = {t.strip().lower() for t in existing_titles}
@@ -58,5 +63,5 @@ def recurring_shapes(rows: List[Dict[str, Any]], existing_titles: List[str] = ()
         if len(c["members"]) < MIN_DOCUMENTS or (title and title.strip().lower() in taken):
             continue
         out.append({"title": title, "count": len(c["members"]), "fields": sorted(k for k in c["sig"] if not k.startswith("table:")),
-                    "tables": sorted(k[6:] for k in c["sig"] if k.startswith("table:")), "examples": c["members"][:5]})
+                    "tables": sorted(k[6:] for k in c["sig"] if k.startswith("table:")), "examples": [{k: v for k, v in m.items() if k != "sha"} for m in c["members"][:5]]})
     return sorted(out, key=lambda s: -s["count"])

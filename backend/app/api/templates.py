@@ -63,7 +63,7 @@ def suggestions(workspace_id: str):
     """Document shapes that keep recurring among this workspace's untemplated files, each ready to be saved as a type
     (use the extraction/doc_index of an example with the promote endpoint)."""
     with db.session() as s:
-        rows = [{"extraction_id": e.id, "filename": e.filename, "forms": (e.result or {}).get("forms", [])}
+        rows = [{"extraction_id": e.id, "filename": e.filename, "sha": e.sha256, "forms": (e.result or {}).get("forms", [])}
                 for e in s.query(db.Extraction).filter_by(workspace_id=workspace_id, status="done").order_by(db.Extraction.created_at.desc()).limit(500)]
         titles = [t.title for t in s.query(db.CustomType).filter_by(workspace_id=workspace_id).all()]
     return {"suggestions": suggest.recurring_shapes(rows, titles)}

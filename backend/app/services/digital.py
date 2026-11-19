@@ -30,6 +30,8 @@ logger = logging.getLogger("app.services.digital")
 MIN_KV_FOR_STRUCTURE = 3     # fewer "Label: value" pairs than this, and no table, means code found no structure
 MIN_LINES_FOR_FORM = 6       # a page with less text than this is a stub, not a form
 PROSE_WORDS_PER_LINE = 8     # a line this long is a sentence, not a label
+MAX_VALUE_CHARS = 80         # a labelled value is short; "Cybersecurity: Our board oversees..." is a sentence with a lead-in
+MAX_PAIR_LINE = 90           # ...and so is a whole line this long
 
 
 def _is_year(c: str) -> bool:
@@ -215,14 +217,23 @@ def looks_tabular(lines: List[str]) -> bool:
     return rows >= 4
 
 
+_FORM_LINE = re.compile(r"^(?:SCHEDULE|FORM)\s+[A-Z0-9][\w\-/.]*(?:\s+[A-Z0-9][\w\-/.]*)?$", re.I)
+
+
 def page_title(lines: List[str]) -> Optional[str]:
-    """A heading near the top of the page: a short, capitalised line without a colon."""
-    for line in lines[:6]:
-        t = line.strip()
+    """The document's heading near the top of a page. A line that names a form ("FORM 10-Q", "Form W-9") wins; otherwise the
+    longest short, capitalised line without a colon (the first one would often be a letterhead such as "UNITED STATES")."""
+    top = [l.strip() for l in lines[:12]]
+    for t in top:
+        if _FORM_LINE.match(t) and len(t) <= 40:
+            return t.upper() if len(t.split()) <= 3 and t.upper() == t else t
+    best: Optional[str] = None
+    for t in top:
         letters = [c for c in t if c.isalpha()]
         if 3 <= len(t) <= 80 and ":" not in t and letters and sum(c.isupper() for c in letters) / len(letters) >= 0.7:
-            return t.title() if t.isupper() else t
-    return None
+            if best is None or len(t) > len(best):
+                best = t
+    return (best.title() if best.isupper() else best) if best else None
 
 
 def _cell(value: str, page: int) -> Dict[str, Any]:
@@ -269,8 +280,8 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
     fields: Dict[str, Dict[str, Any]] = {}
     for p in kv.parse_kv(lines):
         label, value = p["label"], p["value"]
-        if len(value) > 120 or re.search(r"\d", label):
-            continue                                   # a sentence or a clause with a colon, not a labelled value
+        if len(value) > MAX_VALUE_CHARS or len(lines[p["line"]]) > MAX_PAIR_LINE or re.search(r"\d", label):
+            continue                                   # a sentence, or "Heading: running text": not a labelled value
         key = labels.key(label)
         if key and key not in fields:
             hit = locate.find_with_text(path, page_num, value, label)
@@ -278,7 +289,8 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
                            "bbox": hit[0] if hit else None}
     if not tables and looks_tabular(lines):
         unverified.append("this page has rows of amounts but no table was detected")
-    return {"title": title or page_title(lines), "fields": fields, "tables": out_tables, "table_columns": out_cols,
+    heading = page_title(lines)
+    return {"title": title or heading, "heading": heading, "fields": fields, "tables": out_tables, "table_columns": out_cols,
             "readers": ["text-layer"], "unverified": unverified}
 
 

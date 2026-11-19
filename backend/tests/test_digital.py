@@ -193,3 +193,9 @@ def test_summary_says_how_the_file_was_read_and_what_it_cost(client, tmp_path):
     assert got["labels"] == ["Quarterly Results"]
     listed = client.get(f"/api/workspaces/{wid}/extractions", headers=H).json()
     assert listed[0]["labels"] == ["Quarterly Results"] and listed[0]["stats"]["usage"]["calls"] == 0
+
+
+def test_a_documents_title_prefers_a_form_name_over_a_letterhead():
+    assert digital.page_title(["UNITED STATES", "SECURITIES AND EXCHANGE COMMISSION", "Washington, D.C. 20549", "FORM 10-Q"]) == "FORM 10-Q"
+    assert digital.page_title(["ACME CORPORATION", "INVOICE", "Invoice No: 7"]) == "Acme Corporation"      # no form name: the longest heading
+    assert digital.page_title(["just some prose that is mixed case and has no heading at all"]) is None

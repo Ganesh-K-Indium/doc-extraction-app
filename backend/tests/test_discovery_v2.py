@@ -199,3 +199,25 @@ def test_cached_result_from_an_older_pipeline_is_not_reused(client, pdf):
     again = up(client, wid, pdf).json()
     assert again.get("reused") is not True and again["id"] != eid
     assert client.get(f"/api/workspaces/{wid}/templates/suggestions", headers=H).json() == {"suggestions": []}
+
+
+def test_the_same_file_twice_or_a_long_filing_is_not_a_recurring_layout():
+    inv = ["invoice_number", "date", "customer", "total_due"]
+    same = [{"extraction_id": "e1", "filename": "a.pdf", "sha": "x", "forms": [_form("Invoice", inv)]},
+            {"extraction_id": "e2", "filename": "a-again.pdf", "sha": "x", "forms": [_form("Invoice", inv)]}]
+    assert suggest.recurring_shapes(same) == []                                    # identical bytes: one example, not two
+    different = same[:1] + [{"extraction_id": "e3", "filename": "b.pdf", "sha": "y", "forms": [_form("Invoice", inv)]}]
+    assert [s["count"] for s in suggest.recurring_shapes(different)] == [2]
+    long_form = {**_form("Annual report", [f"k{i}" for i in range(20)]), "pages": list(range(1, 40))}
+    assert suggest.recurring_shapes([{"extraction_id": str(i), "filename": "f", "sha": str(i), "forms": [long_form]} for i in range(3)]) == []
+
+
+def test_prose_with_a_heading_and_colon_is_not_turned_into_fields(tmp_path):
+    import asyncio
+    from app.services import digital
+    pdf = str(tmp_path / "p.pdf")
+    _page_pdf(pdf, ["Cybersecurity: Our board of directors oversees the risks that arise from cyber threats to the company.",
+                    "Invoice No: 1001", "Customer: Acme Corp"])
+    lines = ["Cybersecurity: Our board of directors oversees the risks that arise from cyber threats to the company.", "Invoice No: 1001", "Customer: Acme Corp"]
+    res = asyncio.run(digital.read_page(pdf, 1, lines, []))
+    assert set(res["fields"]) == {"invoice_number", "customer"}
