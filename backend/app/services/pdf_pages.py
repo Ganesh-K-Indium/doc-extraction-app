@@ -161,3 +161,28 @@ def render_jpeg(path: str, page_num: int) -> bytes:
 def search_rects(path: str, page_num: int, needle: str) -> List[List[float]]:
     with FITZ_LOCK, open_pdf(path) as pdf:
         return [round_rect(r) for r in pdf[page_num - 1].search_for(needle)]
+
+
+def layout_text(path: str, page_num: int) -> str:
+    """A digital page's text with its rows kept: words on one line are joined, and a wide gap becomes " | ", so a table row
+    reads "Revenue | 70,066 | 61,858" instead of one cell per line. This is what a text-only model reads."""
+    with FITZ_LOCK, open_pdf(path) as pdf:
+        words = pdf[page_num - 1].get_text("words")
+    words = sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0]))
+    rows: List[List[tuple]] = []
+    for w in words:
+        mid = (w[1] + w[3]) / 2
+        if rows and abs(mid - sum((x[1] + x[3]) / 2 for x in rows[-1]) / len(rows[-1])) <= 3.0:
+            rows[-1].append(w)
+        else:
+            rows.append([w])
+    out = []
+    for row in rows:
+        row.sort(key=lambda w: w[0])
+        line = row[0][4]
+        for prev, w in zip(row, row[1:]):
+            height = max(prev[3] - prev[1], 6.0)
+            glue = prev[4] in ("$", "(", "($", "-$") or w[4] in (")", "%", "%)")   # a sign or bracket printed in its own cell
+            line += (" " if glue and w[0] - prev[2] > height * 1.2 else " | " if w[0] - prev[2] > height * 1.2 else " ") + w[4]
+        out.append(line.strip())
+    return "\n".join(l for l in out if l)

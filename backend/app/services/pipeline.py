@@ -141,10 +141,16 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             if p["classification"]["type"] != "blank_or_logo" and p["source"] != "failed":
                 p["classification"] = dict(forced)
     elif use_llm and ocr_models:
+        streak = 0  # consecutive pages the model also could not name; a long untyped document stops costing a call per page
         for i, p in enumerate(pages):  # rules could not name a non-trivial page: ask a small model, restricted to registered types
             if p["classification"]["type"] == "unknown" and p["text"].strip():
+                if streak >= config.classify_give_up_after():
+                    continue
                 prev = pages[i - 1]["text"] if i else ""
                 p["classification"] = await classify.classify_with_model(p["text"], ocr_models, model_ask, prev)
+                streak = streak + 1 if p["classification"]["type"] == "unknown" else 0
+            elif p["classification"]["type"] != "unknown":
+                streak = 0
     single_page = set()
     for t, name in type_templates().items():
         try:
@@ -162,7 +168,8 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
         progress("documents", i, len(documents))
         doc_pages = [by_num[n] for n in doc["pages"]]
         texts = {p["page"]: p["text"] for p in doc_pages}
-        decision = router.decide_extractor(doc["type"], llm_available=bool(form_models))
+        decision = router.decide_extractor(doc["type"], llm_available=bool(form_models),
+                                           all_digital=all(p["source"] == "text-layer" for p in doc_pages))
         doc["route"] = decision
         tpl_name = templates.get(doc["type"]) if decision["extractor"] == "template_form" else None
         if tpl_name:
@@ -179,7 +186,9 @@ async def process(path: str, progress: Optional[Progress] = None, ocr_reader=Non
             templated.append((forms[-1], tpl))
         elif decision["extractor"] == "discover":
             usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
-            res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator)
+            digital = {n: {"lines": [l["text"] for l in by_num[n]["lines"]], "tables": by_num[n]["tables"]}
+                       for n in usable if by_num[n]["source"] == "text-layer"}
+            res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator, digital_pages=digital)
             if res["title"] and doc["type"] == "unknown":
                 doc["label"] = res["title"]
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,

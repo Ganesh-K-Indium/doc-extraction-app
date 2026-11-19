@@ -106,8 +106,15 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
               + "This page (top):\n" + (text or "")[:1200])
 
     async def default_ask(model: str, prompt: str) -> str:
+        import time
+        from app.services.usage_tracker import record_usage
+        start = time.perf_counter()
         resp = await ocr._get_client().chat.completions.create(
             model=model, temperature=0, response_format={"type": "json_object"}, messages=[{"role": "user", "content": prompt}])
+        usage = getattr(resp, "usage", None)
+        record_usage(stage="classify", model=model, prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                     completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                     total_tokens=getattr(usage, "total_tokens", 0) or 0, duration_seconds=time.perf_counter() - start)
         return resp.choices[0].message.content
 
     ask = ask or default_ask

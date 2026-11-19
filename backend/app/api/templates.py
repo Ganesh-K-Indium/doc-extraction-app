@@ -9,7 +9,8 @@ from pydantic import BaseModel
 
 from app import config
 from app.api.deps import require_key, workspace
-from app.services import classify, ocr, pipeline, template_draft, workspace_types
+from app import db
+from app.services import classify, ocr, pipeline, suggest, template_draft, workspace_types
 
 logger = logging.getLogger("app.api.templates")
 router = APIRouter(prefix="/api/workspaces/{workspace_id}/templates", tags=["templates"], dependencies=[Depends(require_key), Depends(workspace)])
@@ -55,6 +56,17 @@ def save(workspace_id: str, body: Save):
     except ValueError as e:
         raise HTTPException(422, str(e))
     return {"doc_type": doc_type}
+
+
+@router.get("/suggestions")
+def suggestions(workspace_id: str):
+    """Document shapes that keep recurring among this workspace's untemplated files, each ready to be saved as a type
+    (use the extraction/doc_index of an example with the promote endpoint)."""
+    with db.session() as s:
+        rows = [{"extraction_id": e.id, "filename": e.filename, "forms": (e.result or {}).get("forms", [])}
+                for e in s.query(db.Extraction).filter_by(workspace_id=workspace_id, status="done").order_by(db.Extraction.created_at.desc()).limit(500)]
+        titles = [t.title for t in s.query(db.CustomType).filter_by(workspace_id=workspace_id).all()]
+    return {"suggestions": suggest.recurring_shapes(rows, titles)}
 
 
 @router.get("/{doc_type}")

@@ -35,7 +35,7 @@ def profile_page(info: Dict[str, Any]) -> Dict[str, Any]:
 def decide_reader(profile: Dict[str, Any], llm_available: bool, tesseract_available: bool = False) -> Dict[str, Any]:
     reasons: List[str] = []
     if profile["scanned"]:
-        reasons.append("a picture covers most of the page, so any embedded text is a scanner's OCR layer")
+        reasons.append("the page is a picture, or its embedded text is unreadable, so any text layer is not trusted")
     elif profile["chars"] < ocr.MIN_TEXT_LAYER_CHARS:
         reasons.append(f"only {profile['chars']} characters of embedded text")
     else:
@@ -48,7 +48,7 @@ def decide_reader(profile: Dict[str, Any], llm_available: bool, tesseract_availa
     return {"reader": "text_layer_unverified", "reasons": reasons + ["no model and no Tesseract available, using the embedded text as is"]}
 
 
-def decide_extractor(doc_type: str, llm_available: bool = True) -> Dict[str, Any]:
+def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: bool = False) -> Dict[str, Any]:
     """template_form | discover | kv | skip, with reasons.
 
     A registered type uses its template. A type nobody registered is not an error: with a model available its
@@ -61,6 +61,9 @@ def decide_extractor(doc_type: str, llm_available: bool = True) -> Dict[str, Any
         why = {"template_form": f"{reg[doc_type]['label']} is a known document type with a template",
                "kv": f"{reg[doc_type]['label']} is read as label and value pairs", "skip": f"{reg[doc_type]['label']} carries no data to extract"}
         return {"extractor": kind, "reasons": [why.get(kind, f"{reg[doc_type]['label']} is a known document type")]}
+    if all_digital:
+        return {"extractor": "discover", "reasons": ["no template matches this document; every page has real text, so its tables and labelled values are read directly from the PDF"
+                                                     + (" (a model only steps in for pages code cannot read completely)" if llm_available else "")]}
     if llm_available:
         return {"extractor": "discover", "reasons": ["no template matches this document, so its fields, checkboxes and tables are read from the page itself"]}
     return {"extractor": "kv", "reasons": ["no template matches this document and no model is configured, so only plain label and value lines are read"]}

@@ -18,7 +18,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services import adjudicate, checkboxes, form_extractor as fx, locate, normalize as N, ocr, pdf_pages
+from app.services import adjudicate, checkboxes, digital, form_extractor as fx, labels, locate, normalize as N, ocr, pdf_pages
 from app.services.usage_tracker import record_usage
 
 logger = logging.getLogger("app.services.discover")
@@ -51,6 +51,24 @@ Rules:
 - Ignore fax header/footer stamps and page numbers.
 """
 
+TEXT_NOTE = """
+
+You are given the page as text instead of an image. Table rows are on one line with the cells separated by " | ".
+Numbers in parentheses, such as (1,234), are negative: copy them exactly as written, with the parentheses.
+
+PAGE TEXT:
+"""
+
+FOLLOW_NOTE = """
+
+ANOTHER READER already looked at this page and listed the items below (labels only, no values). Read the value of each
+item yourself, independently, from the page, using exactly the same label, section and table title/columns so the two
+readings can be compared. Read every table row yourself. If the page holds something labelled that is NOT in the list,
+add it as well. If an item below is not actually on the page, leave it out.
+
+ITEMS ALREADY LISTED:
+"""
+
 BLANK_PROMPT = """This is a BLANK form (nothing filled in) from a PDF. List its structure so a template can be made.
 
 Return JSON only:
@@ -77,12 +95,13 @@ def _canon(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-async def _read(model: str, jpeg: bytes, prompt: str) -> Dict[str, Any]:
-    b64 = base64.b64encode(jpeg).decode()
-    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{
-        "role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}]}
+async def _read(model: str, jpeg: Optional[bytes], prompt: str) -> Dict[str, Any]:
+    """One model reads a page. `jpeg` None means a digital page read from its text (no image tokens)."""
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    if jpeg is not None:
+        b64 = base64.b64encode(jpeg).decode()
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}})
+    kwargs: Dict[str, Any] = {"model": model, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": content}]}
     if model.startswith(("gpt-5", "o")):
         kwargs["reasoning_effort"] = "low"
     else:
@@ -122,6 +141,8 @@ def parse(raw: Any) -> Dict[str, Any]:
             continue
         cols = t.get("columns") or []
         cols = [(_s(c.get("label")) if isinstance(c, dict) else _s(c)) or "" for c in cols]
+        if cols and not cols[0] and len(cols) > 1:
+            cols[0] = "Item"                      # the unlabelled first column of a statement or grid holds the row labels
         rows = [[_s(c) for c in r] for r in (t.get("rows") or []) if isinstance(r, list)]
         if cols:
             tables.append({"title": _s(t.get("title")), "columns": cols, "rows": rows})
@@ -141,7 +162,11 @@ def _unique(keys: List[str]) -> List[str]:
 
 
 def _field_keys(items: List[Dict[str, Any]]) -> List[str]:
-    return _unique([(f"{slug(i['section'])}." if slug(i.get("section")) else "") + (slug(i["label"]) or "field") for i in items])
+    """Canonical key per field (see labels.py). The section only joins the key when the same label occurs twice, so a
+    key does not change just because a reader filed the field under a different heading."""
+    base = [labels.key(i["label"]) for i in items]
+    count = {k: base.count(k) for k in base}
+    return _unique([(f"{slug(i.get('section'))}." if count[k] > 1 and slug(i.get("section")) else "") + k for k, i in zip(base, items)])
 
 
 def _pair(a_items, a_keys, b_items, b_keys) -> List[Tuple[Optional[int], Optional[int]]]:
@@ -268,12 +293,47 @@ def _match_tables(a: List[Dict[str, Any]], b: List[Dict[str, Any]]) -> List[Tupl
     return pairs
 
 
+def _row_key(row: List[Optional[str]]) -> str:
+    return next((_canon(c) for c in row if c and _canon(c)), "")
+
+
+def _is_heading(row: List[Optional[str]]) -> bool:
+    """A row that is only a label ("Current assets:", "Revenue:"): nothing in it to check."""
+    return bool(row) and bool(row[0]) and all(not c for c in row[1:])
+
+
+def align_rows(ra: List[List[Optional[str]]], rb: List[List[Optional[str]]]) -> List[Tuple[Optional[int], Optional[int]]]:
+    """Pair the two readers' rows by their row label, not by position. One reader listing a heading row the other skipped
+    (or splitting a row in two) would otherwise shift every row below it and fill cells with the wrong row's numbers."""
+    ka, kb = [_row_key(r) for r in ra], [_row_key(r) for r in rb]
+    pairs: List[Tuple[Optional[int], Optional[int]]] = []
+    for tag, i1, i2, j1, j2 in SequenceMatcher(None, ka, kb, autojunk=False).get_opcodes():
+        if tag == "equal":
+            pairs.extend(zip(range(i1, i2), range(j1, j2)))
+        elif tag == "delete":
+            pairs.extend((i, None) for i in range(i1, i2))
+        elif tag == "insert":
+            pairs.extend((None, j) for j in range(j1, j2))
+        else:                                     # replace: pair rows whose labels are close (a misread word), in order
+            nxt = j1
+            for i in range(i1, i2):
+                best = max(((SequenceMatcher(None, ka[i], kb[j]).ratio(), j) for j in range(nxt, j2)), default=(0.0, -1))
+                if best[0] >= 0.75:
+                    pairs.extend((None, j) for j in range(nxt, best[1]))
+                    pairs.append((i, best[1]))
+                    nxt = best[1] + 1
+                else:
+                    pairs.append((i, None))
+            pairs.extend((None, j) for j in range(nxt, j2))
+    return pairs
+
+
 def merge_tables(a: List[Dict[str, Any]], b: Optional[List[Dict[str, Any]]], conf_a: Any = frozenset(), conf_b: Any = frozenset()):
     two = b is not None
     b = b or []
     pairs = _match_tables(a, b)
     titles = [(a[i] if i is not None else b[j])["title"] for i, j in pairs]
-    keys = _unique([slug(t) or f"table_{n + 1}" for n, t in enumerate(titles)])
+    keys = _unique([labels.key(t or "", f"table_{n + 1}") for n, t in enumerate(titles)])
     tables: Dict[str, List[Dict[str, Any]]] = {}
     columns: Dict[str, List[str]] = {}
     for key, (i, j) in zip(keys, pairs):
@@ -281,13 +341,14 @@ def merge_tables(a: List[Dict[str, Any]], b: Optional[List[Dict[str, Any]]], con
         base = ta or tb
         base_conf = conf_a if ta else conf_b
         base_index = i if ta else j
-        cols = _unique([slug(c) or f"col_{x + 1}" for x, c in enumerate(base["columns"])])
+        cols = _unique([labels.key(c or "", f"col_{x + 1}") for x, c in enumerate(base["columns"])])
         both = ta is not None and tb is not None and len(ta["columns"]) == len(tb["columns"])
         rows = []
-        for r in range(max(len(ta["rows"]) if ta else 0, len(tb["rows"]) if (tb and both) else 0) if both else len(base["rows"])):
-            ra = ta["rows"][r] if ta and r < len(ta["rows"]) else None
-            rb = tb["rows"][r] if both and r < len(tb["rows"]) else None
-            src = ra if ra is not None else rb
+        row_pairs = align_rows(ta["rows"], tb["rows"]) if both else [(r, None) for r in range(len(base["rows"]))]
+        for ia, ib in row_pairs:
+            ra = ta["rows"][ia] if both and ia is not None else None
+            rb = tb["rows"][ib] if both and ib is not None else None
+            src = ra if ra is not None else (rb if both else base["rows"][ia])
             row = {}
             for c, ckey in enumerate(cols):
                 va = ra[c] if ra and c < len(ra) else None
@@ -295,11 +356,16 @@ def merge_tables(a: List[Dict[str, Any]], b: Optional[List[Dict[str, Any]]], con
                 if both:
                     cell = fx.merge_field(va, vb, "text", two)
                     if two and (ra is None or rb is None):
-                        cell.update({"status": "review", "reason": "only one reader saw this row", "value": va if ra is not None else vb})
+                        cell.update({"value": va if ra is not None else vb, "alternatives": []})
+                        if _is_heading(src):                    # a heading one reader skipped: nothing to verify
+                            cell["status"] = "agreed" if cell["value"] else "empty"
+                            cell.pop("reason", None)
+                        else:
+                            cell.update({"status": "review" if cell["value"] else "empty", "reason": "only one reader saw this row"})
                 else:
                     value = (src[c] if src and c < len(src) else None)
                     cell = {"value": value, "status": "single", "alternatives": []}
-                    if two and (base_index, r, c) in base_conf:
+                    if two and (base_index, ia, c) in base_conf:
                         cell["status"] = "agreed"              # the other reader gave this cell as a flat field: same data
                     elif two and value is not None:
                         cell.update({"status": "review", "reason": "the readers did not find the same table"})
@@ -393,21 +459,46 @@ def dedupe(fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, A
     return len(drop)
 
 
+def _hint(a: Dict[str, Any]) -> str:
+    """What the first reader found, as labels only. The second reader reads values against these labels, so the two
+    readings pair exactly instead of being matched afterwards by guesswork; values are left out so it stays independent."""
+    lines = []
+    for f in a["fields"]:
+        lines.append(f'- field "{f["label"]}"' + (f' (section "{f["section"]}")' if f["section"] else ""))
+    for c in a["checkboxes"]:
+        lines.append(f'- checkbox "{c["label"]}"' + (f' (group "{c["group"]}")' if c["group"] else ""))
+    for t in a["tables"]:
+        lines.append(f'- table "{t["title"] or "untitled"}" with columns {json.dumps(t["columns"], ensure_ascii=False)}')
+    return "\n".join(lines) or "(nothing was found)"
+
+
+async def read_page_twice(models: List[str], jpeg: Optional[bytes], page_text: Optional[str], reader) -> List[Dict[str, Any]]:
+    """Reader one proposes what is on the page; reader two reads the same items independently and adds what was missed.
+    Sequential on purpose: the second needs the first's labels. A failed first reader hands the lead to the second."""
+    replies: List[Dict[str, Any]] = []
+    for m in models[:2]:
+        prompt = PAGE_PROMPT + (FOLLOW_NOTE + _hint(replies[0]) if replies else "") + (TEXT_NOTE + page_text if page_text is not None else "")
+        try:
+            got = parse(await asyncio.wait_for(reader(m, jpeg, prompt), ocr.ENGINE_TIMEOUT_SECONDS + 5))
+            got["model"] = m                       # who actually read it: a failed reader must not be credited
+            replies.append(got)
+        except Exception as e:
+            logger.warning("Discovery reader %s failed: %s", m, e)
+    return replies
+
+
 async def discover_page(path: str, page_num: int, models: List[str], reader=None, handwritten: bool = False,
-                        adjudicator=None) -> Dict[str, Any]:
+                        adjudicator=None, page_text: Optional[str] = None) -> Dict[str, Any]:
+    """One page, read with no template. `page_text` set means a digital page: it is read from its text (a fraction of the
+    cost of an image, and exact), and there is no image to show an adjudicator. Otherwise the page image is read."""
     injected = reader is not None          # a caller-supplied reader (tests) means no real model calls, so no real third look either
     reader = reader or _read
-    replies: List[Dict[str, Any]] = []
     jpeg = None
+    replies: List[Dict[str, Any]] = []
     if models:
-        jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page_num)
-        results = await asyncio.gather(*[asyncio.wait_for(reader(m, jpeg, PAGE_PROMPT), ocr.ENGINE_TIMEOUT_SECONDS + 5) for m in models],
-                                       return_exceptions=True)
-        for m, r in zip(models, results):
-            if isinstance(r, BaseException):
-                logger.warning("Discovery reader %s failed: %s", m, r)
-            else:
-                replies.append(parse(r))
+        if page_text is None:
+            jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page_num)
+        replies = await read_page_twice(models, jpeg, page_text, reader)
     two = len(replies) > 1
     a = replies[0] if replies else parse({})
     b = replies[1] if two else None
@@ -445,21 +536,56 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
     prune_empty_noise(fields, a["title"])
     dedupe(fields, tables)
     return {"title": a["title"], "fields": fields, "tables": tables, "table_columns": columns,
-            "readers": models[:len(replies)] if models else []}
+            "readers": [r["model"] for r in replies]}
+
+
+DISCOVER_CONCURRENCY = 4  # pages read at once; a 60-page document must not fire 60 model calls together
 
 
 async def discover_document(path: str, pages: List[int], models: List[str], reader=None, handwritten: Any = (),
-                            adjudicator=None) -> Dict[str, Any]:
-    """All pages of one untemplated document, merged: the best-supported reading per field wins, tables continue."""
-    results = await asyncio.gather(*[discover_page(path, n, models, reader, n in handwritten, adjudicator) for n in pages])
+                            adjudicator=None, text_pages: Optional[Dict[int, str]] = None,
+                            digital_pages: Optional[Dict[int, Dict[str, Any]]] = None, header_ask=None) -> Dict[str, Any]:
+    """All pages of one untemplated document, merged.
+
+    `digital_pages` maps born-digital pages to {"lines", "tables"}: those are read by code (digital.py) at no model cost,
+    and a model reads one only when the page is form-like and code found nothing in it. `text_pages` maps pages to their
+    text for the model path (read without images).
+
+    A long digital document is read once per page by the primary model only (a second reader on every page of a
+    hundred-page filing costs more than it is worth); those values are "single", not "review"."""
+    from app import config
+    text_pages = dict(text_pages or {})
+    digital_pages = digital_pages or {}
+    long_doc = len(pages) > config.long_doc_pages()
+    sem = asyncio.Semaphore(DISCOVER_CONCURRENCY)
+    memo: Dict[str, List[str]] = {}
+    ask = header_ask if header_ask is not None else (None if reader is not None else digital.default_ask)
+    small = models[-1] if models else None            # labelling a header is a short, easy call: the smaller model
+
+    async def one(n):
+        async with sem:
+            if n in digital_pages:
+                d = digital_pages[n]
+                got = await digital.read_page(path, n, d["lines"], d["tables"], small, ask, memo)
+                if not (models and digital.needs_model(d["lines"], got)):
+                    return got                      # code read it exactly: no model call for this page
+                text_pages[n] = await asyncio.to_thread(pdf_pages.layout_text, path, n)
+            use = models[:1] if (long_doc and n in text_pages) else models
+            return await discover_page(path, n, use, reader, n in handwritten, adjudicator, text_pages.get(n))
+    results = await asyncio.gather(*[one(n) for n in pages])
     fields: Dict[str, Dict[str, Any]] = {}
     tables: Dict[str, List[Dict[str, Any]]] = {}
     columns: Dict[str, List[str]] = {}
     for res in results:
         for k, cell in res["fields"].items():
             have = fields.get(k)
-            if have is None or fx._RANK.get(cell["status"], 4) < fx._RANK.get(have["status"], 4):
+            if have is None:
                 fields[k] = cell
+            elif not have.get("value") or not cell.get("value") or N.normalize(have["value"], "text") == N.normalize(cell["value"], "text"):
+                if fx._RANK.get(cell["status"], 4) < fx._RANK.get(have["status"], 4):
+                    fields[k] = cell                  # the same value, or one is blank: keep the better-supported reading
+            else:
+                fields[f"{k}_p{cell['page']}"] = cell  # a different value on another page is more data (e.g. "Total" per statement), not a rival
         for k, rows in res["tables"].items():
             same = k in tables and len(columns[k]) == len(res["table_columns"][k])
             key = k if (k not in tables or same) else f"{k}_p{rows[0][next(iter(rows[0]))]['page']}" if rows else k

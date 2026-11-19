@@ -66,6 +66,7 @@ async def run_extraction(extraction_id: str) -> None:
     try:
         with workspace_types.use(ws_id):
             result = await pipeline.process(str(pdf_file(extraction_id)), progress, template_choice=choice, read_rest=rest)
+        result["pipeline_version"] = config.PIPELINE_VERSION
         status, error = "done", None
     except ocr.OcrError as e:
         result, status, error = None, "failed", str(e)
@@ -94,9 +95,9 @@ async def upload(workspace_id: str, background: BackgroundTasks, file: UploadFil
         raise HTTPException(422, "That document type is not available. Pick one from the list, or choose automatic detection.")
     digest = hashlib.sha256(data).hexdigest()
     with db.session() as s:
-        # Same bytes already read successfully: reuse that result instead of paying for the same OCR again.
+        # Same bytes already read successfully by this version of the pipeline: reuse that result instead of paying again.
         prior = s.query(db.Extraction).filter_by(workspace_id=workspace_id, sha256=digest, status="done", template_choice=template, read_rest=read_rest).order_by(db.Extraction.created_at.desc()).first()
-        if prior and pdf_file(prior.id).is_file():
+        if prior and pdf_file(prior.id).is_file() and (prior.result or {}).get("pipeline_version") == config.PIPELINE_VERSION:
             return {"id": prior.id, "status": "done", "reused": True}
         ex = db.Extraction(workspace_id=workspace_id, filename=(file.filename or "document.pdf")[:255], sha256=digest, template_choice=template, read_rest=read_rest)
         s.add(ex)

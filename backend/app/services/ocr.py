@@ -51,8 +51,8 @@ Rules:
 
 Return JSON only, in this shape: {"handwriting": true, "lines": ["first line", "second line"]}"""
 
-# a number with the marks that change its meaning: .2 (not 2), 20% , $215 (see normalize._MARKS)
-_NUM_RE = re.compile(r"\$?\.?\d[\d,]*(?:\.\d+)?%?")
+# a number with the marks that change its meaning: .2 (not 2), 20%, -5 (see normalize._MARKS)
+_NUM_RE = re.compile(r"(?:(?<![\w])[-(])?\.?\d[\d,]*(?:\.\d+)?%?")
 _WS_RE = re.compile(r"\s+")
 
 
@@ -203,6 +203,23 @@ def normalize_image(data: bytes) -> bytes:
     return buf.getvalue()
 
 
+_COMMON_PUNCT = set(".,;:()-$%/&'\"!?[]{}#@*+=<>_|\\\u2014\u2013\u2022\u00b0\u00a9\u00ae\u2122\u2018\u2019\u201c\u201d\u00a0~^`")
+
+
+def text_is_garbled(text: str) -> bool:
+    """A text layer that is not real text: fonts without a Unicode map extract as "(cid:12)", replacement characters,
+    private-use glyphs or symbol soup. Trusting it would index nonsense, so such a page is read like a scan."""
+    s = text or ""
+    if len(s.strip()) < MIN_TEXT_LAYER_CHARS:
+        return False
+    chars = [c for c in s if not c.isspace()]
+    if not chars:
+        return False
+    bad = s.count("(cid:") * 6 + sum(1 for c in chars if c == "\ufffd" or "\ue000" <= c <= "\uf8ff" or (ord(c) < 32))
+    odd = sum(1 for c in chars if not c.isalnum() and c not in _COMMON_PUNCT)
+    return (bad + odd) / len(chars) > 0.3
+
+
 def _is_scanned_page(page) -> bool:
     """A picture covering most of the page means a scan, whatever text layer rides on top.
 
@@ -212,6 +229,11 @@ def _is_scanned_page(page) -> bool:
     area = page.rect.width * page.rect.height
     if area <= 0:
         return False
+    try:
+        if text_is_garbled(page.get_text()):
+            return True
+    except Exception:
+        pass
     try:
         covered = sum(fitz_rect_area(info["bbox"], page.rect) for info in page.get_image_info())
     except Exception:

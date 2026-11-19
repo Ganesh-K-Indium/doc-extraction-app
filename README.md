@@ -61,6 +61,24 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 Uploading the same file twice reuses the first result (SHA-256), so you don't pay for the same OCR again.
 
+## Any document, no template
+
+A file that matches no template is still extracted, and the cost depends on what kind of pages it has.
+
+| Page | Read by | Model use |
+|---|---|---|
+| Digital (real text layer): statements, filings, reports | **Code** (`digital.py`): table cells and `Label: value` pairs copied exactly from the PDF | none, except a few lines to name a column header that spans rows (once per distinct header) |
+| Digital but **unproven** or form-like with nothing code could read | Two models on the page *text* (no image), second reader reads against the first's labels | text only, only for those pages |
+| Scan or handwriting | Two vision models, first proposes the fields, second reads against its labels; one focused third look for disputed values | image tokens |
+
+**Code proves it read a digital page completely.** Every number printed inside a table's region must appear in the extracted cells (footnote markers and "Note 7" headings excluded). If not, the page tries PyMuPDF's grid finder, then the table's cells are marked `review` with what was missed, and (when a model is configured) the page goes to the text-only model path. A text layer that is not text (`(cid:12)`, replacement characters) is treated as a scan. On a 68-page 10-Q this reads 41 tables / 2,200 cells with no model calls and flags exactly one table (a mangled dividends table), which the model path then reads correctly.
+
+**Stable output.** Field keys are canonical (`labels.py`: "Invoice No." / "Inv #" / "Invoice Number" all become `invoice_number`; the section only joins a key when the same label occurs twice). A label with a different value on another page becomes `label_p<page>` instead of overwriting; rows of two readers' tables are paired by row label, not position.
+
+**Recurring shapes.** `GET /api/workspaces/{id}/templates/suggestions` lists document shapes that keep recurring among untemplated files (same canonical keys, at least twice); promote one example to save it as a template.
+
+Knobs: `DISCOVER_DIGITAL_MODEL=auto|never|always` (default `auto` as above), `DISCOVER_LONG_DOC_PAGES` (digital documents longer than this use one reader per page, default 25), `CLASSIFY_UNKNOWN_STREAK` (stop asking the classifier model after this many unknown pages in a row, default 3). Results are cached by file hash **and pipeline version**, so an upgrade never serves a stale extraction.
+
 ## Handwriting and poor scans
 
 Handwriting goes through the same two-reader path as any scan; these rules exist because two models can share a misread.

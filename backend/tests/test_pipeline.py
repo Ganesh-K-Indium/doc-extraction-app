@@ -298,7 +298,7 @@ def test_discover_merges_two_readers_by_label():
     b = discover.parse({"fields": [{"label": "Invoice No", "value": "1001"}, {"label": "Total", "value": "$215.80"},
                                    {"label": "PO Number", "value": "77"}]})["fields"]
     got = discover.merge_fields(a, b)
-    assert got["invoice_no"]["status"] == "agreed"                                  # label punctuation does not matter
+    assert got["invoice_number"]["status"] == "agreed"                              # "Invoice No." and "Invoice No" are one key
     assert got["total"]["status"] == "review" and got["total"]["alternatives"] == ["$215.80"]
     assert got["notes"]["status"] == "review" and "one reader" in got["notes"]["reason"]   # only the first reader listed it
     assert got["po_number"]["value"] == "77" and got["po_number"]["status"] == "review"
@@ -309,7 +309,7 @@ def test_discover_tables_compare_cell_by_cell():
     b = [{"title": "Items", "columns": ["Item", "Qty"], "rows": [["Bolt", "2"], ["Nut", "6"]]}]
     tables, cols = discover.merge_tables(a, b)
     assert cols == {"items": ["Item", "Qty"]}
-    assert tables["items"][0]["qty"]["status"] == "agreed" and tables["items"][1]["qty"]["status"] == "review"
+    assert tables["items"][0]["quantity"]["status"] == "agreed" and tables["items"][1]["quantity"]["status"] == "review"   # "Qty" is the key "quantity"
     one_sided, _ = discover.merge_tables(a, [])
     assert all(c["status"] == "review" for r in one_sided["items"] for c in r.values())
 
@@ -331,7 +331,8 @@ async def fake_discover(model, jpeg, prompt):
             "checkboxes": [], "tables": []}
 
 
-def test_unregistered_document_is_discovered_not_dropped(tmp_path):
+def test_unregistered_document_is_discovered_not_dropped(tmp_path, monkeypatch):
+    monkeypatch.setenv("DISCOVER_DIGITAL_MODEL", "always")        # this test is about the two-reader model path
     pdf = str(tmp_path / "inv.pdf")
     _invoice_pdf(pdf)
     r = asyncio.run(pipeline.process(pdf, form_reader=fake_discover, model_ask=fake_ask))
@@ -339,7 +340,7 @@ def test_unregistered_document_is_discovered_not_dropped(tmp_path):
     form = r["forms"][0]
     assert form["discovered"] and form["label"] == "Invoice"
     f = form["fields"]
-    assert f["invoice_no"]["status"] == "agreed" and f["invoice_no"]["bbox"] is not None       # highlighted on the page
+    assert f["invoice_number"]["status"] == "agreed" and f["invoice_number"]["bbox"] is not None       # highlighted on the page
     assert f["total_due"]["status"] == "review" and f["total_due"]["label"] == "Total Due"
     assert any(v["rule"] == "needs_review" for v in r["validation"])
 
@@ -398,7 +399,7 @@ def test_grid_as_table_in_one_reader_and_flat_fields_in_the_other_agree():
     tables, _ = discover.merge_tables(table_reader["tables"], [], conf_a, conf_b)
     row = tables["shoulder_arom"][0]
     assert row["right"]["status"] == "agreed" and row["left"]["status"] == "agreed"
-    assert row["col_1"]["status"] == "agreed"                                      # the row label ("Flexion") rides on its values
+    assert row["item"]["status"] == "agreed"                                      # the row label ("Flexion") rides on its values
     assert tables["shoulder_arom"][1]["right"]["status"] == "review"              # 160 vs 165 was never confirmed
 
 

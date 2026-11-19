@@ -9,7 +9,9 @@ from app.services import normalize as N
 def test_marks_that_change_a_number_are_not_ignored():
     assert N.normalize(".2% solution", "text") != N.normalize("2% solution", "text")     # leading decimal point
     assert N.normalize("7-20 min", "text") != N.normalize("720 min", "text")             # range
-    assert N.normalize("$215", "text") != N.normalize("215", "text")
+    assert N.normalize("(1,234)", "text") != N.normalize("1,234", "text")                # a loss is not a profit
+    assert N.normalize("-5", "text") != N.normalize("5", "text")
+    assert N.normalize("$ 1,200", "text") == N.normalize("1,200", "text")                # a currency sign is formatting
     assert N.normalize("2,500,000*", "text") == N.normalize("2500000", "text")           # thousands comma, star: noise
     assert N.normalize("Closed 1992.", "text") == N.normalize("closed 1992", "text")     # sentence period: noise
 

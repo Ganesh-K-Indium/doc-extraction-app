@@ -40,5 +40,26 @@ def adjudicator_model() -> str:
     return os.getenv("ADJUDICATION_MODEL", "").strip() or (extraction_models() or [""])[0]
 
 
+PIPELINE_VERSION = "2026.11-handwriting-discovery-v2"  # bump when extraction behaviour changes: older cached results are then not reused
+
+
+def long_doc_pages() -> int:
+    """Digital documents longer than this are read once per page (primary model only) instead of by two readers."""
+    return int(os.getenv("DISCOVER_LONG_DOC_PAGES", "25"))
+
+
+def digital_model_mode() -> str:
+    """When a model reads a digital (text-layer) page with no template: "auto" (default) only for form-like pages code could
+    not make sense of, "never" (code only), "always" (every digital page)."""
+    v = os.getenv("DISCOVER_DIGITAL_MODEL", "auto").strip().lower()
+    return v if v in ("auto", "never", "always") else "auto"
+
+
+def classify_give_up_after() -> int:
+    """The classifier model is only a second opinion for pages the keyword rules could not name. After this many in a row
+    that it also could not name, stop asking: the rest of a long untyped document is not going to be a known form."""
+    return int(os.getenv("CLASSIFY_UNKNOWN_STREAK", "3"))
+
+
 def ensure_dirs() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

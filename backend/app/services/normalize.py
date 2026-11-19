@@ -18,18 +18,26 @@ def parse_date(s: str) -> Optional[str]:
 
 # Marks that change what a number means. Stripping them made ".2%" equal "2%" and "7-20" equal "720",
 # so two readers that disagreed on a decimal point or a range counted as agreeing. Kept only where they touch a digit:
-#   .5 and 9.5 (decimal point)   7-20 and 10/12 (range, date)   20% (percent)   $215 (currency)
+#   .5 and 9.5 (decimal point)   7-20 and 10/12 (range, date)   20% (percent)
+# A currency sign is not one of them: "$ 1,200" and "1,200" are the same amount, and statements print the sign in its own cell.
 # A sentence-ending "1992." or a bullet "- 1 min" is not one of these, so it still does not count as a difference.
-_MARKS = {"-": "\ue000", "/": "\ue001", ".": "\ue002", "%": "\ue003", "$": "\ue004"}
+_MARKS = {"-": "\ue000", "/": "\ue001", ".": "\ue002", "%": "\ue003"}
+_MARKS["("], _MARKS[")"] = "\ue005", "\ue006"   # sign of a number, see _NEG_RE
 _MARKS_BACK = {v: k for k, v in _MARKS.items()}
-_MARK_RE = re.compile(r"(?<=\d)[-/](?=\d)|\.(?=\d)|(?<=\d)%|\$(?=\d)")
+_MARK_RE = re.compile(r"(?<=\d)[-/](?=\d)|\.(?=\d)|(?<=\d)%")
+
+
+# Sign of a number. "(1,234)" and "-1,234" are negative in a financial statement; losing the sign turns a loss into a
+# profit. A dash glued to a digit at the start of a word ("-5", "$-5") is a minus; "- 5 min" (a bullet) is not.
+_NEG_RE = re.compile(r"(?<![\w$])-(?=\.?\d)|(?<![\w])\(\s*\$?\s*(?=[.]?\d)|(?<=\d)\)(?![\w])")
 
 
 def text_form(s: str) -> str:
     """Comparison form of free text: lower case, letters and digits, plus the digit-bearing marks above."""
+    s = _NEG_RE.sub(lambda m: "\ue005" if m.group() != ")" else "\ue006", s)
     s = _MARK_RE.sub(lambda m: _MARKS[m.group()], re.sub(r"\s+", "", s.lower()))
-    s = re.sub(r"[^a-z0-9\ue000-\ue004]", "", s)
-    return re.sub(r"[\ue000-\ue004]", lambda m: _MARKS_BACK[m.group()], s)
+    s = re.sub(r"[^a-z0-9\ue000-\ue006]", "", s)
+    return re.sub(r"[\ue000-\ue006]", lambda m: _MARKS_BACK[m.group()], s)
 
 
 def digits(s: str) -> str:
