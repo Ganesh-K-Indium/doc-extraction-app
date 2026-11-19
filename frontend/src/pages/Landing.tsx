@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { APP_NAME } from '../brand';
+import { ThemeToggle } from '../components/ThemeToggle';
 import './landing.css';
 
 type Kind = 'cover' | 'blank' | 'form' | 'text' | 'bill';
@@ -57,6 +58,7 @@ export default function Landing() {
                     <nav className="lp-nav" aria-label="Page sections">
                         <a href="#kinds">Any document</a><a href="#engines">Engines</a><a href="#how">How it works</a><a href="#output">Output</a><a href="#review">Review</a><a href="#types">Document types</a>
                     </nav>
+                    <ThemeToggle />
                     <Link to="/app" className="btn btn--primary">Open workspaces</Link>
                 </div>
             </header>

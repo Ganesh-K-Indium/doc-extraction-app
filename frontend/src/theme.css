@@ -1,0 +1,123 @@
+/*
+ * Theme: the only place colours, shadows and the typeface are defined. Components use these tokens and nothing else.
+ *
+ * Idea: a reviewer's desk. Cool grey paper, dark ink, and three marker colours that each mean one thing:
+ *   teal  = checked and settled      pink = a person needs to look      amber = take care
+ * with one accent for what you can act on (buttons, links, the current item, focus), and yellow for "this is where on the page".
+ *
+ * Surfaces, from the back: canvas (the window) -> surface (panels, lists, the bar) -> raised (menus, popovers).
+ * A surface is told apart by a 1px hairline first and a very faint shadow second. In dark mode the shadow is replaced by a
+ * 1px light edge along the top, never a glow.
+ *
+ * Three states, set on <html>: no attribute follows the system, data-theme="light" and data-theme="dark" are the user's choice.
+ * The dark values appear twice (system dark, and chosen dark) and must stay identical; scripts/check-theme.mjs checks that,
+ * and the contrast of every text pair, in both themes.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces */
+  --canvas: #edf0f2;         /* the window behind everything (about 60% of a screen) */
+  --surface: #fbfcfc;        /* panels, lists, the top bar (about 30%) */
+  --raised: #ffffff;         /* menus and popovers */
+  --well: #e3e8eb;           /* hover wash and inset areas */
+
+  /* text */
+  --text: #1c2733;
+  --text-2: #4a5868;         /* secondary: labels, hints */
+
+  /* lines: a share of the text colour, so they sit right on every surface */
+  --line: color-mix(in srgb, var(--text) 13%, transparent);
+  --line-strong: color-mix(in srgb, var(--text) 48%, transparent);    /* the edge of an input or a button */
+
+  /* accent: the one colour for things you can act on (about 10%) */
+  --accent: #1f56a8;
+  --on-accent: #ffffff;
+  --accent-bg: color-mix(in srgb, var(--accent) 9%, var(--surface));
+
+  /* status: each colour means one thing */
+  --ok: #0b6e5e;             /* checked and settled */
+  --ok-bg: #dcefea;
+  --flag: #c2185b;           /* a person needs to look */
+  --flag-bg: #fbe3ec;
+  --on-flag: #ffffff;        /* text on a solid --flag fill, such as a count badge */
+  --warn: #8a5a00;           /* take care */
+  --warn-bg: #f8ecd0;
+
+  /* the page being reviewed: a document stays white in both themes, on a dark stage */
+  --stage: #4a5159;
+  --stage-text: #cfd4d9;
+  --page: #ffffff;
+  --page-text: #6b7280;
+  --page-shadow: 0 1px 3px rgb(0 0 0 / .45);
+  --hl: rgb(255 213 0 / .5);               /* where on the page a value is */
+  --hl-ring: rgb(190 140 0 / .7);
+  --hl-ring-0: rgb(190 140 0 / 0);
+  --select: rgb(31 86 168 / .25);           /* selected text on the page */
+
+  /* elevation: faint and wide; the hairline does most of the work */
+  --shadow-1: 0 1px 2px rgb(20 30 40 / .06);
+  --shadow-menu: 0 1px 2px rgb(20 30 40 / .05), 0 12px 28px -12px rgb(20 30 40 / .07);
+  --shadow-bar: 0 -10px 20px -16px rgb(20 30 40 / .07);
+
+  /* shape and type */
+  --r: 6px;
+  --font: 'Instrument Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --canvas: #0f1419;
+    --surface: #171e25;
+    --raised: #1f2831;
+    --well: #222c36;
+    --text: #e8edf1;
+    --text-2: #a6b3c0;
+    --line: color-mix(in srgb, var(--text) 15%, transparent);
+    --line-strong: color-mix(in srgb, var(--text) 42%, transparent);
+    --accent: #8db6f2;
+    --on-accent: #0b1a2e;
+    --ok: #4fd1b5;
+    --ok-bg: #123830;
+    --flag: #ff7aa8;
+    --flag-bg: #43182b;
+    --on-flag: #2a0b18;
+    --warn: #f0c36a;
+    --warn-bg: #3b2d0e;
+    --stage: #0a0d10;
+    --stage-text: #9aa6b2;
+    --select: rgb(141 182 242 / .3);
+    --shadow-1: inset 0 1px 0 rgb(255 255 255 / .05);
+    --shadow-menu: inset 0 1px 0 rgb(255 255 255 / .06), 0 14px 30px -12px rgb(0 0 0 / .55);
+    --shadow-bar: inset 0 1px 0 rgb(255 255 255 / .05), 0 -10px 20px -16px rgb(0 0 0 / .6);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0f1419;
+  --surface: #171e25;
+  --raised: #1f2831;
+  --well: #222c36;
+  --text: #e8edf1;
+  --text-2: #a6b3c0;
+  --line: color-mix(in srgb, var(--text) 15%, transparent);
+  --line-strong: color-mix(in srgb, var(--text) 42%, transparent);
+  --accent: #8db6f2;
+  --on-accent: #0b1a2e;
+  --ok: #4fd1b5;
+  --ok-bg: #123830;
+  --flag: #ff7aa8;
+  --flag-bg: #43182b;
+  --on-flag: #2a0b18;
+  --warn: #f0c36a;
+  --warn-bg: #3b2d0e;
+  --stage: #0a0d10;
+  --stage-text: #9aa6b2;
+  --select: rgb(141 182 242 / .3);
+  --shadow-1: inset 0 1px 0 rgb(255 255 255 / .05);
+  --shadow-menu: inset 0 1px 0 rgb(255 255 255 / .06), 0 14px 30px -12px rgb(0 0 0 / .55);
+  --shadow-bar: inset 0 1px 0 rgb(255 255 255 / .05), 0 -10px 20px -16px rgb(0 0 0 / .6);
+}

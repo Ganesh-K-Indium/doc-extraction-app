@@ -202,9 +202,17 @@ backend/app
   templates/                         built-in document templates
 docker-compose.yml, Dockerfile, .env.example   run everything with Docker Compose (see above); frontend/nginx.conf.template
 frontend/src
+  theme.css                          every colour, shadow and the typeface: light and dark, defined once (see Theme)
+  lib/theme.ts, components/ThemeToggle.tsx   the light / match system / dark choice, kept in the browser
   pages/                             Documents, review, Document types, Reading engines, Settings, Landing
   components/, review/               shared pieces; the review screen's field rows, tables and PDF pane
 ```
+
+## Theme
+
+All colours live in `frontend/src/theme.css`; components use its tokens (`--canvas`, `--surface`, `--text`, `--accent`, `--ok`, `--flag`, ...) and never a colour of their own. The toggle in the top bar (and on the landing page) sets light, dark or match-system, remembers it in the browser, and applies it before the first paint so a dark choice never flashes light.
+
+To change a colour, change it in `theme.css` for both themes, then run `npm run check:theme` from `frontend/`. It fails if the two dark blocks disagree, if a token is used but not defined, if a colour literal appears outside the theme, or if any text pair drops below WCAG AA (7:1 for body text) in either theme.
 
 ## Any document, no template
 
