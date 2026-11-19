@@ -345,6 +345,37 @@ def test_models_live_in_the_apps_data_folder_unless_told_otherwise(monkeypatch, 
     assert local.model_status("doctr")["state"] == "downloaded" and local.model_status("doctr")["bytes"] == 1000
 
 
+def test_paddle_loads_with_a_home_folder_inside_the_app(monkeypatch, tmp_path):
+    """Paddle creates ~/.cache/paddle on import. With a home it cannot write to (a root-owned ~/.cache) it would never load, so it is
+    imported while the home folder points inside the app, and the real one is restored afterwards."""
+    import os
+    import sys
+    import types
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path / "models"))
+    monkeypatch.setenv("HOME", "/the/real/home")
+    monkeypatch.setenv("USERPROFILE", "C:/the/real/home")
+    seen = {}
+    fake_paddle = types.ModuleType("paddle")
+    fake_ocr = types.ModuleType("paddleocr")
+
+    class FakePaddleOCR:
+        def __init__(self, **kw):
+            seen["home_while_loading"] = os.path.expanduser("~")
+            seen["kw"] = kw
+    fake_ocr.PaddleOCR = FakePaddleOCR
+    monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
+    monkeypatch.setitem(sys.modules, "paddleocr", fake_ocr)
+    engine = local.PaddleOCR._load()
+    assert isinstance(engine, FakePaddleOCR)
+    assert seen["home_while_loading"] == str(tmp_path / "models" / "home")                            # the app's folder, not the user's
+    assert (tmp_path / "models" / "home").is_dir()
+    assert os.environ["HOME"] == "/the/real/home" and os.environ["USERPROFILE"] == "C:/the/real/home"   # put back afterwards
+    with pytest.raises(RuntimeError):
+        with local.private_home():
+            raise RuntimeError("boom")
+    assert os.environ["HOME"] == "/the/real/home"                                                       # even when loading fails
+
+
 def test_engine_listing_names_every_engine():
     ids = [e["id"] for e in local.listing()]
     assert ids == ["tesseract", "rapidocr", "paddleocr", "doctr"]

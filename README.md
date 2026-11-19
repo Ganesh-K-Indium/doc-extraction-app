@@ -71,6 +71,8 @@ The same check is the **Test** button next to each engine on the Reading engines
 
 **Where the models live.** Inside the app's own data folder, `backend/data/models` (so they travel with the app and no hidden `~/.cache` is involved). Change it with `MODELS_DIR`; `DOCTR_CACHE_DIR` and `PADDLE_PDX_CACHE_HOME` still override each engine individually. For a server with no internet, run the check on a connected machine and copy `data/models` across. Without a GPU the engines run on the CPU, one page at a time.
 
+**If an engine fails with `Permission denied` under `~/.cache`:** that folder is owned by another user, usually `root` after a `sudo pip install`. The app no longer needs it (PaddleOCR is loaded with its home folder inside `data/models`, and docTR is pointed there too), but other tools will keep failing until you fix it: `sudo chown -R $(whoami) ~/.cache`.
+
 The Python packages themselves are installed with `pip` (or the Dockerfile), not from the web page: letting a page change the server's own software would be a risk.
 
 **Optional: everything in Docker.** See *Run it all with Docker Compose* below.

@@ -14,6 +14,7 @@ Engines
 Only installed engines are offered. Nothing here sends anything off the machine.
 """
 import asyncio
+import contextlib
 import importlib.util
 import io
 import logging
@@ -291,6 +292,28 @@ def configure_caches() -> None:
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")      # no connectivity probe before loading
 
 
+@contextlib.contextmanager
+def private_home():
+    """Run a block with the user's home folder pointed inside the app's models folder. PaddlePaddle creates ~/.cache/paddle the moment
+    it is imported and offers no setting to move it, so on a machine where that folder cannot be created (a `~/.cache` owned by root
+    after a `sudo pip`, a read-only home in a container) it cannot even load. The paths it computes while this is active land in
+    `<models>/home` instead, and the real home is put back afterwards."""
+    home = models_dir() / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    names = ("HOME", "USERPROFILE")                       # POSIX and Windows
+    saved = {n: os.environ.get(n) for n in names}
+    for n in names:
+        os.environ[n] = str(home)
+    try:
+        yield home
+    finally:
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+
+
 def folder_size(path: Path) -> Tuple[int, int]:
     """(files, bytes) under a folder; (0, 0) when it does not exist."""
     files = [f for f in path.rglob("*") if f.is_file()] if path.is_dir() else []
@@ -492,11 +515,13 @@ class PaddleOCR(Engine):
     @staticmethod
     def _load():
         configure_caches()
-        from paddleocr import PaddleOCR as P
-        try:                                                         # 3.x
-            return P(lang="en", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)
-        except (TypeError, ValueError):                              # 2.x
-            return P(lang="en", use_angle_cls=False, show_log=False)
+        with private_home():                                         # see private_home: importing paddle writes under the home folder
+            import paddle  # noqa: F401
+            from paddleocr import PaddleOCR as P
+            try:                                                     # 3.x
+                return P(lang="en", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False)
+            except (TypeError, ValueError):                          # 2.x
+                return P(lang="en", use_angle_cls=False, show_log=False)
 
     def _words(self, jpeg: bytes) -> List[Word]:
         arr, _ = _array(jpeg)
