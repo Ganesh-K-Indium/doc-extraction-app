@@ -24,7 +24,7 @@ from app.engines.ocr import local
 from app.engines.strategy import ladder, plan as plans
 from app.services.documents import classify
 from app.services.quality import cross, validation
-from app.services.extraction import align, discover, form_extractor, kv, remainder, structure
+from app.services.extraction import align, digital, discover, form_extractor, kv, remainder, structure
 from app.services.reading import ocr, pdf_pages, router, tess
 
 logger = logging.getLogger("app.services.pipeline")
@@ -126,8 +126,12 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             given = []
             if source == "text-layer" and info["size"]["width"] and info["size"]["height"]:
                 w, h = info["size"]["width"], info["size"]["height"]
-                given = [{"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": t.get("headers"),
-                          "rows": t.get("rows"), "method": t.get("method")} for t in info["tables"] if t.get("bbox")]
+                for t in info["tables"]:
+                    lt = digital.labelled_table(path, n, t) if t.get("bbox") else None
+                    # the extractor reads tables of amounts; a table of names and codes is found better from the layout (structure.py)
+                    if lt and digital.is_amount_table(t):
+                        given.append({"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": lt["columns"],
+                                      "rows": lt["rows"], "method": lt["method"], "all_rows": t.get("rows")})
             placed, positions_from = None, None
             if not layout and source in ("ocr", "ocr-local"):
                 # a vision model's text has no positions: borrow them from a local reading of the same page, when the two match well.
@@ -269,12 +273,20 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
             templated.append((forms[-1], tpl))
         elif decision["extractor"] == "discover":
             usable = [p["page"] for p in doc_pages if p["source"] != "failed" and p["classification"]["type"] != "blank_or_logo"] or doc["pages"]
-            digital = {n: {"lines": [l["text"] for l in by_num[n]["lines"]], "tables": by_num[n]["tables"]}
-                       for n in usable if by_num[n]["source"] == "text-layer"}
+            digital_pages = {}
+            for n in usable:
+                pg = by_num[n]
+                if pg["source"] != "text-layer":
+                    continue
+                blocks, size = pg["structure"]["blocks"], pg.get("size") or {}
+                digital_pages[n] = {"lines": [l["text"] for l in pg["lines"]],
+                                    # amounts by the extractor, everything else by the layout; and the pairs and boxes the layout found
+                                    "tables": [t for t in pg["tables"] if digital.is_amount_table(t)] + digital.tables_from_structure(blocks, size),
+                                    "facts": digital.facts_from_structure(blocks, size), "boxes": digital.boxes_from_structure(blocks, size)}
             # A page a local OCR engine read well is structured from its text: a few hundred tokens instead of a page image.
             ocr_text = {n: by_num[n]["text"] for n in usable if form_models and by_num[n]["source"] == "ocr-local" and by_num[n]["text"].strip()}
             res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator,
-                                                   text_pages=ocr_text, digital_pages=digital)
+                                                   text_pages=ocr_text, digital_pages=digital_pages)
             if res["title"] and doc["type"] == "unknown" and not by_num[doc["pages"][0]]["classification"].get("kind"):
                 doc["label"] = res["title"]
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,

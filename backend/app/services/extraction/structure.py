@@ -25,6 +25,16 @@ _LABEL = re.compile(r"^\s*([A-Z#][^:|]{0,48}?)\s*:\s*(.*)$")
 _LIST = re.compile(r"^\s*([•●▪◦*\-]|\d{1,2}[.)]|[A-Za-z][.)])\s+(\S.*)$")
 _SENTENCE_END = re.compile(r"[.!?]\s*$")
 
+_CHECKED, _EMPTY = "☑☒✔✓■", "☐□"
+_GLYPH = re.compile("([" + re.escape(_CHECKED + _EMPTY) + "])")
+_CAPTION = re.compile(r"^\(\s*[^()]{2,45}\)$")
+_PAGE_NUMBER = re.compile(r"^(?:page\s*)?\d{1,4}(?:\s*(?:of|/)\s*\d{1,4})?$", re.I)
+# "Commission File Number 001-37845", "For the Quarterly Period Ended March 31, 2026": a short label, then an id or a date, no colon
+_LABEL_THEN_ID = re.compile(r"^(?P<label>[A-Z][A-Za-z.&'/\- ]{5,60}?)\s+(?P<value>\d{2,}-\d[\d-]*|[A-Z]{0,3}\d{5,}[\dA-Z-]*)$")
+_DATE = r"(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.? \d{1,2},? \d{4}|\d{1,2}/\d{1,2}/\d{2,4})"
+_LABEL_THEN_DATE = re.compile(r"^(?P<label>[A-Z][A-Za-z.&'/\- ]{5,60}?)\s+(?P<value>" + _DATE + r")$")
+_SMALL = {"of", "the", "and", "for", "in", "to", "a", "an", "on", "or"}
+
 _ENTITIES: List[Tuple[str, "re.Pattern[str]"]] = [
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")),
     ("url", re.compile(r"\bhttps?://\S+|\bwww\.\S+", re.I)),
@@ -50,10 +60,63 @@ class _Row:
         self.kind = "text"            # text | heading | list | kv | multi | given
         self.level = 0
         self.table: Optional[Dict[str, Any]] = None
+        self.pairs: Optional[List[Dict[str, Any]]] = None      # label/value pairs known without a colon (a caption under a value)
+        self.boxes: Optional[List[Dict[str, Any]]] = None      # check boxes read from glyphs
 
     @property
     def box(self) -> List[float]:
         return _box(self.cells)
+
+
+def _nice(caption: str) -> str:
+    """"(STATE OF INCORPORATION)" -> "State of Incorporation"; acronyms such as "I.R.S. ID" stay as printed."""
+    words = caption.strip("() ").split()
+    out = []
+    for i, w in enumerate(words):
+        if w.lower() in _SMALL and i:
+            out.append(w.lower())
+        elif w.isupper() and len(w) > 3 and "." not in w:
+            out.append(w.capitalize())
+        else:
+            out.append(w)
+    return " ".join(out)
+
+
+def _label_tail(text: str) -> Optional[Tuple[str, str]]:
+    """A short label followed directly by an identifier or a date, with no colon between."""
+    text = text.strip()
+    for rx in (_LABEL_THEN_ID, _LABEL_THEN_DATE):
+        m = rx.match(text)
+        if m:
+            label = m.group("label").strip()
+            if 2 <= len(label.split()) <= 7 and not re.search(r"\d", label):
+                return label, m.group("value").strip()
+    return None
+
+
+def _box_items(text: str) -> List[Dict[str, Any]]:
+    """Check boxes in one line of text: "☒ Option text", or "Option ☒ Other option ☐", or "... days. Yes ☒ No ☐"."""
+    parts = _GLYPH.split(text.replace(" | ", "  "))
+    if len(parts) < 3:
+        return []
+    items: List[Dict[str, Any]] = []
+    before = parts[0].strip()
+    if not before:                                           # the box comes first: the option's text follows it
+        for i in range(1, len(parts), 2):
+            label = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            if label:
+                items.append({"label": label, "checked": parts[i] in _CHECKED})
+        return items
+    for i in range(1, len(parts), 2):                        # the option's text comes first: it ends at the box
+        raw = parts[i - 1].strip()
+        if i == 1:
+            sentences = re.split(r"(?<=[.:;?!])\s+", raw)
+            raw = sentences[-1] if sentences else raw                  # "Yes" in "...the past 90 days. Yes"; a long sentence stays whole
+            if len(raw) > 140:
+                raw = raw[:137].rsplit(" ", 1)[0] + "..."
+        if raw:
+            items.append({"label": raw, "checked": parts[i] in _CHECKED})
+    return items
 
 
 def _label_value(text: str) -> Optional[Tuple[str, str]]:
@@ -89,12 +152,23 @@ def _classify(rows: List[_Row], median_h: float) -> None:
     for r in rows:
         if r.kind == "given":
             continue
+        if r.pairs:
+            r.kind = "kv"
+            continue
+        if _GLYPH.search(r.text):
+            items = _box_items(r.text)
+            if items:
+                r.kind, r.boxes = "boxes", items
+                continue
         if len(r.cells) >= 2:
             r.kind = "kv" if _pairs(r.cells) else "multi"
             continue
         text = r.text.strip()
+        tail = _label_tail(text)
         if _pairs(r.cells):
             r.kind = "kv"
+        elif tail:
+            r.kind, r.pairs = "kv", [{"label": tail[0], "value": tail[1], "bbox": r.box}]
         elif _LIST.match(text):
             r.kind = "list"
         else:
@@ -107,38 +181,41 @@ def _classify(rows: List[_Row], median_h: float) -> None:
                 r.level = 1 if r.h >= median_h * 1.8 else 2 if r.h >= median_h * 1.4 else 3
 
 
-def _columns(rows: List[_Row]) -> Optional[List[float]]:
-    """Left edges shared by the cells of these rows, or None when they do not line up like a table."""
-    xs = sorted(c[1] for r in rows for c in r.cells)
-    anchors: List[List[float]] = []
-    for x in xs:
-        if anchors and x - statistics.fmean(anchors[-1]) <= COLUMN_TOL:
-            anchors[-1].append(x)
+def _columns(rows: List[_Row]) -> Optional[List[Tuple[float, float]]]:
+    """The column spans (left, right) shared by the cells of these rows, or None when they do not line up like a table.
+    A column is where cells overlap across rows, so it does not matter whether its text is left-aligned, centred or
+    right-aligned (a centred "Trading Symbol" over "MSFT" shares no left edge, but the two overlap)."""
+    cells = sorted((c for r in rows for c in r.cells), key=lambda c: c[1])
+    spans: List[List[float]] = []                       # [left, right, count]
+    for c in cells:
+        if spans and c[1] <= spans[-1][1] + COLUMN_TOL / 2:
+            spans[-1][1] = max(spans[-1][1], c[3])
+            spans[-1][2] += 1
         else:
-            anchors.append([x])
-    if len(anchors) > MAX_COLUMNS or len(anchors) < 2:
+            spans.append([c[1], c[3], 1])
+    if len(spans) > MAX_COLUMNS or len(spans) < 2:
         return None
-    if any(len(a) < 2 for a in anchors):
-        return None                                   # a column that only one row has is not a column
-    cells = [c for r in rows for c in r.cells]
+    if any(sp[2] < 2 for sp in spans):
+        return None                                     # a column that only one row has is not a column
     if statistics.fmean(len(c[0]) for c in cells) > MAX_CELL_CHARS:
-        return None                                   # long cells are running text set in columns
-    return [statistics.fmean(a) for a in anchors]
+        return None                                     # long cells are running text set in columns
+    return [(sp[0], sp[1]) for sp in spans]
 
 
-def _table(rows: List[_Row], anchors: List[float]) -> Dict[str, Any]:
-    def col(x: float) -> int:
-        return min(range(len(anchors)), key=lambda i: abs(anchors[i] - x))
+def _table(rows: List[_Row], spans: List[Tuple[float, float]]) -> Dict[str, Any]:
+    def col(c: Cell) -> int:
+        return max(range(len(spans)), key=lambda i: (min(c[3], spans[i][1]) - max(c[1], spans[i][0]), -abs((c[1] + c[3]) / 2 - (spans[i][0] + spans[i][1]) / 2)))
 
+    anchors = spans
     grid: List[List[str]] = []
     for r in rows:
         line = [""] * len(anchors)
         for c in r.cells:
-            i = col(c[1])
+            i = col(c)
             line[i] = (line[i] + " " + c[0]).strip()
         grid.append(line)
     has_digit = [any(re.search(r"\d", v) for v in line) for line in grid]
-    header = bool(grid) and not has_digit[0] and any(has_digit[1:]) and all(grid[0])
+    header = bool(grid) and not has_digit[0] and (any(has_digit[1:]) or len(grid) >= 3) and all(grid[0])
     columns = [v or f"Column {i + 1}" for i, v in enumerate(grid[0])] if header else [f"Column {i + 1}" for i in range(len(anchors))]
     body = grid[1:] if header else grid
     return {"type": "table", "columns": columns, "header": header, "rows": body, "bbox": _box([c for r in rows for c in r.cells])}
@@ -166,6 +243,57 @@ def _entities(blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return found
 
 
+def _drop_page_number(rows: List["_Row"]) -> Tuple[List["_Row"], Optional[str]]:
+    """A bare page number that opens or closes the page, or sits in a margin, is page furniture, not content: it is returned apart."""
+    number = None
+    kept = []
+    for k, r in enumerate(rows):
+        edge = k == 0 or k == len(rows) - 1 or r.y0 > 0.9 or r.y1 < 0.06          # first or last line of the page, or in a margin
+        if edge and len(r.cells) == 1 and r.kind != "given" and _PAGE_NUMBER.match(r.text.strip()):
+            number = r.text.strip()
+        else:
+            kept.append(r)
+    return kept, number
+
+
+def _pair_captions(rows: List["_Row"]) -> List["_Row"]:
+    """A value with a small caption printed under it, as on a cover page:  WASHINGTON / (STATE OF INCORPORATION).
+    Each caption names the cell above it (matched by position), so the pair reads as label and value. Only done when every
+    caption finds a cell and every cell has a caption."""
+    out: List["_Row"] = []
+    i = 0
+    while i < len(rows):
+        a = rows[i]
+        b = rows[i + 1] if i + 1 < len(rows) else None
+        done = False
+        if b is not None and a.kind != "given" and b.kind != "given" and all(_CAPTION.match(c[0].strip()) for c in b.cells) \
+                and not any(_CAPTION.match(c[0].strip()) for c in a.cells) and -0.6 * b.h <= b.y0 - a.y1 <= b.h * 1.6 and len(a.cells) == len(b.cells):
+            pairs, used = [], set()
+            for cap in b.cells:
+                width = max(cap[3] - cap[1], 1e-6)
+                best, overlap = None, 0.0
+                for k, c in enumerate(a.cells):
+                    ov = min(cap[3], c[3]) - max(cap[1], c[1])
+                    if k not in used and ov > overlap:
+                        best, overlap = k, ov
+                if best is None or overlap < 0.3 * min(width, max(a.cells[best][3] - a.cells[best][1], 1e-6)):
+                    pairs = []
+                    break
+                used.add(best)
+                c = a.cells[best]
+                pairs.append({"label": _nice(cap[0]), "value": c[0].strip(), "bbox": _box([c, cap])})
+            if pairs and len(pairs) == len(a.cells):
+                merged = _Row(a.cells + b.cells)
+                merged.pairs = pairs
+                out.append(merged)
+                i += 2
+                done = True
+        if not done:
+            out.append(a)
+            i += 1
+    return out
+
+
 def _given_table(t: Dict[str, Any]) -> Dict[str, Any]:
     """A table another extractor found (digital pages), in the shape of a table block."""
     cols = [re.sub(r"^Col (\d+)$", r"Column \1", str(h)) if str(h).strip() else f"Column {i + 1}" for i, h in enumerate(t.get("columns") or [])]
@@ -181,7 +309,8 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
     rows = [_Row(r) for r in rows_in if r and any(c[0].strip() for c in r) and not pdf_pages.is_fax_stamp(" ".join(c[0] for c in r))]
     for t in tables or []:
         x0, y0, x1, y1 = t["bbox"]
-        flat_table = re.sub(r"[^a-z0-9]", "", " ".join(str(v) for row in t.get("rows", []) for v in row).lower())
+        # the table's own text, header rows included (they may have been folded into its column names)
+        flat_table = re.sub(r"[^a-z0-9]", "", " ".join(str(v) for row in (t.get("all_rows") or t.get("rows") or []) for v in row).lower())
         # only rows whose own text is in the table: the table's box may also hold a heading above it, which stays a heading
         inside = [r for r in rows if y0 - 0.002 <= (r.y0 + r.y1) / 2 <= y1 + 0.002 and r.x0 >= x0 - 0.02 and r.x0 <= x1
                   and all(re.sub(r"[^a-z0-9]", "", c[0].lower()) in flat_table for c in r.cells)]
@@ -193,6 +322,10 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
         rows = [r for r in rows if r not in inside]
         rows.append(marker)
         rows.sort(key=lambda r: r.y0)
+    if not rows:
+        return {"blocks": [], "entities": [], "layout": has_layout}
+    rows, page_number = _drop_page_number(rows)
+    rows = _pair_captions(rows)
     if not rows:
         return {"blocks": [], "entities": [], "layout": has_layout}
     median_h = statistics.median(r.h for r in rows if r.kind != "given") if any(r.kind != "given" for r in rows) else 0.01
@@ -218,16 +351,30 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
                 for g in group:
                     blocks.append({"type": "paragraph", "text": " ".join(c[0] for c in g.cells), "bbox": g.box})
             i = j
+        elif r.kind == "boxes":
+            items, j = [], i
+            group = None
+            prev_block = blocks[-1] if blocks else None
+            while j < len(rows) and rows[j].kind == "boxes":
+                items += [dict(it) for it in rows[j].boxes or []]
+                j += 1
+            if prev_block and prev_block["type"] == "paragraph" and any(it["label"].lower() in ("yes", "no") for it in items):
+                q = prev_block["text"]
+                group = q if len(q) <= 130 else q[:127].rsplit(" ", 1)[0] + "..."                          # the question the Yes / No answers
+            for it in items:
+                it["group"] = group
+            blocks.append({"type": "checkboxes", "items": items, "bbox": _box([c for g in rows[i:j] for c in g.cells])})
+            i = j
         elif r.kind == "kv":
             items: List[Dict[str, Any]] = []
             j, prev = i, None
             while j < len(rows) and rows[j].kind == "kv" and (prev is None or rows[j].y0 - prev.y1 <= rows[j].h * 2.5):
-                items += _pairs(rows[j].cells)
+                items += rows[j].pairs or _pairs(rows[j].cells)
                 prev = rows[j]
                 j += 1
             # a long value wraps onto the lines under it: those lines belong to the last label, not to a paragraph of their own
             while has_layout and prev is not None and j < len(rows) and rows[j].kind == "text" and items and items[-1].get("value") \
-                    and rows[j].y0 - prev.y1 <= rows[j].h * PARAGRAPH_GAP and rows[j].x0 >= prev.x0 - 0.02:
+                    and rows[j].y0 - prev.y1 <= rows[j].h * PARAGRAPH_GAP and abs(rows[j].x0 - prev.x0) <= 0.04:
                 items[-1]["value"] = (items[-1]["value"] + " " + rows[j].text.strip()).strip()
                 items[-1]["bbox"][3] = round(max(items[-1]["bbox"][3], rows[j].y1), 4)
                 prev = rows[j]
@@ -259,7 +406,10 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
                 j += 1
             blocks.append({"type": "paragraph", "text": " ".join(text), "bbox": _box([c for g in rows[i:j] for c in g.cells])})
             i = j
-    return {"blocks": blocks, "entities": _entities(blocks), "layout": has_layout}
+    out = {"blocks": blocks, "entities": _entities(blocks), "layout": has_layout}
+    if page_number:
+        out["page_number"] = page_number
+    return out
 
 
 def build_from_lines(lines: List[str]) -> Dict[str, Any]:

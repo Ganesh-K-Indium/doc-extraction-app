@@ -467,3 +467,10 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
 .theme-toggle button { display: grid; place-items: center; width: 26px; height: 22px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--text-2); cursor: pointer; }
 .theme-toggle button:hover { color: var(--text); }
 .theme-toggle button[aria-pressed="true"] { background: var(--surface); border-color: var(--line); color: var(--text); box-shadow: var(--shadow-1); }
+
+/* check boxes read from the page */
+.rs-boxes { margin: 6px 0; } .rs-boxes ul { list-style: none; margin: 2px 0 6px; padding: 0; display: grid; gap: 2px; }
+.rs-boxes li { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 6px; color: var(--text-2); } .rs-boxes li.is-on { color: var(--text); font-weight: 500; }
+.rs-boxes li > span:first-child { color: var(--text-2); } .rs-boxes li.is-on > span:first-child { color: var(--ok); }
+.rs-boxes__q { margin: 6px 0 2px; font-size: 12px; color: var(--text-2); }
+.rs-pageno { margin: 8px 0 0; font-size: 11px; color: var(--text-2); }

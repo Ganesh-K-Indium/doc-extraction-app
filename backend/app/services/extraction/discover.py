@@ -551,7 +551,7 @@ async def discover_document(path: str, pages: List[int], models: List[str], read
         async with sem:
             if n in digital_pages:
                 d = digital_pages[n]
-                got = await digital.read_page(path, n, d["lines"], d["tables"], small, ask, memo)
+                got = await digital.read_page(path, n, d["lines"], d["tables"], small, ask, memo, d.get("facts"), d.get("boxes"))
                 if not (models and digital.needs_model(d["lines"], got)):
                     return got                      # code read it exactly: no model call for this page
                 text_pages[n] = await asyncio.to_thread(pdf_pages.layout_text, path, n)

@@ -9,7 +9,7 @@ function toPoints(b: Block, page?: Page): BBox | null {
     return [b.bbox[0] * w, b.bbox[1] * h, b.bbox[2] * w, b.bbox[3] * h];
 }
 
-function BlockView({ block, page, onJump }: { block: Block; page: Page; onJump: (page: number, bbox?: BBox | null) => void }) {
+function BlockView({ block, page, onJump, after }: { block: Block; page: Page; onJump: (page: number, bbox?: BBox | null) => void; after?: Block }) {
     const go = () => onJump(page.page, toPoints(block, page));
     switch (block.type) {
         case 'heading': {
@@ -31,6 +31,22 @@ function BlockView({ block, page, onJump }: { block: Block; page: Page; onJump: 
                         <tbody>{block.rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{v}</td>)}</tr>)}</tbody>
                     </table>
                 </div>);
+        case 'checkboxes': {
+            const groups: { group: string | null; items: typeof block.items }[] = [];
+            for (const it of block.items) {
+                const g = it.group ?? null;
+                if (groups.length && groups[groups.length - 1].group === g) groups[groups.length - 1].items.push(it);
+                else groups.push({ group: g, items: [it] });
+            }
+            return (
+                <div className="rs-boxes" onClick={go}>
+                    {groups.map((g, i) => (
+                        <div key={i}>
+                            {g.group && !(after?.type === 'paragraph' && after.text.startsWith(g.group.slice(0, 40))) && <p className="rs-boxes__q">{g.group}</p>}
+                            <ul>{g.items.map((it, j) => <li key={j} className={it.checked ? 'is-on' : ''}><span aria-hidden="true">{it.checked ? '\u2612' : '\u2610'}</span><span className="sr-only">{it.checked ? 'Checked: ' : 'Not checked: '}</span>{it.label}</li>)}</ul>
+                        </div>))}
+                </div>);
+        }
         case 'list': {
             const Tag = block.ordered ? 'ol' : 'ul';
             return <Tag className="rs-list" onClick={go}>{block.items.map((t, i) => <li key={i}>{t}</li>)}</Tag>;
@@ -56,7 +72,8 @@ export function Blocks({ page, onJump }: { page: Page; onJump: (page: number, bb
     return (
         <div className="rs-page">
             {!st.layout && <p className="rs-nolayout"><span className="rv-chip rv-chip--warn">No layout</span> Read without positions, so blocks cannot be shown on the page and tables are found from the text only.</p>}
-            {st.blocks.map((b, i) => <BlockView key={i} block={b} page={page} onJump={onJump} />)}
+            {st.blocks.map((b, i) => <BlockView key={i} block={b} page={page} onJump={onJump} after={st.blocks[i - 1]} />)}
             <EntityList entities={st.entities} />
+            {st.page_number && <p className="rs-pageno">Page number on the sheet: {st.page_number}</p>}
         </div>);
 }

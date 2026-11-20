@@ -55,16 +55,116 @@ def split_header(table: Dict[str, Any]) -> Tuple[List[List[str]], List[List[str]
         if any(_is_data(c) for c in values) or not any(values):
             break
         n += 1
+    if n == len(rows) and n >= 2:          # no amounts anywhere (a table of names and codes): only the first row is a header
+        n = 1
     return rows[:n], rows[n:]
 
 
 def raw_labels(header_rows: List[List[str]], ncols: int) -> List[str]:
     """No model: each column's header cells joined top to bottom. Correct for a one-row header, merely readable otherwise."""
-    out = ["Item"]
+    first = header_rows[0][0] if len(header_rows) == 1 and header_rows[0] and header_rows[0][0] else "Item"      # a one-row header names the first column too
+    out = [first]
     for j in range(1, ncols):
         parts = [r[j] for r in header_rows if j < len(r) and r[j]]
         out.append(" ".join(parts) or f"Column {j}")
     return out
+
+
+def _page_words(path: str, page_num: int, bbox: List[float]) -> List[Tuple[float, float, float, float, str]]:
+    with pdf_pages.FITZ_LOCK, pdf_pages.open_pdf(path) as pdf:
+        found = pdf[page_num - 1].get_text("words", clip=tuple(bbox))
+    return [(w[0], w[1], w[2], w[3], w[4]) for w in found if w[4].strip()]
+
+
+def _lines_of(words: List[Tuple[float, float, float, float, str]]) -> List[List[Tuple[float, float, float, float, str]]]:
+    """Words grouped into lines top to bottom, each line left to right."""
+    heights = sorted(w[3] - w[1] for w in words)
+    tol = (heights[len(heights) // 2] if heights else 8.0) * 0.6
+    lines: List[List[Tuple[float, float, float, float, str]]] = []
+    for w in sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+        mid = (w[1] + w[3]) / 2
+        if lines and abs(mid - sum((x[1] + x[3]) / 2 for x in lines[-1]) / len(lines[-1])) <= tol:
+            lines[-1].append(w)
+        else:
+            lines.append([w])
+    return [sorted(l, key=lambda w: w[0]) for l in lines]
+
+
+def geometric_labels(path: str, page_num: int, bbox: List[float], header_rows: List[List[str]], ncols: int) -> Optional[List[str]]:
+    """Column labels from where the header words sit on the page, with no model.
+
+    A heading such as "Three Months Ended March 31," is printed once over the two columns it covers, so the table extractor cuts
+    it into pieces ("Three" | "Months Ended") and joining the cells down each column gives nonsense ("Three 2026"). Here the
+    words of each header line are grouped into phrases by the gaps between them; a phrase that touches several columns spans
+    them, and a phrase in a middle row that sits under such a span takes the same columns. The last row names one column each
+    (years, dates) and never spreads. Each column's label is its phrases read top to bottom.
+
+    Returns None whenever anything does not line up exactly (the words are not the cells' words, the phrases leave a column
+    unnamed, two columns would get the same name): the caller then falls back to the cells, or to a model.
+    """
+    if len(header_rows) < 2 or ncols < 3:
+        return None
+    try:
+        words = _page_words(path, page_num, bbox)
+        first = " ".join(c for c in header_rows[0][1:] if c).split()
+        if not words or not first:
+            return None
+        lines = _lines_of(words)
+        start = next((i for i, l in enumerate(lines) if " ".join(first) in " ".join(w[4] for w in l)), None)
+        if start is None or start + len(header_rows) > len(lines):
+            return None
+        head = lines[start:start + len(header_rows)]
+        phrases: List[List[Tuple[int, int, float, float, str]]] = []        # per row: (first column, last column, x0, x1, text)
+        for row, line in zip(header_rows, head):
+            cells = [c for c in row]
+            if [w[4] for w in line] != " ".join(c for c in cells if c).split():
+                return None                                                  # the words are not exactly the cells' words
+            col_of: List[int] = []
+            for j, c in enumerate(cells):
+                col_of += [j] * len(c.split())
+            heights = sorted(w[3] - w[1] for w in line)
+            gap = max(heights[len(heights) // 2], 4.0) * 1.0
+            groups: List[List[int]] = [[0]]
+            for k in range(1, len(line)):
+                if line[k][0] - line[k - 1][2] <= gap:
+                    groups[-1].append(k)
+                else:
+                    groups.append([k])
+            out = []
+            for g in groups:
+                cols = sorted({col_of[k] for k in g if col_of[k] >= 1})
+                if cols:
+                    out.append((cols[0], cols[-1], line[g[0]][0], line[g[-1]][2], " ".join(line[k][4] for k in g)))
+            phrases.append(out)
+        last = len(phrases) - 1
+        spans: List[List[Tuple[int, int, float, float, str]]] = []          # the columns each phrase finally covers
+        for r, row_phrases in enumerate(phrases):
+            row_spans = []
+            for a, b, x0, x1, text in row_phrases:
+                if a == b and r < last:
+                    best, best_ov = None, 0.0
+                    for up in spans[:r]:
+                        for ua, ub, ux0, ux1, _ in up:
+                            ov = min(x1, ux1) - max(x0, ux0)
+                            if ub > ua and ov > best_ov and ov >= 0.6 * (x1 - x0):
+                                best, best_ov = (ua, ub), ov
+                    if best:
+                        a, b = best
+                row_spans.append((a, b, x0, x1, text))
+            spans.append(row_spans)
+        parts: List[List[str]] = [[] for _ in range(ncols)]
+        for row_spans in spans:
+            for a, b, _x0, _x1, text in row_spans:
+                for c in range(a, min(b, ncols - 1) + 1):
+                    if not parts[c] or parts[c][-1] != text:
+                        parts[c].append(text)
+        names = ["Item"] + [" ".join(parts[c]) for c in range(1, ncols)]
+        if any(not n for n in names) or len(set(names)) != len(names):
+            return None
+        return names
+    except Exception as e:
+        logger.warning("Geometric header labels failed, using the header cells: %s", e)
+        return None
 
 
 Ask = Callable[[str, str], Awaitable[str]]
@@ -104,6 +204,89 @@ async def header_labels(header_rows: List[List[str]], ncols: int, model: Optiona
     got = (["Item"] + cols) if len(cols) == ncols - 1 and all(cols) else fallback
     memo[shown] = got
     return got
+
+
+def _slug(text: str) -> str:
+    """Plain lower-case words joined by underscores: "No" stays "no" (the label canonicaliser would read it as "number")."""
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")[:48]
+
+
+def is_amount_table(t: Dict[str, Any]) -> bool:
+    """A table of amounts: two or more value columns that are mostly figures. The extractor behind `tables` is built for these
+    (statements, schedules). A table of names and codes, or a contents list with a page-number column, is read better from
+    the layout (structure.py), which also copes with centred and right-aligned columns."""
+    _header, body = split_header(t)
+    body = [r for r in body if any(r)]
+    width = max((len(r) for r in body), default=0)
+    figures = 0
+    for j in range(1, width):
+        cells = [r[j] for r in body if j < len(r) and r[j].strip()]
+        if cells and sum(1 for c in cells if _is_data(c)) / len(cells) >= 0.5:
+            figures += 1
+    return figures >= 2
+
+
+def _points(box: Optional[List[float]], size: Dict[str, Any]) -> Optional[List[float]]:
+    """A box given as fractions of the page, in PDF points."""
+    if not box or not size or not size.get("width"):
+        return None
+    return [round(box[0] * size["width"], 2), round(box[1] * size["height"], 2), round(box[2] * size["width"], 2), round(box[3] * size["height"], 2)]
+
+
+def tables_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Tables the layout finder made (not the ones the extractor supplied) in the extractor's shape, so they are read the same way."""
+    out = []
+    for i, b in enumerate(blocks):
+        if b.get("type") == "table" and not b.get("method") and b.get("bbox"):
+            rows = ([b["columns"]] if b.get("header") else []) + b["rows"]
+            out.append({"rows": rows, "headers": b["columns"], "bbox": _points(b["bbox"], size), "method": "layout",
+                        "title": _title_above(blocks, i)})
+    return out
+
+
+def _title_above(blocks: List[Dict[str, Any]], i: int) -> Optional[str]:
+    """What the page calls the table at blocks[i]: the heading directly above it, or a short caption ("Securities registered
+    pursuant to Section 12(b) of the Act:"). A long paragraph is not a title."""
+    if i == 0:
+        return None
+    prev = blocks[i - 1]
+    text = (prev.get("text") or "").strip()
+    if prev.get("type") == "heading" and text:
+        return text.title() if text.isupper() else text
+    if prev.get("type") == "paragraph" and 2 <= len(text.split()) <= 12 and not text.endswith((".", "?")):
+        return text.rstrip(": ")
+    return None
+
+
+def facts_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Label and value pairs the layout found, including those with no colon (a value over its caption, "Commission File Number 001-37845")."""
+    out = []
+    for b in blocks:
+        if b.get("type") == "key_value":
+            for it in b["items"]:
+                if it.get("value") and len(it["value"]) <= 2 * MAX_VALUE_CHARS and len(it["label"]) <= MAX_VALUE_CHARS:
+                    out.append({"label": it["label"], "value": it["value"], "bbox": _points(it.get("bbox"), size)})
+    return out
+
+
+def boxes_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = []
+    for b in blocks:
+        if b.get("type") == "checkboxes":
+            out += [{"label": it["label"], "checked": bool(it["checked"]), "group": it.get("group"), "bbox": _points(b.get("bbox"), size)} for it in b["items"]]
+    return out
+
+
+def labelled_table(path: str, page_num: int, t: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """{"columns", "rows"} of a detected table with its header folded into proper column names and removed from the rows;
+    the same naming the extraction uses, so the page view and the extracted data agree. None for a table with no body."""
+    header, body = split_header(t)
+    body = [r for r in body if any(r)]
+    ncols = max((len(r) for r in body), default=0)
+    if not body or ncols < 2:
+        return None
+    cols = geometric_labels(path, page_num, t["bbox"], header, ncols) or raw_labels(header, ncols)
+    return {"columns": cols, "rows": [r + [""] * (ncols - len(r)) for r in body], "method": t.get("method")}
 
 
 _TITLE_OK = re.compile(r"[A-Za-z]{3}")
@@ -243,8 +426,10 @@ def _cell(value: str, page: int) -> Dict[str, Any]:
 
 
 async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dict[str, Any]], model: Optional[str] = None,
-                    ask: Optional[Ask] = None, memo: Optional[Dict[str, List[str]]] = None) -> Dict[str, Any]:
-    """Everything code can read from one digital page, in the same shape as discover.discover_page returns."""
+                    ask: Optional[Ask] = None, memo: Optional[Dict[str, List[str]]] = None,
+                    facts: Optional[List[Dict[str, Any]]] = None, boxes: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Everything code can read from one digital page, in the same shape as discover.discover_page returns.
+    `facts` and `boxes` are label/value pairs and check boxes the layout already found (see structure.py)."""
     memo = memo if memo is not None else {}
     out_tables: Dict[str, List[Dict[str, Any]]] = {}
     out_cols: Dict[str, List[str]] = {}
@@ -257,8 +442,8 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         ncols = max((len(r) for r in body), default=0)
         if not body or ncols < 2:
             continue
-        cols = await header_labels(header, ncols, model, ask, memo)
-        ttl = table_title(lines, body[0][0] if body[0] else "")
+        cols = await asyncio.to_thread(geometric_labels, path, page_num, t["bbox"], header, ncols) or await header_labels(header, ncols, model, ask, memo)
+        ttl = t["title"] if "title" in t else table_title(lines, body[0][0] if body[0] else "")      # a layout-found table names itself from the page
         title = title or ttl
         key = labels.key(ttl or "", f"table_{n}")
         key = key if key not in out_tables else f"{key}_{n}"
@@ -289,6 +474,21 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
             hit = locate.find_with_text(path, page_num, value, label)
             fields[key] = {**_cell(value, page_num), "label": label, "section": None, "type": "text", "normalized": None,
                            "bbox": hit[0] if hit else None}
+    for f in facts or []:                              # pairs with no colon: a caption under a value, a label then an id or a date
+        key = labels.key(f["label"])
+        if key and key not in fields:
+            fields[key] = {**_cell(f["value"], page_num), "label": f["label"], "section": None, "type": "text", "normalized": None, "bbox": f.get("bbox")}
+    taken: Dict[str, int] = {}
+    for b in boxes or []:                              # a drawn tick or cross read from the text: exact, like every value on a digital page
+        group = (b.get("group") or "").strip()
+        base = _slug(" ".join(group.split()[:6])) if group else "checkboxes"
+        key = f"{base}.{_slug(b['label'])}" if _slug(b["label"]) else ""
+        if not key:
+            continue
+        taken[key] = taken.get(key, 0) + 1
+        key = key if taken[key] == 1 else f"{key}_{taken[key]}"
+        fields[key] = {"value": b["checked"], "status": "agreed", "alternatives": [], "method": "text-glyph", "bbox": b.get("bbox"), "page": page_num,
+                       "label": b["label"], "section": group or None, "type": "checkbox", "normalized": None}
     if not tables and looks_tabular(lines):
         unverified.append("this page has rows of amounts but no table was detected")
     heading = page_title(lines)

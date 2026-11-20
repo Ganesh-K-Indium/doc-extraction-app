@@ -220,7 +220,7 @@ A file that matches no template is still extracted, and the cost depends on what
 
 | Page | Read by | Model use |
 |---|---|---|
-| Digital (real text layer): statements, filings, reports | **Code** (`extraction/digital.py`): table cells and `Label: value` pairs copied exactly from the PDF | none, except a few lines to name a column header that spans rows (once per distinct header) |
+| Digital (real text layer): statements, filings, reports | **Code** (`extraction/digital.py`, `structure.py`): table cells and labelled values copied exactly from the PDF; column names built from where the header words sit (a heading over two columns names both); cover-page facts with no colon (a value over its caption, "Commission File Number 001-37845"); ticked and empty boxes read from their glyphs | none, except a few lines to name a column header that spans rows (once per distinct header) |
 | Digital but **unproven** or form-like with nothing code could read | Two models on the page *text* (no image), second reader reads against the first's labels | text only, only for those pages |
 | Scan or handwriting | Two vision models, first proposes the fields, second reads against its labels; one focused third look for disputed values | image tokens |
 
