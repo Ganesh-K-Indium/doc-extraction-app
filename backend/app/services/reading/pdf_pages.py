@@ -75,9 +75,168 @@ def page_count(path: str) -> int:
         return pdf.page_count
 
 
+GRID_MAX_COLS = 12         # a ruled grid wider than this is a page of boxes, not a table
+GRID_MAX_EMPTY = 0.5       # ...and one that is mostly empty cells is a form or a layout grid
+
+
+def _clean(cell: Any) -> str:
+    return " ".join(str(cell or "").split())
+
+
+SUBCOLUMN_GAP = 0.9        # words in a header cell this many line heights apart are separate columns that share a ruled cell (MIN  TYP  MAX)
+
+Word = Tuple[float, float, float, float, str]
+
+
+def _join(words: "List[Word]") -> str:
+    """Words of one cell as text: lines top to bottom, each left to right."""
+    if not words:
+        return ""
+    h = sorted(w[3] - w[1] for w in words)[len(words) // 2]
+    lines: "List[List[Word]]" = []
+    for w in sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+        if lines and abs((w[1] + w[3]) / 2 - sum((x[1] + x[3]) / 2 for x in lines[-1]) / len(lines[-1])) <= h * 0.6:
+            lines[-1].append(w)
+        else:
+            lines.append([w])
+    return " ".join(" ".join(x[4] for x in sorted(l, key=lambda w: w[0])) for l in lines)
+
+
+def _sub_centres(words: "List[Word]") -> "List[float]":
+    """Where the separate labels of one header cell sit across it. Words that overlap across (stacked lines of one label) or
+    are a space apart are one label; a wide gap starts another."""
+    if not words:
+        return []
+    h = sorted(w[3] - w[1] for w in words)[len(words) // 2]
+    spans: "List[List[float]]" = []
+    for w in sorted(words, key=lambda w: w[0]):
+        if spans and w[0] - spans[-1][1] <= h * SUBCOLUMN_GAP:
+            spans[-1][1] = max(spans[-1][1], w[2])
+        else:
+            spans.append([w[0], w[2]])
+    return [(a + b) / 2 for a, b in spans]
+
+
+def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]":
+    """A ruled table's rows as text, or None when it is not a table of data. The cells' text is rebuilt from the page's words
+    (the library's own extraction drops spaces and decimal points in some fonts). A cell that a neighbour spans downwards
+    (a parameter name over several test conditions, a unit over a group of rows) takes the text of the cell that spans it;
+    a cell that is merely blank stays blank. A header cell that holds several labels set well apart (MIN TYP MAX, ruled as
+    one cell) becomes a column for each, and the values under it are dealt out by position."""
+    ncols = t.col_count
+    geom = [r.cells for r in t.rows]
+    if not geom or ncols < 2 or ncols > GRID_MAX_COLS or len(geom) < 2:
+        return None
+    inside: "List[List[List[Word]]]" = []
+    for r in geom:
+        inside.append([[w for w in words if b[0] <= (w[0] + w[2]) / 2 <= b[2] and b[1] <= (w[1] + w[3]) / 2 <= b[3]] if b else [] for b in r])
+    xs: "List[float]" = []
+    for c in t.cells:
+        for x in (c[0], c[2]):
+            if not any(abs(x - y) < 1.5 for y in xs):
+                xs.append(x)
+    xs.sort()
+    covered: "dict[tuple[int, int], tuple[int, int]]" = {}           # (row, col) of a cell a neighbour spans downwards -> the cell that spans it
+    if len(xs) - 1 == ncols:
+        for r2 in range(1, len(geom)):
+            top = min((b[1] for b in geom[r2] if b), default=None)
+            if top is None:
+                continue
+            for c in range(ncols):
+                if geom[r2][c] is not None:
+                    continue
+                mid = (xs[c] + xs[c + 1]) / 2
+                for r in range(r2 - 1, -1, -1):
+                    b = geom[r][c] if c < len(geom[r]) else None
+                    if b and b[3] > top + 1 and b[0] - 1 <= mid <= b[2] + 1:
+                        covered[(r2, c)] = (r, c)
+                        break
+    # each grid column becomes one column, or several when its header cell holds labels set well apart
+    layout: "List[List[float]]" = []
+    for c in range(ncols):
+        centres = _sub_centres(inside[0][c]) if geom[0][c] else []
+        layout.append(centres if len(centres) >= 2 else [])
+    out: "List[List[str]]" = []
+    for r in range(len(geom)):
+        row: "List[str]" = []
+        for c in range(ncols):
+            src = covered.get((r, c), (r, c))
+            ws = inside[src[0]][src[1]]
+            if layout[c]:
+                bucket: "List[List[Word]]" = [[] for _ in layout[c]]
+                for w in ws:
+                    k = min(range(len(layout[c])), key=lambda k: abs((w[0] + w[2]) / 2 - layout[c][k]))
+                    bucket[k].append(w)
+                row += [_join(x) for x in bucket]
+            else:
+                row.append(_join(ws))
+        out.append(row)
+    # a header cell that spans columns, with its own labels under it, makes a two-row header (PIN over NAME and NO.)
+    spanned = [c for c in range(1, ncols) if geom[0][c] is None and len(geom) > 1 and geom[1][c] is not None and (0, c) not in covered]
+    # ...which shows in the other header cells reaching down over the second row (TYPE and DESCRIPTION span both); a header whose
+    # spanning cell merely sits over data (TEST CONDITIONS over a row of conditions) has nothing reaching down
+    header_rows = 2 if spanned and any((1, c) in covered for c in range(ncols)) else 1
+    col_of = [sum(max(1, len(layout[k])) for k in range(c)) for c in range(ncols)]     # where each grid column starts in the output
+    origin, count = "", 1
+    for c in range(ncols):
+        i = col_of[c]
+        if geom[0][c] is not None or layout[c]:
+            origin, count = out[0][i], 1
+        elif c > 0 and not out[0][i] and origin:                    # the rest of a header cell that spans this column too
+            count += 1
+            out[0][i] = origin if header_rows == 2 else f"{origin} ({count})"
+    # a row under the header that says the same thing in every column ("8 PINS", "20 PINS") is part of the header, and so is a
+    # row of labels with no figures in it that sits right above rows that have them (package names over pin numbers)
+    while header_rows < len(out) - 1 and header_rows < 4:
+        row, after = out[header_rows], out[header_rows + 1]
+        if sum(1 for x in row if x) >= 2 and not any(re.search(r"\d", x) for x in row) and any(re.search(r"\d", x) for x in after):
+            header_rows += 1
+            continue
+        break
+    while header_rows < len(out) - 1:
+        cells = [re.sub(r"\d+", "", x).strip() for x in out[header_rows] if x]
+        common = max(set(cells), key=cells.count) if cells else ""
+        if len(cells) >= 3 and re.search(r"[A-Za-z]{3}", common) and cells.count(common) >= max(3, len(cells) * 0.6):
+            header_rows += 1
+        else:
+            break
+    rows = [r for r in out if any(r)]
+    total = sum(len(r) for r in rows)
+    if len(rows) < 2 or not total or sum(1 for r in rows for c in r if not c) / total > GRID_MAX_EMPTY:
+        return None
+    return rows, header_rows
+
+
+def _vertical_rules(draws: "List[Any]", box: "Tuple[float, ...]") -> int:
+    """How many vertical ruling lines are drawn inside `box`. A grid that has them is a table drawn with borders; one found
+    from underlines alone (a statement's rules under its headings) is not, and the word-position extractor reads it better."""
+    x0, y0, x1, y1 = box
+    n = 0
+    for d in draws:
+        for it in d["items"]:
+            if it[0] == "l":
+                a, b = it[1], it[2]
+                if abs(a.x - b.x) < 0.5 and abs(a.y - b.y) > 4 and x0 - 2 <= a.x <= x1 + 2 and y0 - 2 <= min(a.y, b.y) and max(a.y, b.y) <= y1 + 2:
+                    n += 1
+            elif it[0] == "re":
+                r = it[1]
+                if r.width < 1.5 and r.height > 4 and x0 - 2 <= r.x0 <= x1 + 2 and y0 - 2 <= r.y0 and r.y1 <= y1 + 2:
+                    n += 1
+    return n
+
+
+def _overlap(a: List[float], b: List[float]) -> float:
+    w, h = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    return w * h / max(1e-6, min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])))
+
+
 def _tables(page, page_num: int) -> List[Dict[str, Any]]:
-    """Tables on a page. The word-position / ruling-line extractor (ported from the SEC pipeline) runs first because it
-    keeps column alignment; PyMuPDF's generic find_tables() is the fallback for text-only tables it rejects."""
+    """Tables on a page. A table drawn with ruling lines is read from its rules: the lines say exactly where the cells are,
+    including cells that span rows (datasheets, forms with boxes). A table without rules (statements, schedules) comes from
+    the word-position extractor (ported from the SEC pipeline), which keeps column alignment; PyMuPDF's generic
+    find_tables() is the fallback for text-only tables it rejects."""
     out: List[Dict[str, Any]] = []
     try:
         from app.services.reading.table_extractor import extract_page_tables_with_bbox
@@ -85,8 +244,22 @@ def _tables(page, page_num: int) -> List[Dict[str, Any]]:
             out.append({"bbox": round_rect(bb), "headers": t["headers"], "rows": t["rows"], "method": "layout"})
     except Exception:
         out = []
+    try:
+        words = [(w[0], w[1], w[2], w[3], w[4]) for w in page.get_text("words") if w[4].strip()]
+        draws = page.get_drawings()
+        for g in page.find_tables(strategy="lines_strict").tables:
+            if _vertical_rules(draws, g.bbox) < max(2, g.col_count - 1):
+                continue
+            got = _grid_rows(g, words)
+            if got:
+                rows, header_rows = got
+                box = round_rect(g.bbox)
+                out = [t for t in out if _overlap(t["bbox"], box) < 0.5]       # the ruled grid replaces what the extractor made of the same area
+                out.append({"bbox": box, "headers": rows[0], "rows": rows, "method": "grid", "header_rows": header_rows})
+    except Exception:
+        pass
     if out:
-        return out
+        return sorted(out, key=lambda t: (t["bbox"][1], t["bbox"][0]))
     try:
         for t in page.find_tables().tables:
             rows = [[(c or "").strip() for c in r] for r in t.extract()]
@@ -107,28 +280,68 @@ def scanned_pages(path: str) -> "set[int]":
     return out
 
 
+MIN_STAMP = 12            # a turned line at least this long is a stamp or a watermark, not a label
+
+
+def _sideways(page: "fitz.Page") -> "list[tuple[list[float], str]]":
+    """Lines set at an angle to the page (an arXiv stamp up the margin, a watermark): (box, text). They are not part of the
+    reading order and, taken as lines of text, spoil titles ("Aug") and tables. When most of a page is turned (a landscape page
+    saved sideways) none are returned: that text is the page."""
+    try:
+        d = page.get_text("dict")
+    except Exception:
+        return []
+    turned, total, kept = [], 0, 0
+    for b in d.get("blocks", []):
+        for l in b.get("lines", []):
+            text = "".join(sp["text"] for sp in l.get("spans", [])).strip()
+            n = len(text)
+            total += n
+            dx, dy = l.get("dir", (1, 0))
+            if n and abs(dy) > 0.25 and abs(dy) >= abs(dx) * 0.25:
+                kept += n
+                if n >= MIN_STAMP:                       # a short turned label ("Form" down the side of a tax form) is part of the page
+                    turned.append((list(l["bbox"]), text))
+    return turned if total and kept / total < 0.3 else []
+
+
+def _without(text: str, lines: "list[str]") -> str:
+    """`text` with the given lines of it taken out."""
+    if not lines:
+        return text
+    gone = {" ".join(l.split()) for l in lines}
+    return "\n".join(l for l in text.splitlines() if " ".join(l.split()) not in gone)
+
+
 def analyze_page(path: str, page_num: int) -> Dict[str, Any]:
     """Embedded-text view of one page. `scanned` means a picture covers most of the page, so any text layer is a
     scanner's OCR and should not be trusted as the page text (it is still used to place bounding boxes)."""
     with FITZ_LOCK, open_pdf(path) as pdf:
         page = pdf[page_num - 1]
+        sideways = _sideways(page)
+        def turned(w) -> bool:
+            cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+            return any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b, _ in sideways)
         words = [{"text": w[4], "bbox": round_rect(w[:4]), "block": w[5], "line": w[6]}
-                 for w in page.get_text("words") if w[4].strip()]
+                 for w in page.get_text("words") if w[4].strip() and not turned(w)]
         blocks = [{"id": f"b{b[5]}", "bbox": round_rect(b[:4]), "text": b[4].strip()}
                   for b in page.get_text("blocks") if b[6] == 0 and b[4].strip()]
         tables = _tables(page, page_num)
-        widgets = []
+        widgets, every = [], []
         try:  # fillable-form fields: a digitally filled form has its values here, exact
             for w in page.widgets() or []:
+                every.append({"name": w.field_name, "type": w.field_type_string, "value": "" if w.field_value in (None, "Off") else str(w.field_value),
+                              "bbox": round_rect(w.rect)})
                 if w.field_value not in (None, "", "Off"):
                     widgets.append({"name": w.field_name, "type": w.field_type_string, "value": str(w.field_value),
                                     "bbox": round_rect(w.rect)})
         except Exception:
-            widgets = []
+            widgets, every = [], []
         return {
             "widgets": widgets,
+            "fields": every,                      # every fillable field, blank or filled (the widgets above are only the filled ones)
             "size": {"width": round(page.rect.width, 2), "height": round(page.rect.height, 2)},
-            "text": page.get_text().strip(),
+            "text": _without(page.get_text().strip(), [t for _, t in sideways]),
             "words": words,
             "blocks": blocks,
             "tables": tables,

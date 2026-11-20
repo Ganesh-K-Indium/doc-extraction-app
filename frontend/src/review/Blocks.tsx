@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { Block, BBox, Page } from '../api';
 
 const ENTITY_LABEL: Record<string, string> = { date: 'Dates', amount: 'Amounts', phone: 'Phones', email: 'Emails', url: 'Links', percent: 'Percentages' };
@@ -7,6 +8,25 @@ function toPoints(b: Block, page?: Page): BBox | null {
     if (!b.bbox || !page?.size) return null;
     const { width: w, height: h } = page.size;
     return [b.bbox[0] * w, b.bbox[1] * h, b.bbox[2] * w, b.bbox[3] * h];
+}
+
+const ROWS_SHOWN = 12;
+
+/** A table; a long one (a datasheet's electrical characteristics runs to dozens of rows) shows its first rows and the rest on request. */
+function TableView({ block, onClick }: { block: Extract<Block, { type: 'table' }>; onClick: () => void }) {
+    const [all, setAll] = useState(false);
+    const rows = all ? block.rows : block.rows.slice(0, ROWS_SHOWN);
+    return (
+        <div className="rs-tablewrap" onClick={onClick}>
+            <table className="rs-table">
+                {block.header && <thead><tr>{block.columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>}
+                <tbody>{rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{v}</td>)}</tr>)}</tbody>
+            </table>
+            {block.rows.length > ROWS_SHOWN && (
+                <button type="button" className="rs-more" onClick={(e) => { e.stopPropagation(); setAll(!all); }}>
+                    {all ? 'Show fewer rows' : `Show all ${block.rows.length} rows`}
+                </button>)}
+        </div>);
 }
 
 function BlockView({ block, page, onJump, after }: { block: Block; page: Page; onJump: (page: number, bbox?: BBox | null) => void; after?: Block }) {
@@ -24,13 +44,7 @@ function BlockView({ block, page, onJump, after }: { block: Block; page: Page; o
                     {block.items.map((it, i) => <div key={i}><dt>{it.label}</dt><dd>{it.value ?? <span className="muted">blank</span>}</dd></div>)}
                 </dl>);
         case 'table':
-            return (
-                <div className="rs-tablewrap" onClick={go}>
-                    <table className="rs-table">
-                        {block.header && <thead><tr>{block.columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>}
-                        <tbody>{block.rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{v}</td>)}</tr>)}</tbody>
-                    </table>
-                </div>);
+            return <TableView block={block} onClick={go} />;
         case 'checkboxes': {
             const groups: { group: string | null; items: typeof block.items }[] = [];
             for (const it of block.items) {
@@ -74,6 +88,7 @@ export function Blocks({ page, onJump }: { page: Page; onJump: (page: number, bb
             {!st.layout && <p className="rs-nolayout"><span className="rv-chip rv-chip--warn">No layout</span> Read without positions, so blocks cannot be shown on the page and tables are found from the text only.</p>}
             {st.blocks.map((b, i) => <BlockView key={i} block={b} page={page} onJump={onJump} after={st.blocks[i - 1]} />)}
             <EntityList entities={st.entities} />
+            {st.running && st.running.length > 0 && <p className="rs-running">Repeated on every page: {st.running.map((r) => r.text).join(' · ')}</p>}
             {st.page_number && <p className="rs-pageno">Page number on the sheet: {st.page_number}</p>}
         </div>);
 }

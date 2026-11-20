@@ -142,7 +142,6 @@ _KINDS: List[Dict[str, Any]] = [
     {"label": "Meeting minutes", "all": [r"minutes\s+of\s+(the\s+)?meeting|meeting\s+minutes"]},
     {"label": "Resume", "all": [r"curriculum\s+vitae|\bresum[eé]\b"]},
     {"label": "Datasheet", "all": [r"\bdata\s*sheet\b"]},
-    {"label": "Specification", "all": [r"\b(technical\s+|product\s+|design\s+)?specifications?\b"]},
     {"label": "Test report", "all": [r"\btest\s+(report|results)\b"]},
     {"label": "Report", "all": [r"\b(annual|quarterly|monthly|technical|status|progress|inspection|audit)\s+report\b"]},
     {"label": "Letter", "all": [r"(?m)^\s*dear\s+\w+"]},
@@ -151,12 +150,18 @@ GENERIC_LABELS = ("Unclassified", "Untemplated document", "Other document")
 _HEAD_LINES = 14
 
 
-_STRUCTURAL = re.compile(r"^(part|item|section|chapter|article|page|table|figure|appendix|exhibit)\b[\s\w.\-]{0,12}$", re.I)
+_STRUCTURAL = re.compile(r"^(part|item|section|chapter|article|page|table(?!\s+of\s+contents)|figure|appendix|exhibit)\b[\s\w.\-]{0,12}$", re.I)
+_BOILERPLATE = re.compile(r"^(page\s*\d+(\s*(of|/)\s*\d+)?|form\s+\S+\s*(\(.*\))?\s*(page\s*\d+)?)$", re.I)     # "Page 2", "Form W-9 (Rev. 3-2024)": a page's running line
+
+
+_LITTLE = {"of", "the", "and", "for", "in", "to", "a", "an", "on", "or", "at", "by", "is", "as"}      # short words every title has
 
 
 def _wordlike(text: str) -> bool:
-    """Does this read as words? OCR noise ("Me thn it it mE") does not: most of its pieces are too short or have no vowel."""
-    words = re.findall(r"[A-Za-z][A-Za-z'&.-]*", text)
+    """Does this read as words? OCR noise ("Me thn it it mE") does not: most of its pieces are too short or have no vowel.
+    A part number or a code ("LM358B", "W-9", "5.1") is neither words nor noise, so it is left out of the count."""
+    tokens = [t for t in text.split() if not re.search(r"\d", t)]
+    words = [w for t in tokens for w in re.findall(r"[A-Za-z][A-Za-z'&.-]*", t) if w.lower() not in _LITTLE]
     if not words:
         return False
     good = [w for w in words if len(re.sub(r"[^A-Za-z]", "", w)) >= 3 and re.search(r"[aeiouyAEIOUY]", w)]
@@ -164,13 +169,22 @@ def _wordlike(text: str) -> bool:
     return len(good) / len(words) >= 0.7 and stray <= 1
 
 
+def _usable_title(title: str) -> Optional[str]:
+    """A title as it reads on a page, or None: it must be words, and start like a title (a capital or a number), not like the middle of a sentence."""
+    title = re.sub(r"\s+", " ", title.split(" | ")[0]).strip(" |:-")      # a heading read across cells: its first cell
+    if len(title) < 3 or not _wordlike(title) or not (re.match(r"[A-Z0-9(]", title) or re.match(r"[a-z]+\d", title)) or re.search(r"\.{4,}", title) or _BOILERPLATE.match(title) \
+            or title.split()[-1].lower() in _LITTLE or (len(title.split()) == 1 and len(title) <= 4):                # "Tax and": a label cut short, not a title
+        return None
+    return (title[:77] + "...") if len(title) > 80 else title
+
+
 def _title_of(blocks: List[Dict[str, Any]], text: str) -> Optional[str]:
     """The page's own title: the most specific of its top headings, else a short first line. Headings that are only a
     section marker ("PART I", "Item 1") are passed over; where several headings of one level stack up, broad to specific
-    ("PART I. FINANCIAL INFORMATION", "INCOME STATEMENTS"), the last is the one that says what is on this page."""
+    ("PART I. FINANCIAL INFORMATION", "INCOME STATEMENTS"), the last is the one that says what is on this page.
+    A heading that does not read as a title (an equation, the tail of a sentence) is skipped for the next one."""
     heads = [(i, b) for i, b in enumerate(blocks[:8]) if b.get("type") == "heading" and len(re.sub(r"[^A-Za-z]", "", b.get("text", ""))) >= 3
              and not _STRUCTURAL.match(b["text"].strip())]
-    title = ""
     if heads:
         level = min(b["level"] for _, b in heads)
         top = [i for i, b in heads if b["level"] == level]
@@ -185,13 +199,54 @@ def _title_of(blocks: List[Dict[str, Any]], text: str) -> Optional[str]:
             nxt = blocks[run[0] + 1]
             if nxt.get("type") == "heading" and nxt["level"] == level and len(title) + len(nxt["text"]) <= 80:
                 title += " " + nxt["text"]               # a title set over two lines
-    else:
-        line = next((l.strip() for l in text.splitlines() if l.strip()), "")
-        title = line if len(line) <= 70 and ":" not in line else ""
-    title = re.sub(r"\s+", " ", title).strip(" |:-")
-    if not title or not _wordlike(title):
-        return None
-    return (title[:77] + "...") if len(title) > 80 else title
+        got = _usable_title(title)
+        if got:
+            return got
+        for _, b in heads:                               # the best heading was not a title: the next that is
+            got = _usable_title(b["text"])
+            if got:
+                return got
+    lines = [l.strip() for l in text.splitlines() if l.strip()][:6]
+    for k, line in enumerate(lines):
+        if re.fullmatch(r"\d{1,2}(\.\d{1,2})*", line) and k + 1 < len(lines):
+            line = f"{line} {lines[k + 1]}"             # a section number on a line of its own, then its name
+        if len(line) <= 70 and ":" not in line and not re.search(r"[.,;]\s*$", line):
+            got = _usable_title(line)
+            if got:
+                return got
+    return None
+
+
+_FORM_ID = re.compile(r"^Form\b\s*([A-Z0-9][\w-]{0,9})?\s*$")
+_FORM_SKIP = re.compile(r"^(\(?rev\.|\d{4}$|omb\b|department\b|internal revenue|go to\b|give\b|before\b|see\b|print\b)", re.I)
+
+
+def _form_label(top: List[str]) -> Optional[Tuple[str, Optional[str]]]:
+    """Agency forms open with "Form W-9" or "Form" over "1040" and then the form's name ("Request for Taxpayer Identification
+    Number and Certification"). Returns ("Form W-9", "Request for ...") from the top lines, or None."""
+    for i, line in enumerate(top[:8]):
+        m = _FORM_ID.match(line)
+        if not m:
+            continue
+        ident, j = m.group(1), i + 1
+        if not ident and j < len(top) and re.fullmatch(r"[A-Z0-9][\w-]{0,9}", top[j]):
+            ident, j = top[j], j + 1
+        if not ident or not re.search(r"\d", ident):
+            return None
+        name: List[str] = []
+        for line in top[j:j + 5]:
+            if _FORM_SKIP.match(line):
+                if name:
+                    break
+                continue
+            if _wordlike(line) and len(line.split()) >= 2 and not line.endswith(".") and len(" ".join(name + [line])) <= 80:
+                name.append(line)
+                if len(name) == 2:
+                    break
+            elif name:
+                break
+        return f"Form {ident}", (" ".join(name) or None)
+    return None
 
 
 def describe(blocks: List[Dict[str, Any]], text: str, trust_text: bool = True) -> Dict[str, Any]:
@@ -210,6 +265,12 @@ def describe(blocks: List[Dict[str, Any]], text: str, trust_text: bool = True) -
                 kind = rule["label"]
                 break
     title = _title_of(blocks, text) if trust_text else None
+    if not kind and trust_text:
+        form = _form_label([l.strip() for l in top.splitlines()])
+        if form:
+            kind = form[0]
+            title = form[1] or title
+            return {"label": f"{kind}: {title}" if title else kind, "title": title, "kind": kind}
     label = kind or title
     return {"label": label, "title": title, "kind": kind} if label else {}
 

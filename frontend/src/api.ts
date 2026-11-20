@@ -39,7 +39,7 @@ export interface Stats {
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }
 export interface Page {
-    page: number; size?: { width: number; height: number } | null; structure?: { layout: boolean; blocks: Block[]; entities: Entity[]; page_number?: string }; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
+    page: number; size?: { width: number; height: number } | null; structure?: { layout: boolean; blocks: Block[]; entities: Entity[]; page_number?: string; running?: Running[] }; source: string; verified: boolean; scanned: boolean; handwritten?: boolean; has_text_layer?: boolean; error?: string; text: string; lines: Line[];
     route?: Route; reading?: PageReading; page_meta: Record<string, string | number>; classification: { type: string; label: string; confidence: number };
 }
 /** One piece of a page, in reading order. `bbox` is a fraction of the page (x0, y0, x1, y1); absent when the page had no layout. */
@@ -50,8 +50,10 @@ export type Block =
     | { type: 'table'; columns: string[]; header: boolean; rows: string[][]; bbox?: BBox }
     | { type: 'list'; ordered: boolean; items: string[]; bbox?: BBox }
     | { type: 'checkboxes'; items: { label: string; checked: boolean; group?: string | null }[]; bbox?: BBox };
+/** A line the document repeats on its pages (a banner, a footer): kept once per page, out of the blocks. */
+export interface Running { text: string; where: 'top' | 'bottom' }
 export interface Entity { type: string; value: string; block: number }
-export interface StructurePage { page: number; source: string | null; layout: boolean; blocks: Block[]; entities: Entity[]; page_number?: string }
+export interface StructurePage { page: number; source: string | null; layout: boolean; blocks: Block[]; entities: Entity[]; page_number?: string; running?: Running[] }
 export interface StructureDoc { doc_index: number; type: string; label: string; pages: StructurePage[] }
 export interface Structure { documents: StructureDoc[] }
 export interface Route { reasons: string[]; reader?: string; extractor?: string }

@@ -24,6 +24,8 @@ PARAGRAPH_GAP = 1.0        # a gap above this many line heights starts a new par
 _LABEL = re.compile(r"^\s*([A-Z#][^:|]{0,48}?)\s*:\s*(.*)$")
 _LIST = re.compile(r"^\s*([•●▪◦*\-]|\d{1,2}[.)]|[A-Za-z][.)])\s+(\S.*)$")
 _SENTENCE_END = re.compile(r"[.!?]\s*$")
+# "1 Features", "5.3 Recommended Operating Conditions": a section number and a short title in capitals-and-small-words
+_NUMBERED = re.compile(r"^(\d{1,2}(?:\.\d{1,2}){0,3})\s+([A-Z][\w&/'\-,]*(?:\s+(?:[A-Z0-9][\w&/'\-,()]*|of|and|the|for|in|to|on|or|a|an|with|by|at|per|vs\.?)){0,9})$")
 
 _CHECKED, _EMPTY = "☑☒✔✓■", "☐□"
 _GLYPH = re.compile("([" + re.escape(_CHECKED + _EMPTY) + "])")
@@ -57,6 +59,7 @@ class _Row:
         self.y0 = min(c[2] for c in cells)
         self.y1 = max(c[4] for c in cells)
         self.h = statistics.median([max(c[4] - c[2], 1e-6) for c in cells])
+        self.order = 0.0
         self.kind = "text"            # text | heading | list | kv | multi | given
         self.level = 0
         self.table: Optional[Dict[str, Any]] = None
@@ -169,6 +172,8 @@ def _classify(rows: List[_Row], median_h: float) -> None:
             r.kind = "kv"
         elif tail:
             r.kind, r.pairs = "kv", [{"label": tail[0], "value": tail[1], "bbox": r.box}]
+        elif _NUMBERED.match(text) and len(text) <= 80 and not _SENTENCE_END.search(text) and not _LIST.match(text):
+            r.kind, r.level = "heading", 3          # the size of the type is not known here: a title set bigger outranks a numbered section
         elif _LIST.match(text):
             r.kind = "list"
         else:
@@ -199,6 +204,10 @@ def _columns(rows: List[_Row]) -> Optional[List[Tuple[float, float]]]:
         return None                                     # a column that only one row has is not a column
     if statistics.fmean(len(c[0]) for c in cells) > MAX_CELL_CHARS:
         return None                                     # long cells are running text set in columns
+    if statistics.fmean(len(c[0].split()) for c in cells) >= PROSE_WORDS + 1:
+        return None                                     # so are cells of five words or more a line
+    if statistics.fmean(len(c[0]) for c in cells) <= 3.5 and sum(1 for r in rows if len(r.cells) >= len(spans)) < len(rows):
+        return None                                     # pin numbers and labels round a drawing of a package, not a table
     return [(sp[0], sp[1]) for sp in spans]
 
 
@@ -301,34 +310,97 @@ def _given_table(t: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": "table", "columns": cols, "header": bool(cols), "rows": rows, "bbox": [round(v, 4) for v in t["bbox"]], "method": t.get("method", "given")}
 
 
+MAX_EMPTY_CELLS = 0.4      # a table found from the layout alone with more blank cells than this is not trusted
+MIN_BAND_ROWS = 6          # a column layout runs over at least this many rows, of which most have text on both sides
+PROSE_WORDS = 4.0          # ...and the text on each side is lines of running text: this many words a line, and some start in lower case
+
+
+def _prose_side(cells: List[Cell]) -> bool:
+    if len(cells) < 3:
+        return False
+    words = statistics.fmean(len(c[0].split()) for c in cells)
+    lower = sum(1 for c in cells if c[0].strip()[:1].islower()) / len(cells)
+    return words >= PROSE_WORDS and lower >= 0.15
+
+
+def _reading_order(rows: List[List[Cell]]) -> List[List[Cell]]:
+    """Rows of cells in the order a person reads them. A page set in two columns of text (a paper, a datasheet's first page)
+    arrives as rows that cross both columns, which mixes the two texts line by line. Where a clear gutter runs down a stretch of
+    rows that are text on both sides, that stretch is returned as the whole left column, then the whole right column.
+    Rows above and below it (a title, a full-width table) keep their place."""
+    if len(rows) < MIN_BAND_ROWS:
+        return rows
+    best: Optional[Tuple[int, int, float]] = None                       # (first row, last row + 1, gutter x)
+    for step in range(60, 141):
+        gx = step / 200
+        i = 0
+        while i < len(rows):
+            if any(c[1] < gx < c[3] for c in rows[i]):
+                i += 1
+                continue
+            j = i
+            while j < len(rows) and not any(c[1] < gx < c[3] for c in rows[j]):
+                j += 1
+            run = rows[i:j]
+            both = [r for r in run if any(c[3] <= gx for c in r) and any(c[1] >= gx for c in r)]
+            if len(run) >= MIN_BAND_ROWS and len(both) >= max(4, len(run) * 0.5):
+                left = [c for r in run for c in r if c[3] <= gx]
+                right = [c for r in run for c in r if c[1] >= gx]
+                if _prose_side(left) and _prose_side(right) and (best is None or len(run) > best[1] - best[0]):
+                    best = (i, j, gx)
+            i = j
+    if best is None:
+        return rows
+    a, b, gx = best
+    left_rows = [[c for c in r if c[3] <= gx] for r in rows[a:b]]
+    right_rows = [[c for c in r if c[1] >= gx] for r in rows[a:b]]
+    return rows[:a] + [r for r in left_rows if r] + [r for r in right_rows if r] + rows[b:]
+
+
 def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """{"blocks": [...], "entities": [...], "layout": bool} for one page given its rows of cells.
     Fax transmission stamps are not content and are left out. `tables` are tables another extractor already found
     (bbox as page fractions, columns, rows): the rows they cover are not rebuilt, the table takes their place."""
     from app.services.reading import pdf_pages
-    rows = [_Row(r) for r in rows_in if r and any(c[0].strip() for c in r) and not pdf_pages.is_fax_stamp(" ".join(c[0] for c in r))]
+    rows = [_Row(r) for r in (_reading_order(rows_in) if has_layout else rows_in)
+            if r and any(c[0].strip() for c in r) and not pdf_pages.is_fax_stamp(" ".join(c[0] for c in r))]
+    for k, r in enumerate(rows):
+        r.order = float(k)                                  # reading order: y, except down the columns of a column layout
+    usual_h = statistics.median(r.h for r in rows) if rows else 0.01        # the page's usual text height, taken before tables take their rows out
     for t in tables or []:
         x0, y0, x1, y1 = t["bbox"]
         # the table's own text, header rows included (they may have been folded into its column names)
         flat_table = re.sub(r"[^a-z0-9]", "", " ".join(str(v) for row in (t.get("all_rows") or t.get("rows") or []) for v in row).lower())
         # only rows whose own text is in the table: the table's box may also hold a heading above it, which stays a heading
-        inside = [r for r in rows if y0 - 0.002 <= (r.y0 + r.y1) / 2 <= y1 + 0.002 and r.x0 >= x0 - 0.02 and r.x0 <= x1
-                  and all(re.sub(r"[^a-z0-9]", "", c[0].lower()) in flat_table for c in r.cells)]
+        table_words = set(re.sub(r"[^a-z0-9]", "", w.lower()) for row in (t.get("all_rows") or t.get("rows") or []) for v in row for w in str(v).split())
+        table_words |= set(re.sub(r"[^a-z0-9]", "", w.lower()) for v in (t.get("columns") or []) for w in str(v).split())
+        table_words.discard("")
+
+        def _in_table(r: "_Row") -> bool:
+            if all(re.sub(r"[^a-z0-9]", "", c[0].lower()) in flat_table for c in r.cells):
+                return True
+            # a row whose cells run together across columns (the text of two cells in one): its words are the table's, in another order
+            words = [re.sub(r"[^a-z0-9]", "", w.lower()) for c in r.cells for w in c[0].split()]
+            words = [w for w in words if w]
+            return len(words) >= 2 and sum(1 for w in words if w in table_words) / len(words) >= 0.9
+
+        inside = [r for r in rows if y0 - 0.002 <= (r.y0 + r.y1) / 2 <= y1 + 0.002 and r.x0 >= x0 - 0.02 and r.x0 <= x1 and _in_table(r)]
         if not inside or not t.get("rows"):
             continue
         top = min(r.y0 for r in inside)                     # the table starts at its first row, not at the edge of its box
         marker = _Row([("", x0, top, x1, top + 0.001)])
         marker.kind, marker.table = "given", _given_table(t)
+        marker.order = min(r.order for r in inside) - 0.5
         rows = [r for r in rows if r not in inside]
         rows.append(marker)
-        rows.sort(key=lambda r: r.y0)
+        rows.sort(key=lambda r: r.order)
     if not rows:
         return {"blocks": [], "entities": [], "layout": has_layout}
     rows, page_number = _drop_page_number(rows)
     rows = _pair_captions(rows)
     if not rows:
         return {"blocks": [], "entities": [], "layout": has_layout}
-    median_h = statistics.median(r.h for r in rows if r.kind != "given") if any(r.kind != "given" for r in rows) else 0.01
+    median_h = usual_h
     _classify(rows, median_h)
 
     blocks: List[Dict[str, Any]] = []
@@ -345,8 +417,13 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
             group, anchors = rows[i:j], None
             if len(group) >= 2:
                 anchors = _columns(group)
-            if anchors:
-                blocks.append(_table(group, anchors))
+            table = _table(group, anchors) if anchors else None
+            if table:
+                cells = [v for row in table["rows"] for v in row]
+                if cells and sum(1 for v in cells if not v) / len(cells) > MAX_EMPTY_CELLS:
+                    table = None                                  # mostly gaps: labels round a drawing, not a table
+            if table:
+                blocks.append(table)
             else:                                       # side-by-side text that is not a table: keep it as lines
                 for g in group:
                     blocks.append({"type": "paragraph", "text": " ".join(c[0] for c in g.cells), "bbox": g.box})
@@ -391,6 +468,11 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
                 m = _LIST.match(rows[j].text.strip())
                 items.append(m.group(2).strip() if m else rows[j].text.strip())
                 j += 1
+                # a long item wraps onto the lines under it, set in from the bullet: those lines are part of it
+                while has_layout and j < len(rows) and rows[j].kind == "text" and rows[j].y0 - rows[j - 1].y1 <= rows[j].h * PARAGRAPH_GAP \
+                        and rows[j].x0 > rows[j - 1].x0 + 0.005 and rows[j].x0 < rows[j - 1].x0 + 0.08 and not _LIST.match(rows[j].text.strip()):
+                    items[-1] = (items[-1] + " " + rows[j].text.strip()).strip()
+                    j += 1
             blocks.append({"type": "list", "ordered": ordered, "items": items, "bbox": _box([c for g in rows[i:j] for c in g.cells])})
             i = j
         else:
@@ -426,3 +508,49 @@ def build_from_lines(lines: List[str]) -> Dict[str, Any]:
         for it in b.get("items", []) if b["type"] == "key_value" else []:
             it.pop("bbox", None)
     return page
+
+
+# ---- running headers and footers (what every page of a document repeats) ----------------------------------------------
+
+EDGE_BLOCKS = 3            # a running line is one of the first or last blocks of a page
+MIN_RUNNING_PAGES = 3      # ...repeated on at least this many pages, and on half of them
+
+
+_EDGE_NUMBER = re.compile(r"^\s*(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?\b|\b(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?\s*$", re.I)
+
+
+def _running_key(text: str) -> str:
+    """What a line says once its page number is taken off the front or the back, or "" when there is too little left to tell it
+    from a heading that merely carries a number ("Section 3")."""
+    t = re.sub(r"\s+", " ", text.lower()).strip(" |:-")
+    stripped = _EDGE_NUMBER.sub(" ", t).strip(" |:-")
+    if stripped != t and len(re.findall(r"[a-z]", stripped)) < 12:
+        return ""
+    return stripped
+
+
+def strip_running(structures: List[Dict[str, Any]]) -> int:
+    """Take the lines a document repeats on its pages (a part-number banner, a document title, "Page 3 of 9", a confidentiality
+    note) out of each page's blocks and keep them once per page under `running`. They are not content, and they hid each
+    page's own title from the titles the page descriptions are built from. Returns how many lines were taken out."""
+    pages = [s for s in structures if s and s.get("blocks")]
+    if len(pages) < MIN_RUNNING_PAGES:
+        return 0
+    seen: Dict[str, int] = {}
+    for s in pages:
+        blocks = s["blocks"]
+        edge = list(blocks[:EDGE_BLOCKS]) + list(blocks[-EDGE_BLOCKS:])
+        keys = {_running_key(b["text"]) for b in edge if b.get("type") in ("heading", "paragraph") and 3 <= len(b.get("text", "")) <= 140}
+        for k in keys:
+            seen[k] = seen.get(k, 0) + 1
+    repeated = {k for k, n in seen.items() if k and n >= MIN_RUNNING_PAGES and n >= len(pages) / 2 and len(re.findall(r"[a-z]", k)) >= 4}
+    taken = 0
+    for s in pages:
+        blocks = s["blocks"]
+        edge_ids = {id(b) for b in list(blocks[:EDGE_BLOCKS]) + list(blocks[-EDGE_BLOCKS:])}
+        gone = [b for b in blocks if id(b) in edge_ids and b.get("type") in ("heading", "paragraph") and _running_key(b.get("text", "")) in repeated]
+        if gone:
+            s["running"] = [{"text": b["text"], "where": "top" if blocks.index(b) < len(blocks) / 2 else "bottom"} for b in gone]
+            s["blocks"] = [b for b in blocks if not any(b is g for g in gone)]
+            taken += len(gone)
+    return taken

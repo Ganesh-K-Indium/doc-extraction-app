@@ -49,6 +49,8 @@ def split_header(table: Dict[str, Any]) -> Tuple[List[List[str]], List[List[str]
     """(header rows, body rows). The header block is the leading rows that put text over the value columns and hold no
     amounts yet ("Three | Months Ended", "March 31,", "2026 | 2025"). A row that is only a label ("Revenue:") starts the body."""
     rows = [[(c or "").strip() for c in r] for r in table["rows"]]
+    if table.get("header_rows") is not None:          # a ruled grid says where its header is: its first row
+        return rows[:table["header_rows"]], rows[table["header_rows"]:]
     n = 0
     for r in rows:
         values = r[1:]
@@ -62,11 +64,13 @@ def split_header(table: Dict[str, Any]) -> Tuple[List[List[str]], List[List[str]
 
 def raw_labels(header_rows: List[List[str]], ncols: int) -> List[str]:
     """No model: each column's header cells joined top to bottom. Correct for a one-row header, merely readable otherwise."""
-    first = header_rows[0][0] if len(header_rows) == 1 and header_rows[0] and header_rows[0][0] else "Item"      # a one-row header names the first column too
-    out = [first]
-    for j in range(1, ncols):
-        parts = [r[j] for r in header_rows if j < len(r) and r[j]]
-        out.append(" ".join(parts) or f"Column {j}")
+    out: List[str] = []
+    for j in range(ncols):
+        parts: List[str] = []
+        for r in header_rows:
+            if j < len(r) and r[j] and (not parts or r[j] != parts[-1]):       # a label that spans two header rows is the same text in both
+                parts.append(r[j])
+        out.append(" ".join(parts) or ("Item" if j == 0 else f"Column {j}"))
     return out
 
 
@@ -214,7 +218,10 @@ def _slug(text: str) -> str:
 def is_amount_table(t: Dict[str, Any]) -> bool:
     """A table of amounts: two or more value columns that are mostly figures. The extractor behind `tables` is built for these
     (statements, schedules). A table of names and codes, or a contents list with a page-number column, is read better from
-    the layout (structure.py), which also copes with centred and right-aligned columns."""
+    the layout (structure.py), which also copes with centred and right-aligned columns. A table drawn with ruling lines is always
+    taken from its rules, whatever it holds: the lines give the cells exactly."""
+    if t.get("method") == "grid" and t.get("header_rows") is not None:
+        return True
     _header, body = split_header(t)
     body = [r for r in body if any(r)]
     width = max((len(r) for r in body), default=0)
@@ -244,17 +251,104 @@ def tables_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) ->
     return out
 
 
+def titled(tables: List[Dict[str, Any]], blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The extractor's tables with the name the page gives each (the heading or caption just above it) where there is one.
+    The table block the layout made for each of them (same place on the page) says what sits above it."""
+    out = []
+    for t in tables:
+        t = dict(t)
+        box = t.get("bbox")
+        if box and size and size.get("width"):
+            mine = [box[0] / size["width"], box[1] / size["height"], box[2] / size["width"], box[3] / size["height"]]
+            for i, b in enumerate(blocks):
+                bb = b.get("bbox")
+                if b.get("type") == "table" and b.get("method") and bb and all(abs(x - y) < 0.01 for x, y in zip(bb, mine)):
+                    title = _title_above(blocks, i)
+                    if title:
+                        t["title"] = title
+                    break
+        out.append(t)
+    return out
+
+
+FIELD_LABEL_REACH = 14.0    # a label above a field is at most this far (points) over its top edge
+FIELD_GAP = 22.0            # words of one label are at most this far apart
+
+
+def _near_run(words: List[Tuple[float, float, float, float, str]], start: Tuple[float, float, float, float, str], direction: int) -> str:
+    """The words of the line `start` is on, from `start` away to the left (-1) or right (+1), up to a gap."""
+    mid = (start[1] + start[3]) / 2
+    line = sorted((w for w in words if abs((w[1] + w[3]) / 2 - mid) <= (w[3] - w[1]) * 0.6), key=lambda w: w[0])
+    out, edge = [], None
+    ordered = line if direction > 0 else list(reversed(line))
+    for w in ordered:
+        if (direction > 0 and w[0] < start[0]) or (direction < 0 and w[2] > start[2]) or w is start:
+            continue
+        if edge is not None and abs((w[0] - edge) if direction > 0 else (edge - w[2])) > FIELD_GAP:
+            break
+        out.append(w[4])
+        edge = w[2] if direction > 0 else w[0]
+    return " ".join(out if direction > 0 else reversed(out))
+
+
+def fields_from_widgets(widgets: List[Dict[str, Any]], words: List[Dict[str, Any]], size: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(label/value fields, check boxes) of a fillable form, each named by the printed text next to it: on its left, else on the
+    line above; a check box by the words on its right. The form's own field names ("topmostSubform[0].Page1[0].f1_01[0]") say
+    nothing, but where the box sits on the page does. A blank form gives its fields with no values: its schema."""
+    ws = [(w["bbox"][0], w["bbox"][1], w["bbox"][2], w["bbox"][3], w["text"]) for w in words if w.get("text", "").strip()]
+    boxes_at = [w["bbox"] for w in widgets]
+    fields: List[Dict[str, Any]] = []
+    boxes: List[Dict[str, Any]] = []
+    for w in sorted(widgets, key=lambda w: (round(w["bbox"][1] / 4), w["bbox"][0])):
+        x0, y0, x1, y1 = w["bbox"]
+        inside = [t for t in ws if x0 <= (t[0] + t[2]) / 2 <= x1 and y0 <= (t[1] + t[3]) / 2 <= y1]
+        if w["type"] in ("CheckBox", "RadioButton"):
+            right = [t for t in ws if t[0] >= x1 - 1 and abs((t[1] + t[3]) / 2 - (y0 + y1) / 2) <= max(6.0, (y1 - y0) * 0.7) and t[0] - x1 <= FIELD_GAP]
+            label = _near_run(ws, min(right, key=lambda t: t[0]), +1) if right else ""
+            label = " ".join([min(right, key=lambda t: t[0])[4], label]).strip() if right else ""
+            boxes.append({"label": label or "Option", "checked": bool(w.get("value")), "group": None, "bbox": [x0, y0, x1, y1]})
+            continue
+        left = [t for t in ws if t[2] <= x0 + 1 and x0 - t[2] <= FIELD_GAP and abs((t[1] + t[3]) / 2 - (y0 + y1) / 2) <= max(6.0, (y1 - y0) * 0.7)
+                and not any(b[0] <= (t[0] + t[2]) / 2 <= b[2] and b[1] <= (t[1] + t[3]) / 2 <= b[3] for b in boxes_at)]
+        if left:
+            near = max(left, key=lambda t: t[2])
+            label = " ".join([_near_run(ws, near, -1), near[4]]).strip()
+        else:
+            above = [t for t in ws if t[3] <= y0 + 2 and y0 - t[3] <= FIELD_LABEL_REACH and t[2] >= x0 - 2 and t[0] <= x1 + 2 and t not in inside]
+            label = ""
+            if above:
+                row = max(above, key=lambda t: t[3])
+                mid = (row[1] + row[3]) / 2
+                def line_at(m: float, h: float) -> List[Tuple[float, float, float, float, str]]:
+                    return sorted((t for t in ws if abs((t[1] + t[3]) / 2 - m) <= h * 0.6 and t[2] >= x0 - 2 and t[0] <= x1 + 2), key=lambda t: t[0])
+
+                h = row[3] - row[1]
+                parts = [line_at(mid, h)]
+                # a label set over two lines: the line above joins it when no other field sits between them
+                upper = line_at(mid - h * 1.25, h)
+                if upper and not any(b[3] > upper[0][3] - 1 and b[1] < parts[0][0][1] + 1 and b[0] < x1 and b[2] > x0 and b is not w["bbox"] for b in boxes_at):
+                    parts.insert(0, upper)
+                label = " ".join(t[4] for part in parts for t in part)
+        fields.append({"label": re.sub(r"\s+", " ", label).strip(" :.") or "Field", "value": (w.get("value") or "").strip(),
+                       "bbox": [x0, y0, x1, y1], "type": "text"})
+    return fields, boxes
+
+
 def _title_above(blocks: List[Dict[str, Any]], i: int) -> Optional[str]:
     """What the page calls the table at blocks[i]: the heading directly above it, or a short caption ("Securities registered
     pursuant to Section 12(b) of the Act:"). A long paragraph is not a title."""
-    if i == 0:
+    j = i - 1
+    while j >= max(0, i - 3):
+        prev = blocks[j]
+        text = (prev.get("text") or "").strip()
+        if prev.get("type") == "paragraph" and re.fullmatch(r"\(.*\)|[\s(]*in (millions|thousands|billions)[^.]*", text, re.I | re.S):
+            j -= 1                                       # "(In millions) (Unaudited)": a note on units, the title is above it
+            continue
+        if prev.get("type") == "heading" and text:
+            return text.title() if text.isupper() else text
+        if prev.get("type") == "paragraph" and 2 <= len(text.split()) <= 12 and not text.endswith((".", "?")):
+            return text.rstrip(": ")
         return None
-    prev = blocks[i - 1]
-    text = (prev.get("text") or "").strip()
-    if prev.get("type") == "heading" and text:
-        return text.title() if text.isupper() else text
-    if prev.get("type") == "paragraph" and 2 <= len(text.split()) <= 12 and not text.endswith((".", "?")):
-        return text.rstrip(": ")
     return None
 
 
@@ -384,7 +478,7 @@ def grid_alternative(path: str, page_num: int, bbox: List[float]) -> Optional[Di
 def verified_table(path: str, page_num: int, t: Dict[str, Any]) -> Tuple[Dict[str, Any], float, List[str]]:
     """The better of the two table readings for this region, with its coverage and what it missed."""
     best, (cov, missing) = t, coverage(path, page_num, t["bbox"], _raw_rows(t))
-    if cov < COVERAGE_OK:
+    if cov < COVERAGE_OK and t.get("header_rows") is None:       # a ruled grid is already read from the page's own words and lines
         alt = grid_alternative(path, page_num, t["bbox"])
         if alt:
             acov, amissing = coverage(path, page_num, t["bbox"], _raw_rows(alt))
@@ -427,7 +521,8 @@ def _cell(value: str, page: int) -> Dict[str, Any]:
 
 async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dict[str, Any]], model: Optional[str] = None,
                     ask: Optional[Ask] = None, memo: Optional[Dict[str, List[str]]] = None,
-                    facts: Optional[List[Dict[str, Any]]] = None, boxes: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                    facts: Optional[List[Dict[str, Any]]] = None, boxes: Optional[List[Dict[str, Any]]] = None,
+                    form_fields: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Everything code can read from one digital page, in the same shape as discover.discover_page returns.
     `facts` and `boxes` are label/value pairs and check boxes the layout already found (see structure.py)."""
     memo = memo if memo is not None else {}
@@ -478,6 +573,12 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         key = labels.key(f["label"])
         if key and key not in fields:
             fields[key] = {**_cell(f["value"], page_num), "label": f["label"], "section": None, "type": "text", "normalized": None, "bbox": f.get("bbox")}
+    for f in form_fields or []:                        # a fillable form's own fields, named by the text beside them
+        key = labels.key(f["label"], "field")
+        base, k = key, 2
+        while key in fields:
+            key, k = f"{base}_{k}", k + 1
+        fields[key] = {**_cell(f["value"], page_num), "label": f["label"], "section": None, "type": "text", "normalized": None, "bbox": f["bbox"]}
     taken: Dict[str, int] = {}
     for b in boxes or []:                              # a drawn tick or cross read from the text: exact, like every value on a digital page
         group = (b.get("group") or "").strip()

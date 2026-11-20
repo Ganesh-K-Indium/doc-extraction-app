@@ -24,7 +24,7 @@ def structure_json(ex) -> Dict[str, Any]:
                 continue
             st = p.get("structure") or {"blocks": [], "entities": [], "layout": False}
             pages.append({"page": n, "source": p.get("source"), "layout": st.get("layout", False), "positions_from": st.get("positions_from"), "blocks": st.get("blocks", []),
-                          "entities": st.get("entities", [])})
+                          "entities": st.get("entities", []), "running": st.get("running", [])})
         docs.append({"doc_index": d.get("doc_index"), "type": d.get("type"), "label": d.get("label"), "pages": pages})
     return {"extraction_id": ex.id, "filename": ex.filename, "reading": r.get("reading"), "documents": docs}
 

@@ -65,11 +65,11 @@ def _label_continuations(documents: List[Dict[str, Any]], by_num: Dict[int, Dict
     """A page with no title of its own that sits inside a recognised document continues it: say so, instead of calling it another
     document. Its type stays "unknown", so which pages a template reads is unchanged."""
     for d in documents:
-        if d["type"] == "unknown":
+        if d["label"] in classify.GENERIC_LABELS:
             continue
         for n in d["pages"]:
             c = by_num[n]["classification"]
-            if c["type"] == "unknown":
+            if c["type"] == "unknown" and (d["type"] != "unknown" or (n != d["pages"][0] and c.get("label") in classify.GENERIC_LABELS)):
                 c.update({"label": f"{d['label']} (continued)", "by": "document"})
 
 
@@ -84,6 +84,16 @@ def _classify_page(text: str, structure_page: Dict[str, Any], reading: Optional[
     trust = (r.get("confidence") is None or r["confidence"] >= 0.8) and (r.get("agreement") is None or r["agreement"] >= 0.75)
     d = classify.describe(structure_page.get("blocks", []), text, trust)
     return {**got, "label": d.get("label") or "Other document", "title": d.get("title"), "kind": d.get("kind"), "by": "layout"}
+
+
+def _name_pages(pages: List[Dict[str, Any]]) -> None:
+    """Take what every page repeats (running headers and footers) out of the structures, then describe again the pages that
+    were described from their layout: the repeated banner is no longer mistaken for each page's title."""
+    if not structure.strip_running([p.get("structure") for p in pages]):
+        return
+    for p in pages:
+        if p.get("classification", {}).get("by") == "layout":
+            p["classification"] = _classify_page(p["text"], p["structure"], p.get("reading"))
 
 
 async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, reader, sem: asyncio.Semaphore,
@@ -148,7 +158,9 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             structure_page = structure.build_page(layout, tables=given) if layout else structure.build_from_lines(content)
             if placed is not None:
                 structure_page["positions_from"], structure_page["placement"] = positions_from, round(placed, 2)
-            return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
+            fillable = digital.fields_from_widgets(info["fields"], info["words"], info["size"]) if info.get("fields") and source == "text-layer" else None
+            return {**base, "fillable": {"fields": fillable[0], "boxes": fillable[1]} if fillable else None,
+                    "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": _classify_page(text, structure_page, reading), "text": text, "lines": out_lines,
                     "structure": structure_page, "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
@@ -210,6 +222,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
     for p in pages:
         if p["page"] in layer_errors:
             p["text_layer_error"] = layer_errors[p["page"]]
+    _name_pages(pages)
     if template_choice != AUTO:
         # The user said what this file is. Every page that has content becomes that document; no guessing.
         reg = {d["type"]: d for d in classify.all_types()}
@@ -281,16 +294,18 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
                 blocks, size = pg["structure"]["blocks"], pg.get("size") or {}
                 digital_pages[n] = {"lines": [l["text"] for l in pg["lines"]],
                                     # amounts by the extractor, everything else by the layout; and the pairs and boxes the layout found
-                                    "tables": [t for t in pg["tables"] if digital.is_amount_table(t)] + digital.tables_from_structure(blocks, size),
-                                    "facts": digital.facts_from_structure(blocks, size), "boxes": digital.boxes_from_structure(blocks, size)}
+                                    "tables": digital.titled([t for t in pg["tables"] if digital.is_amount_table(t)], blocks, size) + digital.tables_from_structure(blocks, size),
+                                    "facts": digital.facts_from_structure(blocks, size),
+                                    "boxes": (pg.get("fillable") or {}).get("boxes") or digital.boxes_from_structure(blocks, size),
+                                    "form_fields": (pg.get("fillable") or {}).get("fields", [])}
             # A page a local OCR engine read well is structured from its text: a few hundred tokens instead of a page image.
             ocr_text = {n: by_num[n]["text"] for n in usable if form_models and by_num[n]["source"] == "ocr-local" and by_num[n]["text"].strip()}
             res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator,
                                                    text_pages=ocr_text, digital_pages=digital_pages)
-            if res["title"] and doc["type"] == "unknown" and not by_num[doc["pages"][0]]["classification"].get("kind"):
-                doc["label"] = res["title"]
+            if res["title"] and doc["type"] == "unknown" and doc["label"] in classify.GENERIC_LABELS:
+                doc["label"] = res["title"]               # only when the first page said nothing itself: a table's caption is no document title
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
-                          "label": res["title"] or doc["label"], "pages": doc["pages"], "readers": res["readers"],
+                          "label": doc["label"] if doc["label"] not in classify.GENERIC_LABELS else (res["title"] or doc["label"]), "pages": doc["pages"], "readers": res["readers"],
                           "fields": res["fields"], "tables": res["tables"], "table_columns": res["table_columns"],
                           "validation": validation.review_notes(res["fields"], res["tables"]),
                           "_template": {"canonical": {}}, "_text": "\n".join(texts.values())})

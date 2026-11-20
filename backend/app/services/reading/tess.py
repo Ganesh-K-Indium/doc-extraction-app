@@ -35,9 +35,40 @@ def available() -> bool:
     return binary() is not None
 
 
-def png_to_pdf_and_words(png: bytes) -> "tuple[bytes, str]":
-    """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run, so reading the page
-    for its text costs no second pass. Raises RuntimeError with Tesseract's own message on failure."""
+FEW_WORDS = 40          # a page with fewer recognised words than this, yet with ink on it, is read again on a cleaned image
+
+
+def word_count(tsv: str) -> int:
+    n = 0
+    for line in tsv.splitlines()[1:]:
+        f = line.split("\t")
+        if len(f) > 11 and f[11].strip():
+            try:
+                if float(f[10]) > 0:
+                    n += 1
+            except ValueError:
+                pass
+    return n
+
+
+def flatten(png: bytes) -> "tuple[bytes, float]":
+    """The page with its lighting evened out (a phone photo is darker on one side, or has a shadow), and the share of it
+    that is ink. Each pixel is compared with the paper around it, so uneven light stops hiding the text."""
+    from io import BytesIO
+    from PIL import Image, ImageChops, ImageFilter, ImageOps
+    im = Image.open(BytesIO(png)).convert("L")
+    small = im.resize((max(1, im.width // 4), max(1, im.height // 4)))
+    paper = small.filter(ImageFilter.MaxFilter(9)).filter(ImageFilter.GaussianBlur(max(4, small.width // 40))).resize(im.size)
+    dark = ImageChops.subtract(paper, im)                    # how much darker than the paper nearby
+    ink = sum(dark.histogram()[40:]) / float(im.width * im.height)
+    out = ImageOps.autocontrast(ImageOps.invert(dark), cutoff=2)
+    buf = BytesIO()
+    out.save(buf, "PNG")
+    return buf.getvalue(), ink
+
+
+def _run(png: bytes) -> "tuple[bytes, str]":
+    """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run."""
     exe = binary()
     if not exe:
         raise RuntimeError("Tesseract is not installed")
@@ -51,6 +82,26 @@ def png_to_pdf_and_words(png: bytes) -> "tuple[bytes, str]":
         if proc.returncode != 0 or not out.exists():
             raise RuntimeError((proc.stderr or b"").decode(errors="replace")[:300] or "Tesseract failed")
         return out.read_bytes(), (words.read_text(errors="replace") if words.exists() else "")
+
+
+def png_to_pdf_and_words(png: bytes) -> "tuple[bytes, str]":
+    """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run, so reading the page
+    for its text costs no second pass. A page that comes back nearly empty although it has ink on it (a photo with uneven
+    light, a shadow) is read once more on a cleaned copy, and the better reading is kept. Raises RuntimeError with
+    Tesseract's own message on failure."""
+    pdf, tsv = _run(png)
+    if word_count(tsv) >= FEW_WORDS:
+        return pdf, tsv
+    try:
+        clean, ink = flatten(png)
+        if ink < 0.004:                                      # a blank page: nothing to find
+            return pdf, tsv
+        pdf2, tsv2 = _run(clean)
+        if word_count(tsv2) > word_count(tsv):
+            return pdf2, tsv2
+    except Exception as e:                                   # the first reading stands
+        logger.warning("Cleaned-image retry failed: %s", e)
+    return pdf, tsv
 
 
 def png_to_pdf(png: bytes) -> bytes:
