@@ -61,6 +61,31 @@ def work_path(path: str) -> str:
     return str(Path(path).with_suffix(".work.pdf"))
 
 
+def _label_continuations(documents: List[Dict[str, Any]], by_num: Dict[int, Dict[str, Any]]) -> None:
+    """A page with no title of its own that sits inside a recognised document continues it: say so, instead of calling it another
+    document. Its type stays "unknown", so which pages a template reads is unchanged."""
+    for d in documents:
+        if d["type"] == "unknown":
+            continue
+        for n in d["pages"]:
+            c = by_num[n]["classification"]
+            if c["type"] == "unknown":
+                c.update({"label": f"{d['label']} (continued)", "by": "document"})
+
+
+def _classify_page(text: str, structure_page: Dict[str, Any], reading: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The rules' answer for a page. When no type matches, say what the page is from its own top (its title, or a recognised kind
+    such as an SEC filing or an invoice) rather than leaving a bare "Unclassified"; the type stays "unknown" so routing is unchanged."""
+    got = classify.classify_text(text)
+    if got["type"] != "unknown":
+        return got
+    r = reading or {}
+    # a local engine that was unsure, or that another engine disagreed with, may have produced noise: do not title the page from it
+    trust = (r.get("confidence") is None or r["confidence"] >= 0.8) and (r.get("agreement") is None or r["agreement"] >= 0.75)
+    d = classify.describe(structure_page.get("blocks", []), text, trust)
+    return {**got, "label": d.get("label") or "Other document", "title": d.get("title"), "kind": d.get("kind"), "by": "layout"}
+
+
 async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, reader, sem: asyncio.Semaphore,
                 plan: "plans.Plan", mode: str, force_vision: bool = False, tsv: Optional[str] = None) -> Dict[str, Any]:
     async with sem:
@@ -121,7 +146,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                 structure_page["positions_from"], structure_page["placement"] = positions_from, round(placed, 2)
             return {**base, "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
-                    "classification": classify.classify_text(text), "text": text, "lines": out_lines,
+                    "classification": _classify_page(text, structure_page, reading), "text": text, "lines": out_lines,
                     "structure": structure_page, "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
         except Exception as e:
             logger.exception("Page %s failed", n)
@@ -189,6 +214,10 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
         for p in pages:
             if p["classification"]["type"] != "blank_or_logo" and p["source"] != "failed":
                 p["classification"] = dict(forced)
+                if forced["type"] == "unknown":
+                    d = classify.describe(p.get("structure", {}).get("blocks", []), p["text"], p.get("reading", {}).get("confidence", 1) is None or p.get("reading", {}).get("confidence", 1) >= 0.8)
+                    if d.get("label"):
+                        p["classification"].update({"label": d["label"], "title": d.get("title"), "kind": d.get("kind")})
     elif use_llm and ocr_models:
         streak = 0  # consecutive pages the model also could not name; a long untyped document stops costing a call per page
         for i, p in enumerate(pages):  # rules could not name a non-trivial page: ask a small model, restricted to registered types
@@ -196,7 +225,10 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
                 if streak >= config.classify_give_up_after():
                     continue
                 prev = pages[i - 1]["text"] if i else ""
-                p["classification"] = await classify.classify_with_model(p["text"], ocr_models, model_ask, prev)
+                got = await classify.classify_with_model(p["text"], ocr_models, model_ask, prev)
+                if got["type"] == "unknown" and got["label"] == "Unclassified":     # the model had nothing better: keep what the page's own top says
+                    got = {**p["classification"], **({"continuation": got["continuation"]} if "continuation" in got else {})}
+                p["classification"] = got
                 streak = streak + 1 if p["classification"]["type"] == "unknown" else 0
             elif p["classification"]["type"] != "unknown":
                 streak = 0
@@ -210,6 +242,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
     handwritten = {p["page"] for p in pages if p.get("handwritten")}
     documents = classify.segment(pages, single_page)
     by_num = {p["page"]: p for p in pages}
+    _label_continuations(documents, by_num)
 
     forms, others, templated = [], [], []
     templates = type_templates()
@@ -242,7 +275,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
             ocr_text = {n: by_num[n]["text"] for n in usable if form_models and by_num[n]["source"] == "ocr-local" and by_num[n]["text"].strip()}
             res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator,
                                                    text_pages=ocr_text, digital_pages=digital)
-            if res["title"] and doc["type"] == "unknown":
+            if res["title"] and doc["type"] == "unknown" and not by_num[doc["pages"][0]]["classification"].get("kind"):
                 doc["label"] = res["title"]
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
                           "label": res["title"] or doc["label"], "pages": doc["pages"], "readers": res["readers"],

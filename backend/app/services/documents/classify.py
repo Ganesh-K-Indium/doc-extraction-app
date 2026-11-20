@@ -60,13 +60,24 @@ COLUMN_SEP = " | "      # how a reading joins the pieces that sit side by side o
 def _column_views(lines: List[str]) -> List[List[Tuple[int, str]]]:
     """The page as the whole lines, then as each column on its own. A title set beside an address block
     ("Physical Therapy / Initial / Examination" in the right column) is three short lines only when the columns
-    are read apart. Each entry keeps the index of the line it came from."""
+    are read apart. Each entry keeps the index of the line it came from.
+
+    Columns are taken by slot (first piece, second, ...) and also from the right edge: a reading may cut one line into
+    more pieces than its neighbours ("Testville | NJ 07001 | Initial"), which moves the title's words to different slots
+    while they stay the last piece of their line. Stray marks a reading leaves in a column are ignored."""
+    def real(t: str) -> bool:
+        return len(re.sub(r"[^A-Za-z0-9]", "", t)) >= 2
+
     views: List[List[Tuple[int, str]]] = [[(i, l.strip()) for i, l in enumerate(lines)]]
-    width = max((len(l.split(COLUMN_SEP)) for l in lines), default=1)
+    split = [l.split(COLUMN_SEP) for l in lines]
+    width = max((len(c) for c in split), default=1)
     for col in range(min(width, 4)):
-        cells = [(i, l.split(COLUMN_SEP)[col].strip()) for i, l in enumerate(lines) if len(l.split(COLUMN_SEP)) > col and len(l.split(COLUMN_SEP)) > 1]
+        cells = [(i, c[col].strip()) for i, c in enumerate(split) if len(c) > 1 and len(c) > col and real(c[col])]
         if cells:
             views.append(cells)
+    last = [(i, c[-1].strip()) for i, c in enumerate(split) if len(c) > 1 and real(c[-1])]
+    if last:
+        views.append(last)
     return views
 
 
@@ -116,6 +127,91 @@ def classify_text(text: str) -> Dict[str, Any]:
     found.sort(key=lambda f: f[:3])
     best = found[0][3]
     return {"type": best["type"], "label": best["label"], "confidence": 0.9 if len(found) == 1 else 0.6}
+
+
+# What a page with no template is, from the top of it. Kinds are broad, widely used document types; each needs words that
+# appear together, so a letter that merely mentions an invoice is not called an invoice. Checked on the first lines only.
+_SEC_FORM = re.compile(r"\bFORM\s+(10-K|10-Q|8-K|S-1|S-3|S-4|20-F|40-F|6-K|11-K|DEF\s*14A)\b", re.I)
+_KINDS: List[Dict[str, Any]] = [
+    {"label": "SEC filing", "all": [r"SECURITIES\s+AND\s+EXCHANGE\s+COMMISSION"]},
+    {"label": "Invoice", "all": [r"\binvoice\b", r"invoice\s*(no|number|#|date)|bill(ed)?\s+to|amount\s+due|total\s+due"]},
+    {"label": "Receipt", "all": [r"\breceipt\b", r"total|amount|paid"]},
+    {"label": "Purchase order", "all": [r"purchase\s+order"]},
+    {"label": "Account statement", "all": [r"(account|bank|card)\s+statement|statement\s+of\s+account|statement\s+period"]},
+    {"label": "Contract", "all": [r"\b(agreement|contract)\b", r"\bbetween\b|\bparties\b|hereinafter|by\s+and\s+among"]},
+    {"label": "Meeting minutes", "all": [r"minutes\s+of\s+(the\s+)?meeting|meeting\s+minutes"]},
+    {"label": "Resume", "all": [r"curriculum\s+vitae|\bresum[eé]\b"]},
+    {"label": "Datasheet", "all": [r"\bdata\s*sheet\b"]},
+    {"label": "Specification", "all": [r"\b(technical\s+|product\s+|design\s+)?specifications?\b"]},
+    {"label": "Test report", "all": [r"\btest\s+(report|results)\b"]},
+    {"label": "Report", "all": [r"\b(annual|quarterly|monthly|technical|status|progress|inspection|audit)\s+report\b"]},
+    {"label": "Letter", "all": [r"(?m)^\s*dear\s+\w+"]},
+]
+GENERIC_LABELS = ("Unclassified", "Untemplated document", "Other document")
+_HEAD_LINES = 14
+
+
+_STRUCTURAL = re.compile(r"^(part|item|section|chapter|article|page|table|figure|appendix|exhibit)\b[\s\w.\-]{0,12}$", re.I)
+
+
+def _wordlike(text: str) -> bool:
+    """Does this read as words? OCR noise ("Me thn it it mE") does not: most of its pieces are too short or have no vowel."""
+    words = re.findall(r"[A-Za-z][A-Za-z'&.-]*", text)
+    if not words:
+        return False
+    good = [w for w in words if len(re.sub(r"[^A-Za-z]", "", w)) >= 3 and re.search(r"[aeiouyAEIOUY]", w)]
+    stray = len(re.findall(r"[^\w\s&.,'()/:\-]", text))
+    return len(good) / len(words) >= 0.7 and stray <= 1
+
+
+def _title_of(blocks: List[Dict[str, Any]], text: str) -> Optional[str]:
+    """The page's own title: the most specific of its top headings, else a short first line. Headings that are only a
+    section marker ("PART I", "Item 1") are passed over; where several headings of one level stack up, broad to specific
+    ("PART I. FINANCIAL INFORMATION", "INCOME STATEMENTS"), the last is the one that says what is on this page."""
+    heads = [(i, b) for i, b in enumerate(blocks[:8]) if b.get("type") == "heading" and len(re.sub(r"[^A-Za-z]", "", b.get("text", ""))) >= 3
+             and not _STRUCTURAL.match(b["text"].strip())]
+    title = ""
+    if heads:
+        level = min(b["level"] for _, b in heads)
+        top = [i for i, b in heads if b["level"] == level]
+        run = [top[0]]
+        for i in top[1:]:
+            if i == run[-1] + 1:
+                run.append(i)                            # headings stacked one under another
+            else:
+                break
+        title = blocks[run[-1]]["text"]
+        if len(run) == 1 and run[0] + 1 < len(blocks):
+            nxt = blocks[run[0] + 1]
+            if nxt.get("type") == "heading" and nxt["level"] == level and len(title) + len(nxt["text"]) <= 80:
+                title += " " + nxt["text"]               # a title set over two lines
+    else:
+        line = next((l.strip() for l in text.splitlines() if l.strip()), "")
+        title = line if len(line) <= 70 and ":" not in line else ""
+    title = re.sub(r"\s+", " ", title).strip(" |:-")
+    if not title or not _wordlike(title):
+        return None
+    return (title[:77] + "...") if len(title) > 80 else title
+
+
+def describe(blocks: List[Dict[str, Any]], text: str, trust_text: bool = True) -> Dict[str, Any]:
+    """{"label", "title", "kind"} for a page no template names, from its top; {} when nothing can be said.
+    The label is what a reader would call it: a recognised kind ("SEC Form 10-Q", "Invoice"), else its title.
+    `trust_text` is False when the reading was poor (a faint scan, handwriting): a title picked out of noise would be
+    worse than none, and a kind needs several words to agree, so only the kind is offered."""
+    top = "\n".join([l for l in (text or "").splitlines() if l.strip()][:_HEAD_LINES])
+    kind = None
+    m = _SEC_FORM.search(top)
+    if m:
+        kind = "SEC Form " + re.sub(r"\s+", "", m.group(1).upper())
+    else:
+        for rule in _KINDS:
+            if all(re.search(p, top, re.I) for p in rule["all"]):
+                kind = rule["label"]
+                break
+    title = _title_of(blocks, text) if trust_text else None
+    label = kind or title
+    return {"label": label, "title": title, "kind": kind} if label else {}
 
 
 async def classify_with_model(text: str, models: List[str], ask=None, previous_text: str = "") -> Dict[str, Any]:

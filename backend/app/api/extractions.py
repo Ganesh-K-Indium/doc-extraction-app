@@ -12,6 +12,7 @@ from app import config, db
 from app.api.deps import require_key, workspace
 from app.engines.strategy import plan as plans
 from app.services import export, pipeline
+from app.services.documents import classify
 from app.services.reading import ocr, pdf_pages
 from app.services.extraction import remainder
 from app.services.documents import template_draft, workspace_types
@@ -37,7 +38,7 @@ def _labels(ex) -> list:
     out: list = []
     for d in res.get("documents", []):
         label = titles.get(d["doc_index"]) or d.get("label")
-        if label and label not in ("Unclassified", "Untemplated document") and label not in out:
+        if label and label not in classify.GENERIC_LABELS and label not in out:
             out.append(label)
     return out[:3]
 

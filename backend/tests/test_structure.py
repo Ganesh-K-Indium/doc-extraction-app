@@ -230,3 +230,78 @@ def test_a_vision_read_page_that_does_not_match_keeps_a_text_only_structure_and_
     (p,) = [x for x in result["pages"] if x["source"] == "ocr"]
     assert p["structure"]["layout"] is False and "positions_from" not in p["structure"]
     assert all("bbox" not in b for b in p["structure"]["blocks"])
+
+
+# -- saying what a page with no template is, instead of "Unclassified" -----------------------------------------------------
+
+def _h(text, level=2):
+    return {"type": "heading", "level": level, "text": text}
+
+
+def test_a_page_no_template_names_is_described_by_its_kind_or_its_title():
+    from app.services.documents import classify
+    sec = classify.describe([_h("UNITED STATES", 1), _h("FORM 10-Q", 1)], "UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nFORM 10-Q\nQuarterly report")
+    assert sec["label"] == "SEC Form 10-Q" and sec["kind"] == "SEC Form 10-Q"
+    inv = classify.describe([_h("INVOICE")], "INVOICE\nInvoice No: 4471\nBill to: Acme Ltd\nAmount due $1,250.00")
+    assert inv["label"] == "Invoice"
+    assert classify.describe([_h("Pump Assembly Test Plan")], "Pump Assembly Test Plan\nRev B")["label"] == "Pump Assembly Test Plan"
+    assert classify.describe([], "Dear Ms Rao,\nThank you for your letter.")["label"] == "Letter"
+
+
+def test_a_kind_needs_its_words_together_so_a_passing_mention_does_not_count():
+    from app.services.documents import classify
+    assert classify.describe([_h("Cover note")], "Cover note\nPlease find the invoice attached.")["kind"] is None
+
+
+def test_section_markers_are_passed_over_and_the_most_specific_heading_is_the_title():
+    from app.services.documents import classify
+    blocks = [_h("PART I", 3), _h("PART I. FINANCIAL INFORMATION", 3), _h("ITEM 1. FINANCIAL STATEMENTS", 3), _h("INCOME STATEMENTS", 3)]
+    assert classify.describe(blocks, "PART I\nINCOME STATEMENTS")["title"] == "INCOME STATEMENTS"
+
+
+def test_ocr_noise_is_never_used_as_a_title_and_a_poor_reading_offers_only_a_kind():
+    from app.services.documents import classify
+    assert classify.describe([_h("Me thn it it mE", 1)], "Me thn it it mE\nxx yy") == {}              # nothing sensible to say
+    assert classify.describe([_h("Pump Assembly Test Plan")], "Pump Assembly Test Plan", trust_text=False) == {}
+    assert classify.describe([_h("INVOICE")], "INVOICE\nInvoice No: 4471\nAmount due $5", trust_text=False)["label"] == "Invoice"
+
+
+def test_the_pipeline_labels_an_unnamed_page_and_keeps_its_type_unknown_for_routing():
+    from app.services import pipeline
+    blocks = {"blocks": [_h("BALANCE SHEETS", 3)]}
+    got = pipeline._classify_page("BALANCE SHEETS\nCash and equivalents 1,200\nTotal assets 9,400 and more words here to pass", blocks, {"confidence": 0.95})
+    assert got["type"] == "unknown" and got["label"] == "BALANCE SHEETS" and got["by"] == "layout"
+    noisy = pipeline._classify_page("Me thn it it mE\nsome more smudged text here that is long enough", {"blocks": [_h("Me thn it it mE", 1)]}, {"confidence": 0.4})
+    assert noisy["type"] == "unknown" and noisy["label"] == "Other document"
+    known = pipeline._classify_page("Provider Prior Authorization Request Form\n" + "x" * 60, {"blocks": []}, {})
+    assert known["type"] == "prior_auth_form"
+
+
+def test_generic_labels_are_not_offered_as_what_a_file_turned_out_to_be():
+    from app.api import extractions
+    from types import SimpleNamespace
+    ex = SimpleNamespace(result={"forms": [], "documents": [{"doc_index": 0, "label": "Other document"}, {"doc_index": 1, "label": "Unclassified"}, {"doc_index": 2, "label": "SEC Form 10-Q"}]})
+    assert extractions._labels(ex) == ["SEC Form 10-Q"]
+
+
+# -- a title Tesseract spreads over pieces of different count, and pages that continue a document ------------------------------
+
+def test_a_title_in_the_right_column_is_found_when_the_neighbouring_lines_are_cut_into_more_pieces():
+    from app.services.documents import classify
+    page = "\n".join(["Sample Health Associates", "25 Testway Ave Ste 201 | Physical Therapy", "Testville | NJ 07001-1718 | Initial",
+                      "Phone: (201)447-5757 | \u2018 | .", "Fax: (2otjaa7-o750000 | Examination",
+                      "Patient Name: Morgan Taylor | Date of Initial Examination: 08/12/2026"])
+    assert classify.classify_text(page)["type"] == "pt_initial_exam"
+
+
+def test_a_page_inside_a_recognised_document_is_labelled_as_its_continuation_without_changing_its_type():
+    from app.services import pipeline
+    pages = {1: {"classification": {"type": "pt_initial_exam", "label": "Physical therapy initial examination"}},
+             2: {"classification": {"type": "unknown", "label": "Other document", "by": "layout"}},
+             3: {"classification": {"type": "unknown", "label": "Other document", "by": "layout"}}}
+    docs = [{"type": "pt_initial_exam", "label": "Physical therapy initial examination", "pages": [1, 2]},
+            {"type": "unknown", "label": "Other document", "pages": [3]}]
+    pipeline._label_continuations(docs, pages)
+    assert pages[2]["classification"]["label"] == "Physical therapy initial examination (continued)" and pages[2]["classification"]["type"] == "unknown"
+    assert pages[3]["classification"]["label"] == "Other document"            # an unknown document keeps its own description
+    assert pages[1]["classification"]["label"] == "Physical therapy initial examination"
