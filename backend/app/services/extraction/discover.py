@@ -472,6 +472,43 @@ async def read_page_twice(models: List[str], jpeg: Optional[bytes], page_text: O
     return replies
 
 
+MIN_TABLE_NUMBERS = 4      # fewer amounts than this in rows of figures is not enough to say a table lost any
+LAYER_TRUSTED = 0.6       # the layer must confirm at least this share of the readers' figures before it is allowed to say one is missing
+COMPLETE_OK = 0.95         # a little below the digital bar: the numbers come from an OCR layer, which misreads a few
+
+
+def uncaptured(path: str, page_num: int, fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, Any]]]) -> Optional[str]:
+    """A note when amounts printed in rows of figures on the page are in none of the extracted cells: a row or a column a reader
+    dropped. Two readers can both skip the same row, so agreement does not prove a table is whole; the page's own text layer
+    (Tesseract's, for a scan) is the check. None when the page accounts for its figures."""
+    try:
+        text = pdf_pages.layout_text(path, page_num)
+    except Exception:
+        return None
+    # figures only: "70,066", "(1,234)", "12.5%", "±3". A digit run inside a part number or a code (LM358B, 5.3, V+) is not an amount.
+    figure = re.compile(r"[($±+\u2013-]*\d[\d,]*(?:\.\d+)?%?\)?")
+    tokens: List[str] = []
+    for line in text.splitlines():
+        nums = [t for t in line.replace("|", " ").split() if figure.fullmatch(t)]
+        if len(nums) >= 2 and re.search(r"[A-Za-z]{3}", line):
+            tokens += nums
+    all_printed = digital._numbers(tokens)
+    printed = type(all_printed)({k: v for k, v in all_printed.items() if len(k) >= 3 or "." in k})          # not footnote marks and small counters
+    if sum(printed.values()) < MIN_TABLE_NUMBERS:
+        return None
+    cells = [c.get("value") for c in fields.values()] + [c.get("value") for rs in tables.values() for r in rs for c in r.values()]
+    got = digital._numbers([v for v in cells if isinstance(v, str)])
+    found = type(got)({k: v for k, v in got.items() if len(k) >= 3 or "." in k})
+    if found and sum((found & printed).values()) / sum(found.values()) < LAYER_TRUSTED:
+        return None                       # the text layer confirms little of what the readers found: it is the poor one here (a photo), so it cannot judge them
+    missing = printed - got
+    lost = sum(missing.values())
+    share = 1 - lost / sum(printed.values())
+    if share >= COMPLETE_OK:
+        return None
+    return f"page {page_num}: {lost} of {sum(printed.values())} amounts printed in rows were not captured (for example {', '.join(sorted(missing.elements())[:4])}); a row or column may be missing"
+
+
 async def discover_page(path: str, page_num: int, models: List[str], reader=None, handwritten: bool = False,
                         adjudicator=None, page_text: Optional[str] = None) -> Dict[str, Any]:
     """One page, read with no template. `page_text` set means a digital page: it is read from its text (a fraction of the
@@ -520,8 +557,9 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
         cell["page"] = page_num
     prune_empty_noise(fields, a["title"])
     dedupe(fields, tables)
+    note = await asyncio.to_thread(uncaptured, path, page_num, fields, tables) if replies else None
     return {"title": a["title"], "fields": fields, "tables": tables, "table_columns": columns,
-            "readers": [r["model"] for r in replies]}
+            "readers": [r["model"] for r in replies], "unverified": [note] if note else []}
 
 
 DISCOVER_CONCURRENCY = 4  # pages read at once; a 60-page document must not fire 60 model calls together
@@ -552,6 +590,8 @@ async def discover_document(path: str, pages: List[int], models: List[str], read
             if n in digital_pages:
                 d = digital_pages[n]
                 got = await digital.read_page(path, n, d["lines"], d["tables"], small, ask, memo, d.get("facts"), d.get("boxes"), d.get("form_fields"))
+                if d.get("ocr"):
+                    got = digital.as_ocr(got, d["ocr"] == "doubtful")
                 if not (models and digital.needs_model(d["lines"], got)):
                     return got                      # code read it exactly: no model call for this page
                 text_pages[n] = await asyncio.to_thread(pdf_pages.layout_text, path, n)
@@ -580,4 +620,4 @@ async def discover_document(path: str, pages: List[int], models: List[str], read
     if len(pages) > 3 and results and results[0].get("heading"):
         title = results[0]["heading"]          # a long document is named by its first page, not by whichever table came first
     return {"title": title, "fields": fields, "tables": tables, "table_columns": columns,
-            "readers": results[0]["readers"] if results else []}
+            "readers": results[0]["readers"] if results else [], "unverified": [n for r in results for n in r.get("unverified", [])]}

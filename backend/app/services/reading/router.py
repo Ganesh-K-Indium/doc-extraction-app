@@ -57,7 +57,7 @@ def decide_reader(profile: Dict[str, Any], llm_available: bool, local_available:
     return {"reader": "text_layer_unverified", "reasons": reasons + ["no model and no local OCR engine available, using the embedded text as is"]}
 
 
-def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: bool = False) -> Dict[str, Any]:
+def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: bool = False, laid_out: bool = False) -> Dict[str, Any]:
     """template_form | discover | kv | skip, with reasons.
 
     A registered type uses its template. A type nobody registered is not an error: with a model available its
@@ -75,6 +75,9 @@ def decide_extractor(doc_type: str, llm_available: bool = True, all_digital: boo
                                                      + (" (a model only steps in for pages code cannot read completely)" if llm_available else "")]}
     if llm_available:
         return {"extractor": "discover", "reasons": ["no template matches this document, so its fields, checkboxes and tables are read from the page itself"]}
+    if laid_out:
+        return {"extractor": "discover", "reasons": ["no template matches this document and no model is in use, so its tables, labelled values and check boxes are read from the layout the local OCR found "
+                                                     "(single reader: every value is marked unverified)"]}
     return {"extractor": "kv", "reasons": ["no template matches this document and no model is in use, so its \"Label: value\" lines are read. Open the page in the Pages tab to see everything else on it; add a template for this type, or let a model read it, to capture more"]}
 
 

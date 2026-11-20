@@ -288,3 +288,124 @@ def test_a_page_with_plenty_of_words_is_read_once(monkeypatch):
     monkeypatch.setattr(tess, "_run", lambda png: (calls.append(1), (b"pdf", tsv))[1])
     tess.png_to_pdf_and_words(b"x")
     assert len(calls) == 1
+
+
+# ---- scans and vision pages: the same checks as digital ---------------------------------------------------------
+
+def test_uneven_light_is_corrected_for_the_readers_but_a_clean_scan_is_never_touched():
+    from PIL import Image
+    flat = io.BytesIO()
+    Image.new("L", (800, 1000), 245).save(flat, "PNG")
+    assert tess.evened(flat.getvalue()) == flat.getvalue()
+    photo = _photo_png(dark_side=0.4)
+    assert tess.evened(photo) != photo
+
+
+def _text_layer_pdf(path, lines):
+    doc = fitz.open()
+    page = doc.new_page()
+    for k, l in enumerate(lines):
+        page.insert_text((60, 100 + k * 16), l, fontsize=10)
+    doc.save(path)
+
+
+def test_a_vision_table_that_dropped_a_row_is_flagged(tmp_path):
+    from app.services.extraction import discover
+    p = str(tmp_path / "t.pdf")
+    _text_layer_pdf(p, ["Revenue 70,066 61,858", "Cost of revenue 21,000 19,500", "Gross margin 49,066 42,358", "Operating income 31,100 27,000"])
+    cell = lambda v: {"value": v}                                               # noqa: E731
+    whole = {"t": [{"a": cell("Revenue"), "b": cell("70,066"), "c": cell("61,858")}, {"a": cell("Cost"), "b": cell("21,000"), "c": cell("19,500")},
+                   {"a": cell("Gross"), "b": cell("49,066"), "c": cell("42,358")}, {"a": cell("Op"), "b": cell("31,100"), "c": cell("27,000")}]}
+    assert discover.uncaptured(p, 1, {}, whole) is None
+    short = {"t": whole["t"][:2]}
+    note = discover.uncaptured(p, 1, {}, short)
+    assert note and "49066" in note.replace(",", "") and note.startswith("page 1")
+
+
+def test_a_page_with_few_figures_is_not_judged(tmp_path):
+    from app.services.extraction import discover
+    p = str(tmp_path / "f.pdf")
+    _text_layer_pdf(p, ["Invoice 2026 total 120.50", "Thank you for your business"])
+    assert discover.uncaptured(p, 1, {}, {}) is None
+
+
+def test_no_model_scan_goes_to_the_layout_reader_not_plain_label_lines():
+    from app.services.reading import router
+    assert router.decide_extractor("unknown", llm_available=False, all_digital=False, laid_out=True)["extractor"] == "discover"
+    assert router.decide_extractor("unknown", llm_available=False, all_digital=False)["extractor"] == "kv"
+
+
+def test_a_page_read_from_ocr_layout_is_marked_unverified():
+    res = {"fields": {"a": {"value": "x", "status": "agreed", "method": "text-layer"}, "b": {"value": None, "status": "empty"}},
+           "tables": {"t": [{"c": {"value": "1", "status": "agreed", "method": "text-layer"}}]}, "readers": ["text-layer"]}
+    digital.as_ocr(res, doubtful=False)
+    assert res["fields"]["a"]["status"] == "single" and res["fields"]["a"]["method"] == "ocr-local" and res["fields"]["b"]["status"] == "empty"
+    assert res["tables"]["t"][0]["c"]["status"] == "single" and res["readers"] == ["ocr-local"]
+    digital.as_ocr(res, doubtful=True)
+    assert res["fields"]["a"]["status"] == "review"
+
+
+def test_a_dense_page_is_matched_to_positions_in_reasonable_time():
+    import time
+    from app.services.extraction import align
+    ref, vis = [], []
+    for i in range(450):
+        y = 0.02 + i * 0.002
+        cells = [(f"Item {i} description line {i * 7}", 0.05, y, 0.4, y + 0.0015), (f"{1000 + i * 13:,}", 0.5, y, 0.58, y + 0.0015)]
+        ref.append(cells)
+        vis.append(" | ".join(c[0] for c in cells))
+    t = time.time()
+    got = align.place(vis, ref)
+    assert got is not None and got[1] > 0.99 and time.time() - t < 20
+
+
+@pytest.mark.skipif(not tess.available(), reason="Tesseract is not installed")
+def test_a_scanned_table_with_no_model_gives_extracted_values(tmp_path):
+    from app.engines.strategy import plan as plans
+    src = str(tmp_path / "t.pdf")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((60, 80), "QUARTERLY RESULTS", fontsize=18)
+    page.insert_text((60, 120), "Item", fontsize=12)
+    page.insert_text((300, 120), "2026", fontsize=12)
+    page.insert_text((400, 120), "2025", fontsize=12)
+    for k, (name, a, b) in enumerate([("Revenue", "70,066", "61,858"), ("Cost of revenue", "21,000", "19,500"), ("Gross margin", "49,066", "42,358"),
+                                      ("Operating income", "31,100", "27,000")]):
+        y = 150 + k * 28
+        page.insert_text((60, y), name, fontsize=12)
+        page.insert_text((300, y), a, fontsize=12)
+        page.insert_text((400, y), b, fontsize=12)
+    pix = page.get_pixmap(dpi=200)
+    scan = fitz.open()
+    sp = scan.new_page(width=page.rect.width, height=page.rect.height)
+    sp.insert_image(sp.rect, pixmap=pix)
+    scan.save(src)
+    r = asyncio.run(pipeline.process(src, plan=plans.resolve({"strategy": "economy", "local_engine": "tesseract"})))
+    form = r["forms"][0]
+    assert form.get("discovered") and form["readers"] == ["ocr-local"]
+    values = {c["value"] for rows in form["tables"].values() for row in rows for c in row.values()}
+    assert {"70,066", "49,066"} <= values
+    assert all(c["status"] in ("single", "review", "empty") for rows in form["tables"].values() for row in rows for c in row.values())
+
+
+def test_digits_inside_part_numbers_are_not_amounts_a_table_lost(tmp_path):
+    from app.services.extraction import discover
+    p = str(tmp_path / "parts.pdf")
+    _text_layer_pdf(p, ["LM158, LM258, LM358, LM158A, LM258A, LM358A", "Supply voltage LM2904 3 36", "Operating temperature 125 85"])
+    assert discover.uncaptured(p, 1, {}, {}) is None
+
+
+def test_a_logo_word_does_not_title_the_page_when_a_real_heading_is_there():
+    got = classify.describe([_head("TEXAS", 1), _head("INSTRUMENTS", 1), _head("5.3 Recommended Operating Conditions", 2)], "")
+    assert got["label"] == "5.3 Recommended Operating Conditions"
+    assert classify.describe([_head("INSTRUMENTS", 1)], "")["label"] == "INSTRUMENTS"
+
+
+def test_a_poor_text_layer_does_not_second_guess_good_readers(tmp_path):
+    from app.services.extraction import discover
+    p = str(tmp_path / "garbled.pdf")
+    _text_layer_pdf(p, ["Revenue 7O,O66 6l,858", "Cost of revenue 2l,000 l9,5OO", "Gross margin 49,O66 42,358", "Operating income 3l,l00 27,OOO", "Net income 676 688"])
+    cell = lambda v: {"value": v}                                               # noqa: E731
+    table = {"t": [{"a": cell("Revenue"), "b": cell("70,066"), "c": cell("61,858")}, {"a": cell("Cost"), "b": cell("21,000"), "c": cell("19,500")},
+                   {"a": cell("Gross"), "b": cell("49,066"), "c": cell("42,358")}, {"a": cell("Op"), "b": cell("31,100"), "c": cell("27,000")}]}
+    assert discover.uncaptured(p, 1, {}, table) is None

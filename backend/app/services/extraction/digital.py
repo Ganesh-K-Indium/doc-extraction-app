@@ -597,6 +597,22 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
             "readers": ["text-layer"], "unverified": unverified}
 
 
+def as_ocr(result: Dict[str, Any], doubtful: bool) -> Dict[str, Any]:
+    """A page read by code from a local OCR engine's layout, not from a PDF's own text: the same shape of result, but no value is
+    exact, so each is marked as read once ("single"), or "review" when the engine was unsure of the page."""
+    cells = list(result["fields"].values()) + [c for rows in result["tables"].values() for r in rows for c in r.values()]
+    for c in cells:
+        if c.get("status") == "empty":
+            continue
+        c["method"] = "ocr-local"
+        if doubtful:
+            c.update({"status": "review", "reason": "the local OCR engine was unsure of this page"})
+        elif c.get("status") == "agreed":
+            c["status"] = "single"
+    result["readers"] = ["ocr-local"]
+    return result
+
+
 def looks_like_prose(lines: List[str]) -> bool:
     chars = sum(len(l) for l in lines) or 1
     long_chars = sum(len(l) for l in lines if len(l.split()) >= PROSE_WORDS_PER_LINE)

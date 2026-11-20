@@ -67,6 +67,34 @@ def flatten(png: bytes) -> "tuple[bytes, float]":
     return buf.getvalue(), ink
 
 
+UNEVEN = 0.22           # the paper is this much darker on one side than the other: a photo, not a scan
+
+
+def evened(png: bytes) -> bytes:
+    """The page image as it should go to a reader: unchanged when the light is even (almost every scan), lighting-corrected when
+    the paper is clearly darker on one side or in a shadow. A vision model reads a shadowed photo worse than a flat page, and
+    a clean scan must never be altered."""
+    from io import BytesIO
+    from PIL import Image, ImageFilter
+    try:
+        im = Image.open(BytesIO(png)).convert("L")
+        small = im.resize((max(1, im.width // 8), max(1, im.height // 8))).filter(ImageFilter.MaxFilter(7))
+        hist = small.histogram()
+        total, acc, lo, hi = sum(hist), 0, 0, 255
+        for v, n in enumerate(hist):
+            acc += n
+            if acc >= total * 0.05 and lo == 0:
+                lo = v
+            if acc >= total * 0.95:
+                hi = v
+                break
+        if hi <= 0 or (hi - lo) / hi < UNEVEN:
+            return png
+        return flatten(png)[0]
+    except Exception:
+        return png
+
+
 def _run(png: bytes) -> "tuple[bytes, str]":
     """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run."""
     exe = binary()

@@ -199,13 +199,10 @@ def _title_of(blocks: List[Dict[str, Any]], text: str) -> Optional[str]:
             nxt = blocks[run[0] + 1]
             if nxt.get("type") == "heading" and nxt["level"] == level and len(title) + len(nxt["text"]) <= 80:
                 title += " " + nxt["text"]               # a title set over two lines
-        got = _usable_title(title)
-        if got:
-            return got
-        for _, b in heads:                               # the best heading was not a title: the next that is
-            got = _usable_title(b["text"])
-            if got:
-                return got
+        found = [t for t in [_usable_title(title)] + [_usable_title(b["text"]) for _, b in heads] if t]
+        if found:
+            # a single word set in capitals ("INSTRUMENTS" under a logo) is a poor title when a heading of several words is there
+            return next((t for t in found if len(t.split()) >= 2), found[0])
     lines = [l.strip() for l in text.splitlines() if l.strip()][:6]
     for k, line in enumerate(lines):
         if re.fullmatch(r"\d{1,2}(\.\d{1,2})*", line) and k + 1 < len(lines):

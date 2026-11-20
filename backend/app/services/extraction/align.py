@@ -11,7 +11,7 @@ text alone, which is honest about having no positions instead of guessing them.
 """
 import re
 from difflib import SequenceMatcher
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 Cell = Tuple[str, float, float, float, float]       # text, x0, y0, x1, y1 as fractions of the page
 
@@ -66,7 +66,7 @@ def _spread(text: str, row: List[Cell]) -> List[Cell]:
 MAX_RUN = 8                # a vision line may cover up to this many neighbouring cells of one row (a whole row)
 
 
-MAX_LINES = 300            # pages with more lines than this are not matched
+MAX_LINES = 500            # pages with more lines than this are not matched
 MAX_ROWS = 6               # ...or a run of this many rows, or cells stacked this deep in one column
 STACK_TOL = 0.02           # cells in a column share their left edge within this (page width)
 
@@ -102,34 +102,73 @@ def _candidates(rows: List[List[Cell]]) -> List[Tuple[Pairs, str]]:
     return out
 
 
-def _assign(vision: List[str], rows: List[List[Cell]]) -> List[Optional[Pairs]]:
-    """Each vision line's reference cells, or None. Best matches first, each cell used once, in any order, because a
-    vision model lists a side-by-side layout column by column while Tesseract reads it row by row."""
-    flat = [_flat(t) for t in vision]
-    cands = _candidates(rows)
+WINDOW = 0.15              # a line is first compared with the reference rows this share of the page either side of where it should be
+
+
+def _score(vision: List[str], flat: List[str], cands: List[Tuple[Pairs, str]], m: int, only: List[int], window: Optional[float]) -> List[Tuple[float, int, int]]:
+    n = len(vision)
+    by_len = sorted(range(len(cands)), key=lambda ci: len(cands[ci][1]))
+    lens = [len(cands[ci][1]) for ci in by_len]
     scored: List[Tuple[float, int, int]] = []
-    n, m = len(vision), max(len(rows), 1)
-    for vi, v in enumerate(flat):
+    import bisect
+    for vi in only:
+        v = flat[vi]
         if len(v) < 3:
             continue
-        for ci, (pairs, t) in enumerate(cands):
+        lo_len, hi_len = int(len(v) / 1.5 - 2), int(len(v) * 1.5 + 2)       # about the same length: the cheap test, as a range
+        for k in range(bisect.bisect_left(lens, lo_len), bisect.bisect_right(lens, hi_len)):
+            ci = by_len[k]
+            pairs, t = cands[ci]
+            if window is not None and abs(pairs[0][0] / m - vi / n) > window:
+                continue
             if abs(len(v) - len(t)) > max(len(v), len(t)) * 0.5 + 2:
                 continue
             sim = _similarity(v, t)
             if sim >= MIN_SIMILARITY:
                 # where on the page it sits breaks ties between repeated text ("Yes", the same row twice)
                 scored.append((sim - 0.03 * abs(pairs[0][0] / m - vi / n) + len(t) * 1e-5, vi, ci))
-    scored.sort(reverse=True)
+    return scored
+
+
+def _assign(vision: List[str], rows: List[List[Cell]]) -> List[Optional[Pairs]]:
+    """Each vision line's reference cells, or None. Best matches first, each cell used once, in any order, because a
+    vision model lists a side-by-side layout column by column while Tesseract reads it row by row. Lines are compared with
+    the rows near where they belong first (a page of hundreds of lines would otherwise take minutes); what that leaves
+    unmatched is compared with the whole page."""
+    flat = [_flat(t) for t in vision]
+    cands = _candidates(rows)
+    n, m = len(vision), max(len(rows), 1)
     out: List[Optional[Pairs]] = [None] * n
-    used = set()
-    for _, vi, ci in scored:
-        if out[vi] is not None:
+    used: set = set()
+
+    def settle(scored: List[Tuple[float, int, int]]) -> None:
+        scored.sort(reverse=True)
+        for _, vi, ci in scored:
+            if out[vi] is not None:
+                continue
+            pairs = cands[ci][0]
+            if used & set(pairs):
+                continue
+            used.update(pairs)
+            out[vi] = pairs
+
+    # text that reads the same in both readings needs no comparing: the nearest unused place for it
+    exact: Dict[str, List[int]] = {}
+    for ci, (pairs, t) in enumerate(cands):
+        exact.setdefault(t, []).append(ci)
+    for vi in sorted(range(n), key=lambda i: -len(flat[i])):
+        if len(flat[vi]) < 3 or flat[vi] not in exact:
             continue
-        pairs = cands[ci][0]
-        if used & set(pairs):
-            continue
-        used |= set(pairs)
-        out[vi] = pairs
+        free = [ci for ci in exact[flat[vi]] if not used & set(cands[ci][0])]
+        if free:
+            ci = min(free, key=lambda c: (abs(cands[c][0][0][0] / m - vi / n), -len(cands[c][0])))
+            used.update(cands[ci][0])
+            out[vi] = cands[ci][0]
+    everyone = [vi for vi in range(n) if out[vi] is None]
+    settle(_score(vision, flat, cands, m, everyone, WINDOW if n > 40 else None))
+    left = [vi for vi in everyone if out[vi] is None and len(flat[vi]) >= 3]
+    if left and n > 40:
+        settle(_score(vision, flat, cands, m, left, None))
     return out
 
 

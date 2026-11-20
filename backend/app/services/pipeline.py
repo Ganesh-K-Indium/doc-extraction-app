@@ -268,7 +268,8 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
         doc_pages = [by_num[n] for n in doc["pages"]]
         texts = {p["page"]: p["text"] for p in doc_pages}
         decision = router.decide_extractor(doc["type"], llm_available=bool(form_models),
-                                           all_digital=all(p["source"] == "text-layer" for p in doc_pages))
+                                           all_digital=all(p["source"] == "text-layer" for p in doc_pages),
+                                           laid_out=all(p["source"] in ("text-layer", "ocr-local") and p["structure"].get("layout") for p in doc_pages if p["classification"]["type"] != "blank_or_logo"))
         doc["route"] = decision
         tpl_name = templates.get(doc["type"]) if decision["extractor"] == "template_form" else None
         if tpl_name:
@@ -289,12 +290,16 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
             digital_pages = {}
             for n in usable:
                 pg = by_num[n]
-                if pg["source"] != "text-layer":
+                laid_out_scan = pg["source"] == "ocr-local" and not form_models and pg["structure"].get("layout")
+                if pg["source"] != "text-layer" and not laid_out_scan:
                     continue
                 blocks, size = pg["structure"]["blocks"], pg.get("size") or {}
-                digital_pages[n] = {"lines": [l["text"] for l in pg["lines"]],
+                r = pg.get("reading") or {}
+                doubtful = (r.get("confidence") is not None and r["confidence"] < 0.8) or (r.get("agreement") is not None and r["agreement"] < 0.75)
+                digital_pages[n] = {"ocr": ("doubtful" if doubtful else "single") if laid_out_scan else None, "lines": [l["text"] for l in pg["lines"]],
                                     # amounts by the extractor, everything else by the layout; and the pairs and boxes the layout found
-                                    "tables": digital.titled([t for t in pg["tables"] if digital.is_amount_table(t)], blocks, size) + digital.tables_from_structure(blocks, size),
+                                    "tables": digital.titled([t for t in pg["tables"] if digital.is_amount_table(t)], blocks, size) + digital.tables_from_structure(blocks, size)
+                                    if not laid_out_scan else digital.tables_from_structure(blocks, size),
                                     "facts": digital.facts_from_structure(blocks, size),
                                     "boxes": (pg.get("fillable") or {}).get("boxes") or digital.boxes_from_structure(blocks, size),
                                     "form_fields": (pg.get("fillable") or {}).get("fields", [])}
@@ -302,12 +307,13 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
             ocr_text = {n: by_num[n]["text"] for n in usable if form_models and by_num[n]["source"] == "ocr-local" and by_num[n]["text"].strip()}
             res = await discover.discover_document(work, usable, form_models, form_reader, handwritten, adjudicator,
                                                    text_pages=ocr_text, digital_pages=digital_pages)
-            if res["title"] and doc["type"] == "unknown" and doc["label"] in classify.GENERIC_LABELS:
+            if res["title"] and doc["type"] == "unknown" and doc["label"] in classify.GENERIC_LABELS and res["readers"] != ["ocr-local"]:
                 doc["label"] = res["title"]               # only when the first page said nothing itself: a table's caption is no document title
             forms.append({"doc_index": doc["doc_index"], "doc_type": doc["type"], "template_id": "discovered", "discovered": True,
-                          "label": doc["label"] if doc["label"] not in classify.GENERIC_LABELS else (res["title"] or doc["label"]), "pages": doc["pages"], "readers": res["readers"],
+                          "label": doc["label"] if (doc["label"] not in classify.GENERIC_LABELS or res["readers"] == ["ocr-local"]) else (res["title"] or doc["label"]), "pages": doc["pages"], "readers": res["readers"],
                           "fields": res["fields"], "tables": res["tables"], "table_columns": res["table_columns"],
-                          "validation": validation.review_notes(res["fields"], res["tables"]),
+                          "validation": validation.review_notes(res["fields"], res["tables"])
+                                        + [{"rule": "incomplete_table", "severity": "warn", "detail": n} for n in res.get("unverified", []) if n.startswith("page ")],
                           "_template": {"canonical": {}}, "_text": "\n".join(texts.values())})
         elif decision["extractor"] == "kv":
             lines = [l["text"] for p in doc_pages for l in p["lines"]]

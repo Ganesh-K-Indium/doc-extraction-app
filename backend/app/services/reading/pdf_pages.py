@@ -376,7 +376,8 @@ def build_work_pdf(src: str, dst: str, scanned: "set[int]", tsv_out: "Optional[d
 def render_jpeg(path: str, page_num: int) -> bytes:
     with FITZ_LOCK, open_pdf(path) as pdf:
         png = pdf[page_num - 1].get_pixmap(dpi=ocr.RENDER_DPI).tobytes("png")
-    return ocr.normalize_image(png)
+    from app.services.reading import tess
+    return ocr.normalize_image(tess.evened(png))
 
 
 def search_rects(path: str, page_num: int, needle: str) -> List[List[float]]:
