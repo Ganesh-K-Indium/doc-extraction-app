@@ -8,7 +8,7 @@ function stored(): number {
 }
 
 /** Two panes with a draggable divider. The right pane's width is remembered. Keyboard: focus the divider, then arrows. */
-export function Split({ left, right, className = '' }: { left: React.ReactNode; right: React.ReactNode; className?: string }) {
+export function Split({ left, right, className = '', view }: { left: React.ReactNode; right: React.ReactNode; className?: string; view?: 'left' | 'right' }) {
     const [width, setWidth] = useState(stored);
     const root = useRef<HTMLDivElement>(null);
     const dragging = useRef(false);
@@ -31,7 +31,7 @@ export function Split({ left, right, className = '' }: { left: React.ReactNode; 
     }, [clamp]);
 
     return (
-        <div ref={root} className={`split ${className}`} style={{ ['--panel-w' as string]: `${width}px` }}>
+        <div ref={root} className={`split ${className}`} data-view={view} style={{ ['--panel-w' as string]: `${width}px` }}>
             <section className="split__left">{left}</section>
             <div className="split__handle" role="separator" aria-orientation="vertical" aria-label="Resize the panels" aria-valuenow={width} tabIndex={0}
                 onPointerDown={e => { e.preventDefault(); dragging.current = true; document.body.classList.add('is-resizing'); }}

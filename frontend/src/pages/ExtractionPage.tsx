@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, authHeaders, meta, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
 import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
+import { useMediaQuery } from '../lib/useMediaQuery';
 import { useWorkspace } from '../workspaceContext';
 import { FieldsTab } from '../review/FieldsTab';
 import { FindingsTab } from '../review/FindingsTab';
@@ -36,6 +37,8 @@ export default function ExtractionPage() {
     const [restNote, setRestNote] = useState<Record<number, string>>({});
     const [rereading, setRereading] = useState(false);
     const [figBusy, setFigBusy] = useState<string | null>(null);
+    const narrow = useMediaQuery('(max-width: 900px)');
+    const [view, setView] = useState<'review' | 'pdf'>(params.get('view') === 'pdf' ? 'pdf' : 'review');          // on a small screen only one of the two panes shows
     const [canRead, setCanRead] = useState(false);
     const nav = useNavigate();
     const viewer = useRef<PdfViewerHandle>(null);
@@ -78,13 +81,20 @@ export default function ExtractionPage() {
     const activeIdx = activeDoc ?? (forms.find(f => toCheck.has(f.doc_index)) ?? forms.find(f => !f.remainder) ?? forms[0])?.doc_index;
     const active = forms.find(f => f.doc_index === activeIdx);
 
-    const jump = useCallback((page: number, bbox?: BBox | null) => {
+    const jump = useCallback((page: number, bbox?: BBox | null, show = true) => {
         if (bbox) { setHighlight({ page, bbox }); viewer.current?.scrollToRect(page, bbox); }
         else { setHighlight(null); viewer.current?.scrollToPage(page, true); }
+        if (show) setView('pdf');       // asked to see it on the page: on a small screen, go to the document (a wide screen shows both anyway)
     }, []);
+    // the document is hidden while the review shows, so when it comes back, scroll it to what was last pointed at
+    useEffect(() => {
+        if (!narrow || view !== 'pdf') return;
+        const t = window.setTimeout(() => { if (highlight) viewer.current?.scrollToRect(highlight.page, highlight.bbox); }, 60);
+        return () => window.clearTimeout(t);
+    }, [narrow, view, highlight]);
     const select = useCallback((q: QItem, cell?: Cell) => {
         setSel(q); setActiveDoc(q.doc);
-        if (cell) jump(cell.page, cell.bbox);
+        if (cell) jump(cell.page, cell.bbox, false);       // picking a value marks it on the page; it does not leave the review
     }, [jump]);
     useEffect(() => { if (sel && tab === 'fields') revealInPane(document.getElementById(rowId(sel.doc, sel.key))); }, [sel, activeIdx, tab]);
 
@@ -211,5 +221,17 @@ export default function ExtractionPage() {
         </div>
     );
 
-    return <Split className="review" left={<PdfPane url={api.pdfUrl(wid, id)} headers={headers} overlays={overlays} viewerRef={viewer} visible={visible} onVisiblePage={setVisible} onError={setError} />} right={panel} />;
+    const review = <Split className="review" view={narrow ? (view === 'pdf' ? 'left' : 'right') : undefined} left={<PdfPane url={api.pdfUrl(wid, id)} headers={headers} overlays={overlays} viewerRef={viewer} visible={visible} onVisiblePage={setVisible} onError={setError} />} right={panel} />;
+    return (
+        <>
+            {review}
+            {narrow && done && (
+                <nav className="viewbar" aria-label="Switch between the review and the document">
+                    <button type="button" className={view === 'review' ? 'viewbar__btn viewbar__btn--on' : 'viewbar__btn'} aria-pressed={view === 'review'} onClick={() => setView('review')}>
+                        Review{queue.length > 0 && <span className="viewbar__n">{queue.length}</span>}
+                    </button>
+                    <button type="button" className={view === 'pdf' ? 'viewbar__btn viewbar__btn--on' : 'viewbar__btn'} aria-pressed={view === 'pdf'} onClick={() => setView('pdf')}>Document</button>
+                </nav>)}
+        </>
+    );
 }

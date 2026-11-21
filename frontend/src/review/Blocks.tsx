@@ -25,16 +25,37 @@ const KIND_LABEL: Record<string, string> = { chart: 'Chart', diagram: 'Diagram',
 
 function FigureImage({ tools, page, index }: { tools: FigureTools; page: number; index: number }) {
     const [src, setSrc] = useState<string | null>(null);
+    const [big, setBig] = useState(false);
     useEffect(() => {
         let url: string | null = null, live = true;
         api.figureImage(tools.wid, tools.id, page, index).then(u => { if (live) { url = u; setSrc(u); } else URL.revokeObjectURL(u); }).catch(() => undefined);
         return () => { live = false; if (url) URL.revokeObjectURL(url); };
     }, [tools.wid, tools.id, page, index]);
-    return src ? <img className="rs-figure__img" src={src} alt="" /> : <div className="rs-figure__img rs-figure__img--wait" aria-hidden="true" />;
+    return src
+        ? <button type="button" className="rs-figure__zoom" onClick={e => { e.stopPropagation(); setBig(b => !b); }} title={big ? 'Shrink' : 'Click to enlarge'} aria-label={big ? 'Shrink the figure' : 'Enlarge the figure'}>
+            <img className={big ? 'rs-figure__img is-big' : 'rs-figure__img'} src={src} alt="" />
+        </button>
+        : <div className="rs-figure__img rs-figure__img--wait" aria-hidden="true" />;
+}
+
+/** Read again: one click when nothing was edited; when something was, it asks first, in place, because it replaces the corrections. */
+function Reread({ edited, busy, disabled, onRead }: { edited: boolean; busy: boolean; disabled: boolean; onRead: () => void }) {
+    const [ask, setAsk] = useState(false);
+    if (busy) return <button type="button" className="btn btn--tiny" disabled>Reading…</button>;
+    if (ask) {
+        return (
+            <span className="rs-reread" role="group" aria-label="Replace your corrections?">
+                <span className="muted">This replaces your corrections.</span>
+                <button type="button" className="btn btn--tiny btn--primary" onClick={() => { setAsk(false); onRead(); }}>Read again</button>
+                <button type="button" className="btn btn--tiny" onClick={() => setAsk(false)}>Keep my edits</button>
+            </span>);
+    }
+    return <button type="button" className="btn btn--tiny" disabled={disabled} onClick={() => (edited ? setAsk(true) : onRead())}
+        title={disabled ? 'Needs a vision model' : 'Ask the model again: one more model call'}>Read again</button>;
 }
 
 /** A value that can be corrected in place: click it, type, press Enter (or click away). Escape leaves it as it was. */
-function Editable({ value, label, onSave, multiline }: { value: string | null; label: string; onSave: (v: string) => Promise<void> | void; multiline?: boolean }) {
+function Editable({ value, label, onSave, multiline, placeholder = 'add' }: { value: string | null; label: string; onSave: (v: string) => Promise<void> | void; multiline?: boolean; placeholder?: string }) {
     const [editing, setEditing] = useState(false);
     const [draft, setDraft] = useState('');
     const [saving, setSaving] = useState(false);
@@ -44,7 +65,7 @@ function Editable({ value, label, onSave, multiline }: { value: string | null; l
         if (save && text && text !== (value ?? '')) { setSaving(true); try { await onSave(text); } finally { setSaving(false); } }
     };
     if (!editing) {
-        return <button type="button" className="rs-edit" disabled={saving} title={`Click to correct ${label} by hand`} onClick={e => { e.stopPropagation(); setDraft(value ?? ''); setEditing(true); }}>{saving ? 'Saving…' : value || 'add'}</button>;
+        return <button type="button" className="rs-edit" disabled={saving} title={`Click to correct ${label} by hand`} onClick={e => { e.stopPropagation(); setDraft(value ?? ''); setEditing(true); }}>{saving ? 'Saving…' : value || placeholder}</button>;
     }
     const common = {
         autoFocus: true, value: draft, 'aria-label': `Correct ${label}`, className: 'rs-edit-input',
@@ -65,13 +86,14 @@ function RemoveButton({ what, onRemove }: { what: string; onRemove: () => Promis
 const Corrected = () => <span className="rs-mc" title="A person typed this value">manually corrected</span>;
 
 function ChartView({ chart, edit, remove }: { chart: NonNullable<FigureReading['chart']>; edit?: (field: string, value: string) => Promise<void> | void; remove?: (field: string) => Promise<void> | void }) {
-    const unit = (a: { label: string | null; unit: string | null }) => [a.label, a.unit ? `(${a.unit})` : null].filter(Boolean).join(' ');
+    // "Revenue (USD m)" with a unit of "USD m" is not written twice
+    const unit = (a: { label: string | null; unit: string | null }) => [a.label, a.unit && !(a.label ?? '').includes(a.unit) ? `(${a.unit})` : null].filter(Boolean).join(' ');
     return (
         <div className="rs-chart">
             {edit ? (
                 <p className="rs-chart__axes">
-                    {chart.type} chart · x: <Editable value={chart.x_axis.label} label="the x axis label" onSave={v => edit('xaxis.label', v)} /> (<Editable value={chart.x_axis.unit} label="the x axis unit" onSave={v => edit('xaxis.unit', v)} />)
-                    {' '}· y: <Editable value={chart.y_axis.label} label="the y axis label" onSave={v => edit('yaxis.label', v)} /> (<Editable value={chart.y_axis.unit} label="the y axis unit" onSave={v => edit('yaxis.unit', v)} />)
+                    {chart.type} chart · x: <Editable value={chart.x_axis.label} label="the x axis label" onSave={v => edit('xaxis.label', v)} /> (<Editable value={chart.x_axis.unit} label="the x axis unit" placeholder="unit" onSave={v => edit('xaxis.unit', v)} />)
+                    {' '}· y: <Editable value={chart.y_axis.label} label="the y axis label" onSave={v => edit('yaxis.label', v)} /> (<Editable value={chart.y_axis.unit} label="the y axis unit" placeholder="unit" onSave={v => edit('yaxis.unit', v)} />)
                     {(chart.x_axis.manually_corrected || chart.y_axis.manually_corrected) && <> <Corrected /></>}
                 </p>
             ) : <p className="rs-chart__axes">{chart.type} chart{unit(chart.x_axis) ? ` · x: ${unit(chart.x_axis)}` : ''}{unit(chart.y_axis) ? ` · y: ${unit(chart.y_axis)}` : ''}</p>}
@@ -102,59 +124,74 @@ function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { ty
     const key = `${page.page}:${block.index}`;
     const working = tools?.busy === key || tools?.busy === 'all';
     const go = () => onJump(page.page, toPoints(block, page));
+    const at = (field: string, v: string) => tools?.onEdit(page.page, block.index, field, v);
     const est = r?.chart ? r.chart.series.reduce((n, s) => n + s.points.filter(p => p.estimated).length, 0) : 0;
     const edited = !!r && (!!r.manually_corrected || !!r.chart?.series.some(s => s.manually_corrected || s.points.some(p => p.manually_corrected))
         || !!r.chart?.x_axis.manually_corrected || !!r.chart?.y_axis.manually_corrected || !!r.components?.some(c => c.manually_corrected) || !!r.connections?.some(c => c.manually_corrected));
+    const state = !r ? { label: 'Not read', tone: 'muted' } : block.decorative ? { label: 'Decoration', tone: 'muted' } : edited ? { label: 'Edited by you', tone: 'warn' } : { label: 'Read by a model', tone: 'ok' };
     return (
         <figure className="rs-figure">
             <div className="rs-figure__top" onClick={go}>
                 <span className="rv-chip rv-chip--muted">{KIND_LABEL[block.kind ?? 'other'] ?? 'Figure'}</span>
                 <figcaption>{block.caption ?? r?.title ?? `Figure on page ${page.page}`}</figcaption>
+                <span className={`rv-chip rv-chip--${state.tone} rs-figure__state`}>{state.label}</span>
             </div>
             {tools && <FigureImage tools={tools} page={page.page} index={block.index} />}
             {!r && (
-                <p className="rs-figure__ask">
-                    {block.labels.length > 0 ? `${block.labels.length} labels are printed on it. ` : 'No text is printed on it. '}
+                <div className="rs-figure__cta">
+                    <p>{block.labels.length > 0 ? `${block.labels.length} labels are printed on it. ` : 'No text is printed on it. '}A model can read it into data: a chart as values, a diagram as parts and connections. One call, only when you ask.</p>
                     {tools && (
-                        <button type="button" className="link" disabled={!tools.canRead || working || !!tools.busy} onClick={() => tools.onRead(page.page, block.index)}
+                        <button type="button" className="btn btn--primary btn--tiny" disabled={!tools.canRead || working || !!tools.busy} onClick={() => tools.onRead(page.page, block.index)}
                             title={tools.canRead ? 'One model call for this figure' : 'Needs a vision model: connect one on the Settings page'}>
                             {working ? 'Reading…' : 'Read this figure'}
                         </button>)}
-                </p>)}
+                    {tools && !tools.canRead && <p className="rs-figure__hint">No vision model is connected. Add one on the Settings page.</p>}
+                </div>)}
             {r && block.decorative && <p className="muted">The model took this for a logo or decoration, so nothing was extracted from it.</p>}
             {r && !block.decorative && (
                 <div className="rs-figure__read">
-                    {r.title && <p className="rs-figure__title">{tools ? <Editable value={r.title} label="the title" onSave={v => tools.onEdit(page.page, block.index, 'title', v)} /> : r.title}</p>}
-                    {r.summary && <p>{tools ? <Editable value={r.summary} label="the summary" multiline onSave={v => tools.onEdit(page.page, block.index, 'summary', v)} /> : r.summary}{r.manually_corrected && <> <Corrected /></>}</p>}
-                    {r.chart && <ChartView chart={r.chart} edit={tools ? (f, v) => tools.onEdit(page.page, block.index, f, v) : undefined} remove={tools ? f => tools.onRemove(page.page, block.index, f) : undefined} />}
+                    {r.title && <h4 className="rs-figure__title">{tools ? <Editable value={r.title} label="the title" onSave={v => at('title', v)} /> : r.title}</h4>}
+                    {r.summary && <p>{tools ? <Editable value={r.summary} label="the summary" multiline onSave={v => at('summary', v)} /> : r.summary}{r.manually_corrected && <> <Corrected /></>}</p>}
+                    {r.chart && (
+                        <>
+                            <h5 className="rs-figure__h">Chart</h5>
+                            <ChartView chart={r.chart} edit={tools ? at : undefined} remove={tools ? f => tools.onRemove(page.page, block.index, f) : undefined} />
+                            {est > 0 && <p className="rs-figure__note">≈ marks values worked out from the picture{r.values_total ? `; ${r.values_confirmed ?? 0} of ${r.values_total} were found printed on it` : ''}. Treat them as estimates.</p>}
+                        </>)}
                     {r.components && (
-                        <div className="rs-figure__parts">
-                            <b>Parts</b>
+                        <>
+                            <h5 className="rs-figure__h">Parts</h5>
                             <ul className="rs-parts">
                                 {r.components.map((c, i) => (
                                     <li key={i}>
-                                        {tools ? <Editable value={c.name} label="this part's name" onSave={v => tools.onEdit(page.page, block.index, `c${i}.name`, v)} /> : c.name}
-                                        {(c.role || tools) && <span className="muted"> ({tools ? <Editable value={c.role} label="this part's role" onSave={v => tools.onEdit(page.page, block.index, `c${i}.role`, v)} /> : c.role})</span>}
+                                        {tools ? <Editable value={c.name} label="this part's name" onSave={v => at(`c${i}.name`, v)} /> : c.name}
+                                        {(c.role || tools) && <span className="muted"> ({tools ? <Editable value={c.role} label="this part's role" onSave={v => at(`c${i}.role`, v)} /> : c.role})</span>}
                                         {c.manually_corrected && <> <Corrected /></>}
                                         {tools && <> <RemoveButton what="this part" onRemove={() => tools.onRemove(page.page, block.index, `c${i}`)} /></>}
                                     </li>))}
                             </ul>
-                        </div>)}
+                        </>)}
                     {r.connections && (
-                        <ul className="rs-figure__links">
-                            {r.connections.map((c, i) => (
-                                <li key={i}>
-                                    {tools ? <Editable value={c.from} label="where this connection starts" onSave={v => tools.onEdit(page.page, block.index, `l${i}.from`, v)} /> : c.from}
-                                    {' → '}
-                                    {tools ? <Editable value={c.to} label="where this connection ends" onSave={v => tools.onEdit(page.page, block.index, `l${i}.to`, v)} /> : c.to}
-                                    {(c.label || tools) && <span className="muted"> ({tools ? <Editable value={c.label} label="this connection's label" onSave={v => tools.onEdit(page.page, block.index, `l${i}.label`, v)} /> : c.label})</span>}
-                                    {c.manually_corrected && <> <Corrected /></>}
-                                    {tools && <> <RemoveButton what="this connection" onRemove={() => tools.onRemove(page.page, block.index, `l${i}`)} /></>}
-                                </li>))}
-                        </ul>)}
-                    {est > 0 && <p className="rs-figure__note">≈ marks values worked out from the picture{r.values_total ? `; ${r.values_confirmed ?? 0} of ${r.values_total} were found printed on it` : ''}. Treat them as estimates.</p>}
-                    {r.limits && <p className="rs-figure__note">Not readable: {tools ? <Editable value={r.limits} label="this note" multiline onSave={v => tools.onEdit(page.page, block.index, 'limits', v)} /> : r.limits}</p>}
-                    <p className="rs-figure__note">Read by {r.model ?? 'a model'}.{tools && <> <button type="button" className="link" disabled={!tools.canRead || !!tools.busy} onClick={() => tools.onRead(page.page, block.index, true)}>{edited ? 'Read again (replaces your edits)' : 'Read again'}</button></>}</p>
+                        <>
+                            <h5 className="rs-figure__h">Connections</h5>
+                            <ul className="rs-figure__links">
+                                {r.connections.map((c, i) => (
+                                    <li key={i}>
+                                        {tools ? <Editable value={c.from} label="where this connection starts" onSave={v => at(`l${i}.from`, v)} /> : c.from}
+                                        {' → '}
+                                        {tools ? <Editable value={c.to} label="where this connection ends" onSave={v => at(`l${i}.to`, v)} /> : c.to}
+                                        {(c.label || tools) && <span className="muted"> ({tools ? <Editable value={c.label} label="this connection's label" onSave={v => at(`l${i}.label`, v)} /> : c.label})</span>}
+                                        {c.manually_corrected && <> <Corrected /></>}
+                                        {tools && <> <RemoveButton what="this connection" onRemove={() => tools.onRemove(page.page, block.index, `l${i}`)} /></>}
+                                    </li>))}
+                            </ul>
+                        </>)}
+                    {r.limits && <p className="rs-figure__note">Not readable: {tools ? <Editable value={r.limits} label="this note" multiline onSave={v => at('limits', v)} /> : r.limits}</p>}
+                </div>)}
+            {r && !block.decorative && (
+                <div className="rs-figure__foot">
+                    <span className="muted">Read by {r.model ?? 'a model'}.{tools && ' Click any text to correct it.'}</span>
+                    {tools && <Reread edited={edited} busy={working} disabled={!tools.canRead || (!!tools.busy && !working)} onRead={() => tools.onRead(page.page, block.index, true)} />}
                 </div>)}
         </figure>);
 }

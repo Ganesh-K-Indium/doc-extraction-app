@@ -13,6 +13,9 @@ interface Props {
     onReadAllFigures?: () => void;
 }
 
+/** A caption for a link: cut at a word, not in the middle of one. */
+const shorten = (t: string, max = 44) => (t.length <= max ? t : `${t.slice(0, max).replace(/[\s(]*\S*$/, '')}…`);
+
 /** Every page of the file as a card, grouped by document: a short line on how it was read, then what is on it, all open to read. */
 export function PagesTab({ pages, busy, onOpen, onJump, onReread, figures, onReadAllFigures }: Props) {
     const byNum = new Map<number, Page>(pages.pages.map(p => [p.page, p]));
@@ -33,7 +36,7 @@ export function PagesTab({ pages, busy, onOpen, onJump, onReread, figures, onRea
                         {found.map(({ page: p, block: b }) => (
                             <button key={`${p.page}:${b.index}`} type="button" className="link" onClick={() => onJump(p.page, b.bbox && p.size
                                 ? [b.bbox[0] * p.size.width, b.bbox[1] * p.size.height, b.bbox[2] * p.size.width, b.bbox[3] * p.size.height] : null)}>
-                                p{p.page} · {(b.caption ?? b.reading?.title ?? b.kind ?? 'figure').slice(0, 48)}
+                                p{p.page} · {shorten(b.caption ?? b.reading?.title ?? b.kind ?? 'figure')}
                                 {found.filter(f => f.page.page === p.page && (f.block.caption ?? f.block.kind) === (b.caption ?? b.kind)).length > 1 ? ` (#${b.index + 1})` : ''}
                             </button>))}
                     </span>
