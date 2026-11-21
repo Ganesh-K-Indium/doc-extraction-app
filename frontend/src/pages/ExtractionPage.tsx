@@ -10,6 +10,7 @@ import { FindingsTab } from '../review/FindingsTab';
 import { allCells, cellAt, FLAGGED, revealInPane, rowId, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
 import { JsonView } from '../review/JsonView';
 import { PagesTab } from '../review/PagesTab';
+import { ProcessingView } from '../review/ProcessingView';
 import { PdfPane } from '../review/PdfPane';
 import { ReviewHeader } from '../review/ReviewHeader';
 import { StepBar } from '../review/StepBar';
@@ -49,7 +50,7 @@ export default function ExtractionPage() {
     useEffect(() => { load(); }, [load]);
     useEffect(() => {
         if (!data || data.status === 'done' || data.status === 'failed') return;
-        const t = setInterval(load, 1500);
+        const t = setInterval(load, 1000);
         return () => clearInterval(t);
     }, [data, load]);
 
@@ -196,8 +197,8 @@ export default function ExtractionPage() {
                 onShowFindings={() => setTab('findings')} onReread={s => reread({ strategy: s })} onDownload={kind => api.download(wid, id, kind, data.filename)} />
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {!done ? (
-                data.status === 'failed' ? <p className="notice notice--error" role="alert">{data.error}</p> :
-                    <p className="notice" role="status">{data.stage === 'preparing' ? 'Preparing the pages: adding a text layer to scans.' : data.stage === 'documents' ? 'Extracting fields from each document.' : data.stage === 'rest' ? 'Reading the rest of each page.' : `Reading page ${data.progress.done} of ${data.progress.total || '…'}.`} This view updates when it finishes.</p>
+                data.status === 'failed' ? <div><p className="notice notice--error" role="alert">{data.error}</p><p><Link to={`/app/w/${wid}`}>Back to documents</Link></p></div> :
+                    <ProcessingView wid={wid} status={data.status === 'queued' ? 'queued' : 'processing'} stage={data.stage} progress={data.progress} createdAt={data.created_at} />
             ) : (
                 <>
                     <div className="tabs" role="tablist">
