@@ -9,6 +9,20 @@ A review UI shows the source PDF next to the fields. Values both readers agree o
 
 ## Install and run
 
+**Quick start (macOS, Linux, WSL):** `./start.sh`. It checks Python, Node and Tesseract (and offers to install Tesseract), creates `.venv`, installs the backend and frontend packages, creates the `.env` files from the examples, then starts the backend and the web app together, both with reload. It is safe to run again: a step is skipped when nothing it depends on changed.
+
+```bash
+./start.sh                 # check, install what is missing, start (http://localhost:5173)
+./start.sh --check         # only report what is installed; change nothing
+./start.sh --ocr           # also install RapidOCR, PaddleOCR and docTR (about 1.2 GB) and download their models
+./start.sh --models        # download the models of the engines already installed
+./start.sh --yes           # do not ask before installing Tesseract
+./start.sh --api-port 8010 --web-port 5180      # other ports (the backend is told which origin to allow)
+```
+
+Backend code changes restart the API on their own (it watches `backend/app`, not the uploads and database under `backend/data`); frontend changes reload in the browser. Ctrl-C stops both. The manual steps below do the same thing one at a time.
+
+
 Needs Python 3.11 or newer (tested on 3.13), Node 18 or newer, and Tesseract. Digital PDFs work with nothing else; scans, photos and handwriting use the OCR engines and models below.
 
 **1. Tesseract** (the built-in local OCR engine; it also gives scanned pages the text layer used for highlighting)
@@ -135,7 +149,7 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 ## How a file is processed
 
-1. **Work PDF.** Scanned pages get a Tesseract text layer (`reading/tess.py`), laid over the original so page size and coordinates are unchanged. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.
+1. **Work PDF.** Scanned pages get a Tesseract text layer (`reading/tess.py`), laid over the original so page size and coordinates are unchanged. A page that comes back nearly empty although it has ink on it (a photo with uneven light, a shadow) is read again on a lighting-corrected copy and the better reading is kept; the same correction is applied to the image any vision model sees, but only when the paper is clearly darker on one side, so a clean scan is never altered. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.
 2. **Read.** `reading/router.py` profiles each page and picks a reader, stored with its reasons (`route` in pages.json): embedded text, two vision models compared (`ocr_dual`), or Tesseract alone (`ocr_local`, nothing leaves the machine). Lines are compared by content, not line breaks, so layout differences are not disagreements but a different digit is.
 3. **Sort.** Fax stamps are split off as metadata; pages are classified (keyword rules first, a small model only for unknown pages and only among registered types) and grouped into documents.
 4. **Extract.** Each document with a template is read page by page by two models against the template's fields, and the best-supported reading per field wins. Checkboxes are read from the pixels (a hollow square beside the label, then the ink inside it), never from a model unless the box can't be located. Tables use the layout extractor ported from the SEC pipeline (`reading/table_extractor.py`), with PyMuPDF's grid finder as fallback.
@@ -200,6 +214,7 @@ backend/app
     documents/                       what a document is: classify, template_draft, suggest (recurring layouts), workspace_types
     quality/                         validation (per-document rules), cross (consistency across documents)
   templates/                         built-in document templates
+start.sh                           check, install and start the backend and the web app with reload (see Install and run)
 docker-compose.yml, Dockerfile, .env.example   run everything with Docker Compose (see above); frontend/nginx.conf.template
 frontend/src
   theme.css                          every colour, shadow and the typeface: light and dark, defined once (see Theme)
@@ -224,6 +239,13 @@ A file that matches no template is still extracted, and the cost depends on what
 | Digital but **unproven** or form-like with nothing code could read | Two models on the page *text* (no image), second reader reads against the first's labels | text only, only for those pages |
 | Scan read by a local OCR engine, **no model** | **Code** on the OCR layout (same reader as digital): tables, labelled values and boxes, every value marked *single* (or *review* when the engine was unsure of the page) | none |
 | Scan or handwriting | Two vision models, first proposes the fields, second reads against its labels; one focused third look for disputed values | image tokens |
+
+**What code reads from a digital page, beyond the text.**
+- **Tables drawn with borders** are read from their ruling lines (`reading/pdf_pages.py`): merged cells (a parameter name over several test conditions, a unit over a group of rows) are filled down, a header cell that holds several labels set apart (`MIN  TYP  MAX`) becomes a column each, and a two-level header (`PIN` over `NAME` and `NO.`) is joined into column names. A table with no vertical rules (a statement) is left to the word-position extractor.
+- **Two-column pages** are read down the left column, then the right, and a wrapped bullet stays one item (`structure.py`).
+- **Fillable forms** give every field, blank or filled, named by the printed text beside or above it, and their check boxes with their state (`digital.fields_from_widgets`).
+- **Page furniture** is separated from content: a banner or footer repeated on most pages is kept once per page under `running` (not in the blocks, so it cannot become a page's title), and a long stamp set up the margin (an arXiv watermark) is dropped. Long tables show their first rows in the Pages tab with a toggle for the rest.
+- **Page names** come from the page itself: an agency form is "Form W-9: Request for Taxpayer Identification Number and Certification", a datasheet page is its section heading, and a page with no title of its own is "<document title> (continued)".
 
 **Code proves it read a digital page completely.** Every number printed inside a table's region must appear in the extracted cells (footnote markers and "Note 7" headings excluded). If not, the page tries PyMuPDF's grid finder, then the table's cells are marked `review` with what was missed, and (when a model is configured) the page goes to the text-only model path. A text layer that is not text (`(cid:12)`, replacement characters) is treated as a scan. On a 68-page 10-Q this reads 41 tables / 2,200 cells with no model calls and flags exactly one table (a mangled dividends table), which the model path then reads correctly.
 
@@ -301,6 +323,10 @@ Checkboxes on scans are judged from the pixels, never from the `☑`/`☐` chara
    Kinds: `name`, `date`, `text`, `set`, `mentioned`. Nothing in the pipeline knows what a patient, invoice or contract is.
 3. Add a test with a synthetic page. No pipeline code changes.
 
+## Sample documents
+
+`sample_data/` holds the files used while building and testing; none of it is needed to run the app. `sample_data/variety/` is a set of public documents of other kinds, with a README naming each source: two chip datasheets and an Arduino spec (bordered tables, pin lists, multi-level headers), the IRS W-9 and Form 1040 (fillable forms), a two-column research paper, and two synthetic scans made from those pages (a skewed form and a tilted, unevenly lit photo). `backend/tests/test_variety.py` covers the behaviour they exposed with small generated PDFs instead, so the tests do not depend on those files.
+
 ## Measure accuracy
 
 ```bash
@@ -320,7 +346,11 @@ On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, 
 
 ## Known limits
 
-- Rotated or skewed scans are not corrected before OCR.
+- Skewed scans are not straightened before OCR, and rotated pages are not turned upright. Uneven light is corrected (see How a file is processed).
+- Tables drawn with borders are read from their rules on digital pages only. A scan's tables come from the OCR layout or the models, so a scanned datasheet table is weaker than a digital one.
+- The package pinout drawings on datasheets (text round a drawing of the chip) can come out as small junk tables.
+- A vision page whose text cannot be matched to Tesseract's reading (a very poor photo) has no positions, so it shows "No layout", cannot be highlighted on the PDF, and its tables are found from the text alone.
+- The "incomplete table" check needs a trustworthy text layer: on a photo whose Tesseract reading is poor it stays silent rather than guess, so a dropped row there would not be flagged.
 - Pure handwriting is only as good as the vision models; Tesseract adds little there.
 - Discovery reads one document per file when you force it (`Read without a template`); use automatic detection to split a packet. Labels that repeat within one section are suffixed `_2`, `_3` in order.
 - A drafted template is a starting point: on the sample blank form it found 42 of the 43 fields I wrote by hand, with correct types, but it over-marked some fields as required and missed one choice group. Always check the required marks.
