@@ -479,6 +479,7 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
 .rs-figure__ask, .rs-figure__note { margin: 4px 0; font-size: 12px; color: var(--text-2); }
 .rs-figure__read p { margin: 4px 0; font-size: 13px; } .rs-figure__read .rs-figure__note { font-size: 11px; }
 .rs-figure__links { margin: 4px 0 4px 18px; padding: 0; font-size: 13px; } .rs-chart__axes { margin: 6px 0 2px; font-size: 12px; color: var(--text-2); }
+.rv-pfigures__list { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 4px; } .rv-pfigures__list .link { font-size: 12px; text-align: left; }
 .rs-est { color: var(--warn); } .rv-pfigures { margin: 0 0 10px; font-size: 12px; color: var(--text-2); }
 .rs-running { margin: 8px 0 0; font-size: 11px; color: var(--text-2); }
 .rs-more { margin: 4px 0 2px; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline; }

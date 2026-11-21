@@ -89,10 +89,11 @@ export default function Landing() {
                     <div className="lp-wrap">
                         <h2>Any document, read the right way</h2>
                         <p className="lp-sub">No template to write first. Each page is routed by what it is, so you do not pay model prices for text the PDF already holds.</p>
-                        <div className="lp-points lp-points--cols">
+                        <div className="lp-points lp-points--cols lp-points--quad">
                             <div><h3>Digital PDFs: read by code</h3><p>Statements, filings and reports have real text and real table cells. They are copied exactly, and every number in a table is checked against the page. No model calls, unless a form-like page cannot be proven complete.</p></div>
                             <div><h3>Scans and handwriting: local first, models when needed</h3><p>A local OCR engine reads the page and says how sure it is. Clean pages stay local and free. Doubtful lines, or whole pages, go to two vision models that read independently and are compared. What is still in doubt goes to the review queue.</p></div>
                             <div><h3>Anything else: structured, then remembered</h3><p>No template needed. Every page also comes out as structured content: headings, paragraphs, label and value groups, tables and lists, with the dates, amounts and contacts found. Fields get stable names ("Invoice No." and "Inv #" are one key). When a layout keeps recurring, save it as a document type in one click.</p></div>
+                            <div><h3>Charts, diagrams and drawings: found free, read when you ask</h3><p>Pictures, charts and drawings are found on every page, scan or digital, with their captions and the labels printed on them, at no cost. Reading one is a single model call on a small crop, only when you click. A chart comes back as axes and values, a diagram as parts and connections. A value worked out from the picture is marked as an estimate, never passed off as printed.</p></div>
                         </div>
                     </div>
                 </section>
@@ -100,7 +101,7 @@ export default function Landing() {
                 <section id="engines" className="lp-sec lp-sec--tint">
                     <div className="lp-wrap">
                         <h2>You choose how scans are read</h2>
-                        <p className="lp-sub">Set it once per workspace, or per upload. Digital PDFs cost nothing under every choice.</p>
+                        <p className="lp-sub">Set it once per workspace, or per upload. Digital PDFs cost nothing under every choice, and figures are only read when you ask.</p>
                         <div className="lp-modes">{MODES.map(m => (
                             <div key={m.t} className={m.rec ? 'lp-mode lp-mode--rec' : 'lp-mode'}>
                                 <h3>{m.t}{m.rec && <em> recommended</em>}</h3><small>{m.cost}</small><p>{m.d}</p>
@@ -168,7 +169,13 @@ export default function Landing() {
     "value": "Morgan Taylor" } ] },
 { "type": "table",
   "columns": ["Code", "Service", "Units"],
-  "rows": [["97110", "Exercise", "2"]] }`}</pre>
+  "rows": [["97110", "Exercise", "2"]] },
+{ "type": "figure", "kind": "chart",
+  "caption": "Figure 2: Revenue by quarter",
+  "reading": { "chart": { "series": [ { "points": [
+    { "x": "Q2", "y": "62", "estimated": false },
+    { "x": "Q3", "y": "about 48", "value": 48,
+      "estimated": true } ] } ] } } }`}</pre>
                             </figure>
                         </div>
                     </div>
@@ -228,7 +235,7 @@ export default function Landing() {
             <footer className="lp-foot">
                 <div className="lp-wrap">
                     <span>{APP_NAME}</span>
-                    <p>Uploaded files and results are stored on the server running this app. Digital pages are read on that server by code and nothing leaves it. Under the Economy strategy, or with local-only mode on, nothing leaves the server at all: scans are read by local OCR engines, or by models on your own hardware. Otherwise only the page images (or just the cropped regions) of scans that local OCR could not read well, and, for form-like digital pages code cannot fully read, page text, are sent to the model provider you connect. Provider keys you enter are stored encrypted and never shown again. Use a provider agreement that fits the sensitivity of your documents before processing real ones.</p>
+                    <p>Uploaded files and results are stored on the server running this app. Digital pages are read on that server by code and nothing leaves it. A figure is sent to a model only when you ask for it to be read: one cropped image. Under the Economy strategy, or with local-only mode on, nothing leaves the server at all: scans are read by local OCR engines, or by models on your own hardware. Otherwise only the page images (or just the cropped regions) of scans that local OCR could not read well, and, for form-like digital pages code cannot fully read, page text, are sent to the model provider you connect. Provider keys you enter are stored encrypted and never shown again. Use a provider agreement that fits the sensitivity of your documents before processing real ones.</p>
                 </div>
             </footer>
         </div>

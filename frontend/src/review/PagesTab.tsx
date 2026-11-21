@@ -16,8 +16,9 @@ interface Props {
 /** Every page of the file as a card, grouped by document: a short line on how it was read, then what is on it, all open to read. */
 export function PagesTab({ pages, busy, onOpen, onJump, onReread, figures, onReadAllFigures }: Props) {
     const byNum = new Map<number, Page>(pages.pages.map(p => [p.page, p]));
-    const all = pages.pages.flatMap(p => (p.structure?.blocks ?? []).filter(b => b.type === 'figure'));
-    const unread = all.filter(b => b.type === 'figure' && !b.reading).length;
+    const found = pages.pages.flatMap(p => (p.structure?.blocks ?? []).flatMap(b => b.type === 'figure' ? [{ page: p, block: b }] : []));
+    const all = found.map(f => f.block);
+    const unread = all.filter(b => !b.reading).length;
     return (
         <div className="rv-pages">
             {all.length > 0 && (
@@ -28,6 +29,14 @@ export function PagesTab({ pages, busy, onOpen, onJump, onReread, figures, onRea
                             title={figures.canRead ? `One model call for each of the ${unread} figures not yet read` : 'Needs a vision model: connect one on the Settings page'}>
                             {figures.busy === 'all' ? 'Reading…' : `Read all ${unread}`}
                         </button>)}
+                    <span className="rv-pfigures__list">
+                        {found.map(({ page: p, block: b }) => (
+                            <button key={`${p.page}:${b.index}`} type="button" className="link" onClick={() => onJump(p.page, b.bbox && p.size
+                                ? [b.bbox[0] * p.size.width, b.bbox[1] * p.size.height, b.bbox[2] * p.size.width, b.bbox[3] * p.size.height] : null)}>
+                                p{p.page} · {(b.caption ?? b.reading?.title ?? b.kind ?? 'figure').slice(0, 48)}
+                                {found.filter(f => f.page.page === p.page && (f.block.caption ?? f.block.kind) === (b.caption ?? b.kind)).length > 1 ? ` (#${b.index + 1})` : ''}
+                            </button>))}
+                    </span>
                 </p>)}
             {pages.documents.map(d => (
                 <section key={d.doc_index} className="rv-pgroup">

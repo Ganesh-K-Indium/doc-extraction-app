@@ -35,6 +35,8 @@ export interface Stats {
     /** How it was read: digital pages by code, scans by vision models, pages with handwriting. Absent on older results. */
     digital_pages?: number; scanned_pages?: number; handwritten_pages?: number; unverified_tables?: number;
     local_ocr_pages?: number; vision_pages?: number; escalated_pages?: number; region_pages?: number;
+    /** Figures (charts, diagrams, drawings, pictures) found by code, and how many a model has read since. */
+    figures?: number; figures_read?: number;
     usage?: { calls: number; tokens: number; by_stage: Record<string, number> };
 }
 export interface Line { text: string; status: 'agreed' | 'review'; alternatives: string[]; reason: string | null }

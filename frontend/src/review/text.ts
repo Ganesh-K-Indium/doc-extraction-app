@@ -32,6 +32,7 @@ export function readSummary(s: Stats, engines: string[] = []): string {
         if (s.region_pages) parts.push(`${pages(s.region_pages)} partly re-read by vision models`);
     } else if (s.scanned_pages) parts.push(`${pages(s.scanned_pages)} scanned`);
     if (s.handwritten_pages) parts.push(`${pages(s.handwritten_pages)} with handwriting`);
+    if (s.figures) parts.push(s.figures_read ? `${s.figures_read} of ${s.figures} ${s.figures === 1 ? 'figure' : 'figures'} read` : `${s.figures} ${s.figures === 1 ? 'figure' : 'figures'} found`);
     if (s.usage) parts.push(s.usage.calls === 0 ? 'no model calls' : `${s.usage.tokens.toLocaleString()} tokens`);
     return parts.join(' · ');
 }
