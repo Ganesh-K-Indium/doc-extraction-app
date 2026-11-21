@@ -409,3 +409,9 @@ def test_a_poor_text_layer_does_not_second_guess_good_readers(tmp_path):
     table = {"t": [{"a": cell("Revenue"), "b": cell("70,066"), "c": cell("61,858")}, {"a": cell("Cost"), "b": cell("21,000"), "c": cell("19,500")},
                    {"a": cell("Gross"), "b": cell("49,066"), "c": cell("42,358")}, {"a": cell("Op"), "b": cell("31,100"), "c": cell("27,000")}]}
     assert discover.uncaptured(p, 1, {}, table) is None
+
+
+def test_vulgar_fraction_compares_equal_to_spelled_out():
+    from app.services.extraction import normalize as N
+    assert N.normalize("1½ min.", "text") == N.normalize("1 1/2 min.", "text")
+    assert N.normalize("1½ min.", "text") != N.normalize("1 min.", "text")

@@ -42,6 +42,8 @@ Rules:
 - Names and rare words: copy letter by letter, never swap in a common word. When a value is written both in digits and in words, give the digits.
 - Each value belongs to ONE field. Never list the same value under two labels, and do not list a value again as a table cell.
 - Some pages (handwritten notes, sketches, free-form records) have no printed labels: use the writer's own words as the label, short and in the same wording every time.
+- A line written as "<name> - <amount>" (or "name: amount") is ONE field: the label is the name, the value is everything written after it, units and substance names included. Never leave the value null and put the whole line in the label.
+- Lines under a label that have no label of their own (bullets, a second line, a list of items) belong to that label: give them as its value, in order, separated by "; ". Their heading line is the label, not a section.
 - Faint or mirrored writing showing through from the other side of the paper is not part of this page.
 - Include labelled blanks that are empty (value null): an empty field is information.
 - A label is something printed that names a value ("Date of Birth", "Invoice No."). Do not turn sentences of running text into fields.

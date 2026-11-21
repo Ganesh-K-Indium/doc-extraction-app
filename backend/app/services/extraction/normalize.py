@@ -32,8 +32,18 @@ _MARK_RE = re.compile(r"(?<=\d)[-/](?=\d)|\.(?=\d)|(?<=\d)%")
 _NEG_RE = re.compile(r"(?<![\w$])-(?=\.?\d)|(?<![\w])\(\s*\$?\s*(?=[.]?\d)|(?<=\d)\)(?![\w])")
 
 
+_FRACTIONS = {"\u00bd": "1/2", "\u2153": "1/3", "\u2154": "2/3", "\u00bc": "1/4", "\u00be": "3/4", "\u2155": "1/5", "\u215b": "1/8"}
+_FRACTION_RE = re.compile("([" + "".join(_FRACTIONS) + "])")
+
+
+def _fractions(s: str) -> str:
+    """"1\u00bd" and "1 1/2" are the same amount: spell the vulgar fraction out so both compare equal and neither loses its half."""
+    return _FRACTION_RE.sub(lambda m: (" " if m.start() and s[m.start() - 1].isdigit() else "") + _FRACTIONS[m.group(1)], s)
+
+
 def text_form(s: str) -> str:
     """Comparison form of free text: lower case, letters and digits, plus the digit-bearing marks above."""
+    s = _fractions(s)
     s = _NEG_RE.sub(lambda m: "\ue005" if m.group() != ")" else "\ue006", s)
     s = _MARK_RE.sub(lambda m: _MARKS[m.group()], re.sub(r"\s+", "", s.lower()))
     s = re.sub(r"[^a-z0-9\ue000-\ue006]", "", s)
