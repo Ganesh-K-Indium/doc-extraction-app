@@ -724,3 +724,85 @@ async def read(path: str, page_num: int, box: BBox, labels: List[str], model: st
     while len(_CACHE) > _CACHE_MAX:
         _CACHE.popitem(last=False)
     return json.loads(json.dumps(reading))
+
+
+# ---- correcting a reading by hand --------------------------------------------------------------------------------------
+
+EDIT_FIELD = re.compile(
+    r"^(?:summary|title|limits"
+    r"|(?P<ax>[xy])axis\.(?P<af>label|unit)"
+    r"|c(?P<c>\d+)\.(?P<cf>name|role)"
+    r"|l(?P<l>\d+)\.(?P<lf>from|to|label)"
+    r"|s(?P<s>\d+)\.name"
+    r"|s(?P<s2>\d+)\.p(?P<p>\d+)\.(?P<pa>[xy]))$")
+REMOVE_FIELD = re.compile(r"^(?:c(?P<c>\d+)|l(?P<l>\d+)|s(?P<s>\d+)\.p(?P<p>\d+))$")
+
+
+def edit_reading(reading: Dict[str, Any], field: str, text: str) -> bool:
+    """Put a person's text into one part of a reading, where that part is stored, and mark it manually_corrected. A chart value a person
+    set is no longer an estimate. False when the figure has no such part (the caller says so)."""
+    m = EDIT_FIELD.match(field)
+    if not m:
+        return False
+    chart = reading.get("chart") or {}
+    if field in ("summary", "title", "limits"):
+        reading[field] = text
+        reading["manually_corrected"] = True
+        return True
+    if m.group("ax"):
+        axis = chart.get(m.group("ax") + "_axis")
+        if axis is None:
+            return False
+        axis[m.group("af")] = text
+        axis["manually_corrected"] = True
+        return True
+    if m.group("c") is not None or m.group("l") is not None:
+        items = reading.get("components" if m.group("c") is not None else "connections") or []
+        i = int(m.group("c") if m.group("c") is not None else m.group("l"))
+        if i >= len(items):
+            return False
+        items[i][m.group("cf") or m.group("lf")] = text
+        items[i]["manually_corrected"] = True
+        return True
+    series = chart.get("series") or []
+    si = int(m.group("s") if m.group("s") is not None else m.group("s2"))
+    if si >= len(series):
+        return False
+    if m.group("s") is not None:
+        series[si]["name"] = text
+        series[si]["manually_corrected"] = True
+        return True
+    points = series[si].get("points") or []
+    pi = int(m.group("p"))
+    if pi >= len(points):
+        return False
+    point = points[pi]
+    point[m.group("pa")] = text
+    if m.group("pa") == "y":
+        nums = _numbers(text)
+        point["value"] = float(nums[0]) if nums else None
+        point["estimated"] = False                       # a person set it
+    point["manually_corrected"] = True
+    return True
+
+
+def remove_from_reading(reading: Dict[str, Any], field: str) -> bool:
+    """Take a wrong part, connection or chart point out of a reading. False when there is no such item."""
+    m = REMOVE_FIELD.match(field)
+    if not m:
+        return False
+    if m.group("c") is not None or m.group("l") is not None:
+        key = "components" if m.group("c") is not None else "connections"
+        items = reading.get(key) or []
+        i = int(m.group("c") if m.group("c") is not None else m.group("l"))
+        if i >= len(items):
+            return False
+        del items[i]
+        reading[key] = items or None
+        return True
+    series = (reading.get("chart") or {}).get("series") or []
+    si, pi = int(m.group("s")), int(m.group("p"))
+    if si >= len(series) or pi >= len(series[si].get("points") or []):
+        return False
+    del series[si]["points"][pi]
+    return True

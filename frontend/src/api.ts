@@ -56,10 +56,10 @@ export type Block =
 /** What a model read off a figure. A chart value with `estimated` was worked out from the picture; one without was printed on it. */
 export interface FigureReading {
     kind: string; title: string | null; summary: string | null; model?: string; limits: string | null; text: string[];
-    chart: { type: string; x_axis: { label: string | null; unit: string | null }; y_axis: { label: string | null; unit: string | null };
+    chart: { type: string; x_axis: { label: string | null; unit: string | null; manually_corrected?: boolean }; y_axis: { label: string | null; unit: string | null; manually_corrected?: boolean };
         series: { name: string | null; manually_corrected?: boolean; points: { x: string | null; y: string | null; value?: number | null; estimated: boolean; manually_corrected?: boolean }[] }[] } | null;
-    components: { name: string | null; role: string | null }[] | null;
-    connections: { from: string | null; to: string | null; label: string | null }[] | null;
+    components: { name: string | null; role: string | null; manually_corrected?: boolean }[] | null;
+    connections: { from: string | null; to: string | null; label: string | null; manually_corrected?: boolean }[] | null;
     values_total?: number; values_confirmed?: number;
     /** Set when a person typed over the summary or title. */
     manually_corrected?: boolean;
@@ -213,8 +213,9 @@ export const api = {
         if (!res.ok) throw new Error(`Figure image failed (${res.status})`);
         return URL.createObjectURL(await res.blob());
     },
-    /** Correct what a model read off a figure, by hand (no model call). `field` is summary, title, s0.name, or s0.p2.x / s0.p2.y for a chart point. */
-    editFigure: (wid: string, id: string, body: { page: number; index: number; field: string; value: string }) =>
+    /** Correct what a model read off a figure, by hand (no model call), or remove a wrong part, connection or chart point (`remove`).
+     *  `field`: summary, title, limits, xaxis.label, s0.name, s0.p2.y, c3.name, l5.to ...; to remove: c3, l5 or s0.p2. */
+    editFigure: (wid: string, id: string, body: { page: number; index: number; field: string; value?: string; remove?: boolean }) =>
         send<{ ok: boolean }>(`${ws(wid)}/extractions/${id}/figures`, json('PATCH', body)),
     readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,

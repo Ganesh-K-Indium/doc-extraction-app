@@ -155,6 +155,12 @@ export default function ExtractionPage() {
         try { await api.editFigure(wid, id, { page, index, field, value }); await load(); }
         catch (e) { setError((e as Error).message); }
     };
+    /** Take a wrong part, connection or chart point out of a figure's reading. */
+    const removeFigureItem = async (page: number, index: number, field: string) => {
+        setError('');
+        try { await api.editFigure(wid, id, { page, index, field, remove: true }); await load(); }
+        catch (e) { setError((e as Error).message); }
+    };
     /** Read the file again under another strategy, or send chosen pages to the vision models. Makes a second extraction. */
     const reread = async (body: { strategy?: string; pages?: number[] }) => {
         setRereading(true); setError('');
@@ -195,7 +201,7 @@ export default function ExtractionPage() {
                                 readingDoc={reading} restNote={active ? restNote[active.doc_index] : undefined} savedAs={active ? saved[active.doc_index] : undefined}
                                 onOpenDoc={openDoc} onSelect={select} onSave={save} onJump={jump} onPromote={promote} onReadRest={readRest} />)}
                         {tab === 'pages' && data.pages && <PagesTab pages={data.pages} busy={rereading} onOpen={n => jump(n)} onJump={jump} onReread={n => reread({ pages: [n] })}
-                            figures={{ wid, id, canRead, busy: figBusy, onRead: (page, index, force) => readFigures({ page, index, force }), onEdit: editFigure }} onReadAllFigures={() => readFigures({ all: true })} />}
+                            figures={{ wid, id, canRead, busy: figBusy, onRead: (page, index, force) => readFigures({ page, index, force }), onEdit: editFigure, onRemove: removeFigureItem }} onReadAllFigures={() => readFigures({ all: true })} />}
                         {tab === 'findings' && <FindingsTab findings={findings} onOpen={findingJump} />}
                         {tab === 'json' && <JsonView fields={data.fields} pages={data.pages} structure={data.structure} onDownload={kind => api.download(wid, id, kind, data.filename)} />}
                     </div>

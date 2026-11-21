@@ -445,24 +445,28 @@ async def figure_image(workspace_id: str, extraction_id: str, page: int, index: 
 class FigureEdit(BaseModel):
     page: int
     index: int
-    field: str                          # "summary", "title", "s0.name" (a series' name), "s0.p2.x" or "s0.p2.y" (a point of a chart)
-    value: str
+    # What to change: summary, title, limits; xaxis.label, xaxis.unit, yaxis.label, yaxis.unit; s0.name (a series' name); s0.p2.x, s0.p2.y (a chart
+    # point); c3.name, c3.role (a part); l5.from, l5.to, l5.label (a connection). With `remove`, an item as a whole: c3, l5 or s0.p2.
+    field: str
+    value: Optional[str] = None
+    remove: bool = False
 
 
-_FIGURE_FIELD = re.compile(r"^(?:summary|title|s(?P<s>\d+)\.name|s(?P<s2>\d+)\.p(?P<p>\d+)\.(?P<axis>[xy]))$")
 MAX_EDIT_CHARS = 1000
 
 
 @router.patch("/{extraction_id}/figures")
 def edit_figure(workspace_id: str, extraction_id: str, body: FigureEdit):
-    """Correct what a model read off a figure, by hand. No model is called, so it costs nothing. The value is changed where it is
-    stored (so pages.json and structure.json carry it) and the item is marked manually_corrected. A chart value a person has set is
-    no longer an estimate. Reading the figure again replaces the reading, edits included."""
-    m = _FIGURE_FIELD.match(body.field)
-    text = body.value.strip()[:MAX_EDIT_CHARS]
-    if not m:
+    """Correct what a model read off a figure, by hand. No model is called, so it costs nothing. The value is changed where it is stored
+    (so pages.json and structure.json carry it) and the item is marked manually_corrected; a wrong part, connection or chart point can
+    be removed. A chart value a person has set is no longer an estimate. Reading the figure again replaces the reading, edits included."""
+    text = (body.value or "").strip()[:MAX_EDIT_CHARS]
+    if body.remove:
+        if not figures.REMOVE_FIELD.match(body.field):
+            raise HTTPException(422, "Only a part, a connection or a chart point can be removed.")
+    elif not figures.EDIT_FIELD.match(body.field):
         raise HTTPException(422, "That part of a figure cannot be edited.")
-    if not text:
+    elif not text:
         raise HTTPException(422, "Type a value.")
     with db.session() as s:
         ex = _get(s, workspace_id, extraction_id)
@@ -470,30 +474,9 @@ def edit_figure(workspace_id: str, extraction_id: str, body: FigureEdit):
         hit = next(((p, b) for p, b in _figure_blocks(result) if p["page"] == body.page and b.get("index") == body.index), None)
         if hit is None or not hit[1].get("reading"):
             raise HTTPException(404, "No such figure, or it has not been read yet.")
-        reading = hit[1]["reading"]
-        if body.field in ("summary", "title"):
-            reading[body.field] = text
-            reading["manually_corrected"] = True
-        else:
-            series = (reading.get("chart") or {}).get("series") or []
-            si = int(m.group("s") if m.group("s") is not None else m.group("s2"))
-            if si >= len(series):
-                raise HTTPException(404, "No such value on this figure.")
-            if m.group("s") is not None:
-                series[si]["name"] = text
-                series[si]["manually_corrected"] = True
-            else:
-                points = series[si].get("points") or []
-                pi = int(m.group("p"))
-                if pi >= len(points):
-                    raise HTTPException(404, "No such value on this figure.")
-                point = points[pi]
-                point[m.group("axis")] = text
-                if m.group("axis") == "y":
-                    nums = figures._numbers(text)
-                    point["value"] = float(nums[0]) if nums else None
-                    point["estimated"] = False                     # a person set it
-                point["manually_corrected"] = True
+        done = figures.remove_from_reading(hit[1]["reading"], body.field) if body.remove else figures.edit_reading(hit[1]["reading"], body.field, text)
+        if not done:
+            raise HTTPException(404, "No such part on this figure.")
         ex.result = result
         s.commit()
         return {"ok": True}

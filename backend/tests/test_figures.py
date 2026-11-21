@@ -559,3 +559,50 @@ def test_read_again_asks_the_model_again_instead_of_returning_the_remembered_ans
     assert len(calls) == 1                                                    # remembered
     asyncio.run(figures.read(p, 1, fig["bbox"], fig["labels"], "m3", ask, fresh=True))
     assert len(calls) == 2                                                    # asked to read again: the model is asked again
+
+
+DIAGRAM_REPLY = {"kind": "diagram", "title": "Transformer", "summary": "Encoder and decoder stacks.",
+                 "chart": {"type": "bar", "x_axis": {"label": "Quarter", "unit": None}, "y_axis": {"label": "Revenue", "unit": "USD m"},
+                           "series": [{"name": "Revenue", "points": [{"x": "Q1", "y": "35", "printed": False}, {"x": "Q2", "y": "62", "printed": False}]}]},
+                 "components": [{"name": "Input Embedding", "role": "tokens to vectors"}, {"name": "Softmax", "role": None}, {"name": "Linear", "role": None}],
+                 "connections": [{"from": "Inputs", "to": "Input Embedding", "label": None}, {"from": "Linear", "to": "Softmaxx", "label": "logits"},
+                                 {"from": "Softmax", "to": "Outputs", "label": None}],
+                 "text": [], "limits": "Some arrows are implied."}
+
+
+def test_every_part_of_a_reading_can_be_corrected_and_a_wrong_item_removed(client, tmp_path, monkeypatch):
+    _page_with(tmp_path / "chart.pdf", _bar_chart)
+    wid = mk(client)
+    eid = up(client, wid, tmp_path / "chart.pdf").json()["id"]
+    wait(client, wid, eid)
+    calls = []
+    _enable(monkeypatch, DIAGRAM_REPLY, calls)
+    base = f"/api/workspaces/{wid}/extractions/{eid}"
+    client.post(f"{base}/figures/read", json={"page": 1, "index": 0}, headers=H)
+    send = lambda **kw: client.patch(f"{base}/figures", json={"page": 1, "index": 0, **kw}, headers=H)       # noqa: E731
+    reading = lambda: _figs(client.get(base, headers=H).json())[0]["reading"]                                  # noqa: E731
+
+    for field, value in (("title", "The Transformer"), ("limits", "Arrows are implied."), ("xaxis.label", "Fiscal quarter"), ("yaxis.unit", "USD millions"),
+                         ("c0.name", "Input embedding"), ("c0.role", "Turns tokens into vectors"), ("c1.role", "Probabilities"),
+                         ("l1.to", "Softmax"), ("l1.label", "scores"), ("l0.from", "Inputs (shifted)")):
+        assert send(field=field, value=value).status_code == 200, field
+    r = reading()
+    assert r["title"] == "The Transformer" and r["limits"] == "Arrows are implied." and r["manually_corrected"] is True
+    assert r["chart"]["x_axis"]["label"] == "Fiscal quarter" and r["chart"]["x_axis"]["manually_corrected"] is True and r["chart"]["y_axis"]["unit"] == "USD millions"
+    assert r["components"][0]["name"] == "Input embedding" and r["components"][0]["role"] == "Turns tokens into vectors" and r["components"][0]["manually_corrected"] is True
+    assert r["components"][1]["role"] == "Probabilities" and "manually_corrected" not in r["components"][2]            # untouched stays untouched
+    assert (r["connections"][1]["to"], r["connections"][1]["label"]) == ("Softmax", "scores") and r["connections"][0]["from"] == "Inputs (shifted)"
+
+    assert send(field="c2", remove=True).status_code == 200 and send(field="l2", remove=True).status_code == 200      # a wrong part, a wrong connection
+    assert send(field="s0.p1", remove=True).status_code == 200                                                        # a wrong chart point
+    r = reading()
+    assert [c["name"] for c in r["components"]] == ["Input embedding", "Softmax"] and len(r["connections"]) == 2
+    assert [p["x"] for p in r["chart"]["series"][0]["points"]] == ["Q1"]
+    assert send(field="c0", remove=True).status_code == 200 and send(field="c0", remove=True).status_code == 200
+    assert reading()["components"] is None                                                                           # nothing left: no empty list
+
+    assert send(field="summary", remove=True).status_code == 422          # only a part, a connection or a point can be removed
+    assert send(field="c9", remove=True).status_code == 404
+    assert send(field="c9.name", value="x").status_code == 404
+    assert send(field="yaxis.label", value="  ").status_code == 422
+    assert len(calls) == 1                                                # none of it called the model

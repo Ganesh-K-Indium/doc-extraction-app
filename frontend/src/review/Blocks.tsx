@@ -17,6 +17,8 @@ export interface FigureTools {
     onRead: (page: number, index: number, force?: boolean) => void;
     /** Correct a value of a read figure by hand. */
     onEdit: (page: number, index: number, field: string, value: string) => Promise<void> | void;
+    /** Take a wrong part, connection or chart point out of a reading. */
+    onRemove: (page: number, index: number, field: string) => Promise<void> | void;
 }
 
 const KIND_LABEL: Record<string, string> = { chart: 'Chart', diagram: 'Diagram', drawing: 'Drawing', photo: 'Photo', table: 'Table', logo: 'Logo', other: 'Figure' };
@@ -56,13 +58,23 @@ function Editable({ value, label, onSave, multiline }: { value: string | null; l
     return multiline ? <textarea rows={2} {...common} /> : <input type="text" {...common} />;
 }
 
+function RemoveButton({ what, onRemove }: { what: string; onRemove: () => Promise<void> | void }) {
+    return <button type="button" className="rs-x" aria-label={`Remove ${what}`} title={`Remove ${what}`} onClick={e => { e.stopPropagation(); void onRemove(); }}>×</button>;
+}
+
 const Corrected = () => <span className="rs-mc" title="A person typed this value">manually corrected</span>;
 
-function ChartView({ chart, edit }: { chart: NonNullable<FigureReading['chart']>; edit?: (field: string, value: string) => Promise<void> | void }) {
+function ChartView({ chart, edit, remove }: { chart: NonNullable<FigureReading['chart']>; edit?: (field: string, value: string) => Promise<void> | void; remove?: (field: string) => Promise<void> | void }) {
     const unit = (a: { label: string | null; unit: string | null }) => [a.label, a.unit ? `(${a.unit})` : null].filter(Boolean).join(' ');
     return (
         <div className="rs-chart">
-            <p className="rs-chart__axes">{chart.type} chart{unit(chart.x_axis) ? ` · x: ${unit(chart.x_axis)}` : ''}{unit(chart.y_axis) ? ` · y: ${unit(chart.y_axis)}` : ''}</p>
+            {edit ? (
+                <p className="rs-chart__axes">
+                    {chart.type} chart · x: <Editable value={chart.x_axis.label} label="the x axis label" onSave={v => edit('xaxis.label', v)} /> (<Editable value={chart.x_axis.unit} label="the x axis unit" onSave={v => edit('xaxis.unit', v)} />)
+                    {' '}· y: <Editable value={chart.y_axis.label} label="the y axis label" onSave={v => edit('yaxis.label', v)} /> (<Editable value={chart.y_axis.unit} label="the y axis unit" onSave={v => edit('yaxis.unit', v)} />)
+                    {(chart.x_axis.manually_corrected || chart.y_axis.manually_corrected) && <> <Corrected /></>}
+                </p>
+            ) : <p className="rs-chart__axes">{chart.type} chart{unit(chart.x_axis) ? ` · x: ${unit(chart.x_axis)}` : ''}{unit(chart.y_axis) ? ` · y: ${unit(chart.y_axis)}` : ''}</p>}
             {chart.series.map((s, i) => (
                 <div className="rs-tablewrap" key={i}>
                     <table className="rs-table">
@@ -77,6 +89,7 @@ function ChartView({ chart, edit }: { chart: NonNullable<FigureReading['chart']>
                                     {edit ? <Editable value={p.estimated && p.value != null ? String(p.value) : p.y} label="this value" onSave={v => edit(`s${i}.p${j}.y`, v)} /> : p.y}
                                     {p.estimated && <span className="rs-est" title="Worked out from the picture, not printed on it"> ≈ estimate</span>}
                                     {p.manually_corrected && <> <Corrected /></>}
+                                    {remove && <> <RemoveButton what="this point" onRemove={() => remove(`s${i}.p${j}`)} /></>}
                                 </td>
                             </tr>))}</tbody>
                     </table>
@@ -90,7 +103,8 @@ function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { ty
     const working = tools?.busy === key || tools?.busy === 'all';
     const go = () => onJump(page.page, toPoints(block, page));
     const est = r?.chart ? r.chart.series.reduce((n, s) => n + s.points.filter(p => p.estimated).length, 0) : 0;
-    const edited = !!r && (!!r.manually_corrected || !!r.chart?.series.some(s => s.manually_corrected || s.points.some(p => p.manually_corrected)));
+    const edited = !!r && (!!r.manually_corrected || !!r.chart?.series.some(s => s.manually_corrected || s.points.some(p => p.manually_corrected))
+        || !!r.chart?.x_axis.manually_corrected || !!r.chart?.y_axis.manually_corrected || !!r.components?.some(c => c.manually_corrected) || !!r.connections?.some(c => c.manually_corrected));
     return (
         <figure className="rs-figure">
             <div className="rs-figure__top" onClick={go}>
@@ -110,12 +124,36 @@ function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { ty
             {r && block.decorative && <p className="muted">The model took this for a logo or decoration, so nothing was extracted from it.</p>}
             {r && !block.decorative && (
                 <div className="rs-figure__read">
+                    {r.title && <p className="rs-figure__title">{tools ? <Editable value={r.title} label="the title" onSave={v => tools.onEdit(page.page, block.index, 'title', v)} /> : r.title}</p>}
                     {r.summary && <p>{tools ? <Editable value={r.summary} label="the summary" multiline onSave={v => tools.onEdit(page.page, block.index, 'summary', v)} /> : r.summary}{r.manually_corrected && <> <Corrected /></>}</p>}
-                    {r.chart && <ChartView chart={r.chart} edit={tools ? (f, v) => tools.onEdit(page.page, block.index, f, v) : undefined} />}
-                    {r.components && <p className="rs-figure__parts"><b>Parts</b> {r.components.map(c => c.role ? `${c.name} (${c.role})` : c.name).join(' · ')}</p>}
-                    {r.connections && <ul className="rs-figure__links">{r.connections.map((c, i) => <li key={i}>{c.from} → {c.to}{c.label ? ` (${c.label})` : ''}</li>)}</ul>}
+                    {r.chart && <ChartView chart={r.chart} edit={tools ? (f, v) => tools.onEdit(page.page, block.index, f, v) : undefined} remove={tools ? f => tools.onRemove(page.page, block.index, f) : undefined} />}
+                    {r.components && (
+                        <div className="rs-figure__parts">
+                            <b>Parts</b>
+                            <ul className="rs-parts">
+                                {r.components.map((c, i) => (
+                                    <li key={i}>
+                                        {tools ? <Editable value={c.name} label="this part's name" onSave={v => tools.onEdit(page.page, block.index, `c${i}.name`, v)} /> : c.name}
+                                        {(c.role || tools) && <span className="muted"> ({tools ? <Editable value={c.role} label="this part's role" onSave={v => tools.onEdit(page.page, block.index, `c${i}.role`, v)} /> : c.role})</span>}
+                                        {c.manually_corrected && <> <Corrected /></>}
+                                        {tools && <> <RemoveButton what="this part" onRemove={() => tools.onRemove(page.page, block.index, `c${i}`)} /></>}
+                                    </li>))}
+                            </ul>
+                        </div>)}
+                    {r.connections && (
+                        <ul className="rs-figure__links">
+                            {r.connections.map((c, i) => (
+                                <li key={i}>
+                                    {tools ? <Editable value={c.from} label="where this connection starts" onSave={v => tools.onEdit(page.page, block.index, `l${i}.from`, v)} /> : c.from}
+                                    {' → '}
+                                    {tools ? <Editable value={c.to} label="where this connection ends" onSave={v => tools.onEdit(page.page, block.index, `l${i}.to`, v)} /> : c.to}
+                                    {(c.label || tools) && <span className="muted"> ({tools ? <Editable value={c.label} label="this connection's label" onSave={v => tools.onEdit(page.page, block.index, `l${i}.label`, v)} /> : c.label})</span>}
+                                    {c.manually_corrected && <> <Corrected /></>}
+                                    {tools && <> <RemoveButton what="this connection" onRemove={() => tools.onRemove(page.page, block.index, `l${i}`)} /></>}
+                                </li>))}
+                        </ul>)}
                     {est > 0 && <p className="rs-figure__note">≈ marks values worked out from the picture{r.values_total ? `; ${r.values_confirmed ?? 0} of ${r.values_total} were found printed on it` : ''}. Treat them as estimates.</p>}
-                    {r.limits && <p className="rs-figure__note">Not readable: {r.limits}</p>}
+                    {r.limits && <p className="rs-figure__note">Not readable: {tools ? <Editable value={r.limits} label="this note" multiline onSave={v => tools.onEdit(page.page, block.index, 'limits', v)} /> : r.limits}</p>}
                     <p className="rs-figure__note">Read by {r.model ?? 'a model'}.{tools && <> <button type="button" className="link" disabled={!tools.canRead || !!tools.busy} onClick={() => tools.onRead(page.page, block.index, true)}>{edited ? 'Read again (replaces your edits)' : 'Read again'}</button></>}</p>
                 </div>)}
         </figure>);
