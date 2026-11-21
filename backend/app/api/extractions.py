@@ -3,7 +3,7 @@ import copy
 import hashlib
 import logging
 import re
-from typing import Any, List
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -403,7 +403,7 @@ async def read_figures(workspace_id: str, extraction_id: str, body: FigureRead):
         nonlocal failed
         async with sem:
             try:
-                reading = await figures.read(path, p["page"], _figure_box(p, b), b.get("labels") or [], models[0])
+                reading = await figures.read(path, p["page"], _figure_box(p, b), b.get("labels") or [], models[0], fresh=body.force)
             except Exception:
                 logger.exception("Reading figure %s of page %s failed", b.get("index"), p["page"])
                 failed += 1
@@ -440,3 +440,60 @@ async def figure_image(workspace_id: str, extraction_id: str, page: int, index: 
         raise HTTPException(404, "No such figure.")
     jpeg = await asyncio.to_thread(figures.crop_jpeg, str(pdf_file(extraction_id)), page, _figure_box(*hit))
     return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+class FigureEdit(BaseModel):
+    page: int
+    index: int
+    field: str                          # "summary", "title", "s0.name" (a series' name), "s0.p2.x" or "s0.p2.y" (a point of a chart)
+    value: str
+
+
+_FIGURE_FIELD = re.compile(r"^(?:summary|title|s(?P<s>\d+)\.name|s(?P<s2>\d+)\.p(?P<p>\d+)\.(?P<axis>[xy]))$")
+MAX_EDIT_CHARS = 1000
+
+
+@router.patch("/{extraction_id}/figures")
+def edit_figure(workspace_id: str, extraction_id: str, body: FigureEdit):
+    """Correct what a model read off a figure, by hand. No model is called, so it costs nothing. The value is changed where it is
+    stored (so pages.json and structure.json carry it) and the item is marked manually_corrected. A chart value a person has set is
+    no longer an estimate. Reading the figure again replaces the reading, edits included."""
+    m = _FIGURE_FIELD.match(body.field)
+    text = body.value.strip()[:MAX_EDIT_CHARS]
+    if not m:
+        raise HTTPException(422, "That part of a figure cannot be edited.")
+    if not text:
+        raise HTTPException(422, "Type a value.")
+    with db.session() as s:
+        ex = _get(s, workspace_id, extraction_id)
+        result = copy.deepcopy(ex.result or {})
+        hit = next(((p, b) for p, b in _figure_blocks(result) if p["page"] == body.page and b.get("index") == body.index), None)
+        if hit is None or not hit[1].get("reading"):
+            raise HTTPException(404, "No such figure, or it has not been read yet.")
+        reading = hit[1]["reading"]
+        if body.field in ("summary", "title"):
+            reading[body.field] = text
+            reading["manually_corrected"] = True
+        else:
+            series = (reading.get("chart") or {}).get("series") or []
+            si = int(m.group("s") if m.group("s") is not None else m.group("s2"))
+            if si >= len(series):
+                raise HTTPException(404, "No such value on this figure.")
+            if m.group("s") is not None:
+                series[si]["name"] = text
+                series[si]["manually_corrected"] = True
+            else:
+                points = series[si].get("points") or []
+                pi = int(m.group("p"))
+                if pi >= len(points):
+                    raise HTTPException(404, "No such value on this figure.")
+                point = points[pi]
+                point[m.group("axis")] = text
+                if m.group("axis") == "y":
+                    nums = figures._numbers(text)
+                    point["value"] = float(nums[0]) if nums else None
+                    point["estimated"] = False                     # a person set it
+                point["manually_corrected"] = True
+        ex.result = result
+        s.commit()
+        return {"ok": True}

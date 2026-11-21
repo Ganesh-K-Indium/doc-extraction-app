@@ -476,3 +476,86 @@ def test_a_block_diagram_on_a_scanned_page_is_found_even_when_tesseract_misreads
     assert len(pdf_pages.analyze_page(work, 1)["words"]) > 100                    # the sparse-text retry read the page (the first reading found a couple of words)
     got = _scan_figures(path)
     assert len(got) == 1 and _iou(got[0]["bbox"], truth[0]) >= 0.6
+
+
+# ---- correcting a figure's reading by hand ------------------------------------------------------------------------------
+
+def _read_chart(client, tmp_path, monkeypatch):
+    _page_with(tmp_path / "chart.pdf", _bar_chart)
+    wid = mk(client)
+    eid = up(client, wid, tmp_path / "chart.pdf").json()["id"]
+    wait(client, wid, eid)
+    calls = []
+    _enable(monkeypatch, CHART_REPLY, calls)
+    base = f"/api/workspaces/{wid}/extractions/{eid}"
+    assert client.post(f"{base}/figures/read", json={"page": 1, "index": 0}, headers=H).json()["read"] == 1
+    return base, calls
+
+
+def _points(client, base):
+    fig = _figs(client.get(base, headers=H).json())[0]
+    return fig, fig["reading"]["chart"]["series"][0]["points"]
+
+
+def test_a_value_corrected_by_hand_is_changed_in_place_and_marked_with_no_model_call(client, tmp_path, monkeypatch):
+    base, calls = _read_chart(client, tmp_path, monkeypatch)
+    _, before = _points(client, base)
+    assert before[0]["estimated"] is True and "manually_corrected" not in before[0]
+    tokens_before = client.get(base, headers=H).json()["stats"]["usage"]["tokens"]
+
+    assert client.patch(f"{base}/figures", json={"page": 1, "index": 0, "field": "s0.p0.y", "value": " 36 "}, headers=H).json() == {"ok": True}
+    assert client.patch(f"{base}/figures", json={"page": 1, "index": 0, "field": "s0.name", "value": "Net revenue"}, headers=H).status_code == 200
+    assert client.patch(f"{base}/figures", json={"page": 1, "index": 0, "field": "summary", "value": "Four quarters of revenue."}, headers=H).status_code == 200
+
+    got = client.get(base, headers=H).json()
+    fig, points = _points(client, base)
+    assert (points[0]["y"], points[0]["value"], points[0]["estimated"], points[0]["manually_corrected"]) == ("36", 36.0, False, True)
+    assert points[1]["y"] == before[1]["y"] and "manually_corrected" not in points[1]                  # nothing else moved
+    series = fig["reading"]["chart"]["series"][0]
+    assert series["name"] == "Net revenue" and series["manually_corrected"] is True
+    assert fig["reading"]["summary"] == "Four quarters of revenue." and fig["reading"]["manually_corrected"] is True
+    assert not [k for k in points[0] if k.startswith("original")] and "edited" not in fig["reading"]    # the part is updated; no extra fields are made
+    assert len(calls) == 1 and got["stats"]["usage"]["tokens"] == tokens_before                         # the edits cost nothing
+    # the same values are in the downloadable JSON
+    sj = client.get(f"{base}/structure.json", headers=H).json()
+    blocks = [b for d in sj["documents"] for pg in d["pages"] for b in pg["blocks"] if b["type"] == "figure"]
+    assert blocks[0]["reading"]["chart"]["series"][0]["points"][0]["y"] == "36"
+    pj = client.get(f"{base}/pages.json", headers=H).json()
+    pfig = [b for p in pj["pages"] for b in p["structure"]["blocks"] if b["type"] == "figure"][0]
+    assert pfig["reading"]["chart"]["series"][0]["points"][0]["y"] == "36" and pfig["reading"]["summary"] == "Four quarters of revenue."
+
+
+def test_a_bad_edit_is_refused_and_reading_again_replaces_the_edits(client, tmp_path, monkeypatch):
+    base, calls = _read_chart(client, tmp_path, monkeypatch)
+    send = lambda **kw: client.patch(f"{base}/figures", json={"page": 1, "index": 0, **kw}, headers=H)       # noqa: E731
+    assert send(field="chart", value="x").status_code == 422                       # not a part that can be edited
+    assert send(field="s0.p0.y", value="   ").status_code == 422                  # blank: type a value
+    assert send(field="s0.p9.y", value="1").status_code == 404                     # no such point
+    assert send(field="s4.name", value="x").status_code == 404                     # no such series
+    assert client.patch(f"{base}/figures", json={"page": 1, "index": 7, "field": "summary", "value": "x"}, headers=H).status_code == 404
+    assert send(field="s0.p0.y", value="36").status_code == 200
+    again = client.post(f"{base}/figures/read", json={"page": 1, "index": 0, "force": True}, headers=H).json()
+    assert again["read"] == 1 and len(calls) == 2
+    _, points = _points(client, base)
+    assert points[0]["y"] == "35" and points[0]["estimated"] is True and "manually_corrected" not in points[0]     # the new reading, not the edit
+
+
+def test_a_figure_that_has_not_been_read_cannot_be_edited(client, tmp_path):
+    _page_with(tmp_path / "chart.pdf", _bar_chart)
+    wid = mk(client)
+    eid = up(client, wid, tmp_path / "chart.pdf").json()["id"]
+    wait(client, wid, eid)
+    r = client.patch(f"/api/workspaces/{wid}/extractions/{eid}/figures", json={"page": 1, "index": 0, "field": "summary", "value": "x"}, headers=H)
+    assert r.status_code == 404
+
+
+def test_read_again_asks_the_model_again_instead_of_returning_the_remembered_answer(tmp_path):
+    p = _page_with(tmp_path / "chart.pdf", _bar_chart)
+    fig = figures.find_digital(p, 1, [])[0]
+    calls = []
+    ask = _fake(CHART_REPLY, calls)
+    asyncio.run(figures.read(p, 1, fig["bbox"], fig["labels"], "m3", ask))
+    asyncio.run(figures.read(p, 1, fig["bbox"], fig["labels"], "m3", ask))
+    assert len(calls) == 1                                                    # remembered
+    asyncio.run(figures.read(p, 1, fig["bbox"], fig["labels"], "m3", ask, fresh=True))
+    assert len(calls) == 2                                                    # asked to read again: the model is asked again

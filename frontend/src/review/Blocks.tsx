@@ -15,6 +15,8 @@ function toPoints(b: Block, page?: Page): BBox | null {
 export interface FigureTools {
     wid: string; id: string; canRead: boolean; busy: string | null;
     onRead: (page: number, index: number, force?: boolean) => void;
+    /** Correct a value of a read figure by hand. */
+    onEdit: (page: number, index: number, field: string, value: string) => Promise<void> | void;
 }
 
 const KIND_LABEL: Record<string, string> = { chart: 'Chart', diagram: 'Diagram', drawing: 'Drawing', photo: 'Photo', table: 'Table', logo: 'Logo', other: 'Figure' };
@@ -29,7 +31,34 @@ function FigureImage({ tools, page, index }: { tools: FigureTools; page: number;
     return src ? <img className="rs-figure__img" src={src} alt="" /> : <div className="rs-figure__img rs-figure__img--wait" aria-hidden="true" />;
 }
 
-function ChartView({ chart }: { chart: NonNullable<FigureReading['chart']> }) {
+/** A value that can be corrected in place: click it, type, press Enter (or click away). Escape leaves it as it was. */
+function Editable({ value, label, onSave, multiline }: { value: string | null; label: string; onSave: (v: string) => Promise<void> | void; multiline?: boolean }) {
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState('');
+    const [saving, setSaving] = useState(false);
+    const finish = async (save: boolean) => {
+        const text = draft.trim();
+        setEditing(false);
+        if (save && text && text !== (value ?? '')) { setSaving(true); try { await onSave(text); } finally { setSaving(false); } }
+    };
+    if (!editing) {
+        return <button type="button" className="rs-edit" disabled={saving} title={`Click to correct ${label} by hand`} onClick={e => { e.stopPropagation(); setDraft(value ?? ''); setEditing(true); }}>{saving ? 'Saving…' : value || 'add'}</button>;
+    }
+    const common = {
+        autoFocus: true, value: draft, 'aria-label': `Correct ${label}`, className: 'rs-edit-input',
+        onChange: (e: { target: { value: string } }) => setDraft(e.target.value), onClick: (e: { stopPropagation: () => void }) => e.stopPropagation(),
+        onBlur: () => { void finish(true); },
+        onKeyDown: (e: { key: string; shiftKey: boolean; preventDefault: () => void }) => {
+            if (e.key === 'Escape') { setEditing(false); }
+            else if (e.key === 'Enter' && !(multiline && e.shiftKey)) { e.preventDefault(); void finish(true); }
+        },
+    };
+    return multiline ? <textarea rows={2} {...common} /> : <input type="text" {...common} />;
+}
+
+const Corrected = () => <span className="rs-mc" title="A person typed this value">manually corrected</span>;
+
+function ChartView({ chart, edit }: { chart: NonNullable<FigureReading['chart']>; edit?: (field: string, value: string) => Promise<void> | void }) {
     const unit = (a: { label: string | null; unit: string | null }) => [a.label, a.unit ? `(${a.unit})` : null].filter(Boolean).join(' ');
     return (
         <div className="rs-chart">
@@ -37,9 +66,19 @@ function ChartView({ chart }: { chart: NonNullable<FigureReading['chart']> }) {
             {chart.series.map((s, i) => (
                 <div className="rs-tablewrap" key={i}>
                     <table className="rs-table">
-                        <thead><tr><th>{s.name ?? 'Series'}</th><th>{unit(chart.x_axis) || 'x'}</th><th>{unit(chart.y_axis) || 'y'}</th></tr></thead>
+                        <thead><tr>
+                            <th>{edit ? <Editable value={s.name} label="the series name" onSave={v => edit(`s${i}.name`, v)} /> : (s.name ?? 'Series')}{s.manually_corrected && <> <Corrected /></>}</th>
+                            <th>{unit(chart.x_axis) || 'x'}</th><th>{unit(chart.y_axis) || 'y'}</th></tr></thead>
                         <tbody>{s.points.map((p, j) => (
-                            <tr key={j}><td /><td>{p.x}</td><td>{p.estimated ? <span className="rs-est" title="Worked out from the picture, not printed on it">≈ {p.value ?? p.y}</span> : p.y}</td></tr>))}</tbody>
+                            <tr key={j}>
+                                <td />
+                                <td>{edit ? <Editable value={p.x} label="this label" onSave={v => edit(`s${i}.p${j}.x`, v)} /> : p.x}</td>
+                                <td>
+                                    {edit ? <Editable value={p.estimated && p.value != null ? String(p.value) : p.y} label="this value" onSave={v => edit(`s${i}.p${j}.y`, v)} /> : p.y}
+                                    {p.estimated && <span className="rs-est" title="Worked out from the picture, not printed on it"> ≈ estimate</span>}
+                                    {p.manually_corrected && <> <Corrected /></>}
+                                </td>
+                            </tr>))}</tbody>
                     </table>
                 </div>))}
         </div>);
@@ -51,6 +90,7 @@ function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { ty
     const working = tools?.busy === key || tools?.busy === 'all';
     const go = () => onJump(page.page, toPoints(block, page));
     const est = r?.chart ? r.chart.series.reduce((n, s) => n + s.points.filter(p => p.estimated).length, 0) : 0;
+    const edited = !!r && (!!r.manually_corrected || !!r.chart?.series.some(s => s.manually_corrected || s.points.some(p => p.manually_corrected)));
     return (
         <figure className="rs-figure">
             <div className="rs-figure__top" onClick={go}>
@@ -70,13 +110,13 @@ function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { ty
             {r && block.decorative && <p className="muted">The model took this for a logo or decoration, so nothing was extracted from it.</p>}
             {r && !block.decorative && (
                 <div className="rs-figure__read">
-                    {r.summary && <p>{r.summary}</p>}
-                    {r.chart && <ChartView chart={r.chart} />}
+                    {r.summary && <p>{tools ? <Editable value={r.summary} label="the summary" multiline onSave={v => tools.onEdit(page.page, block.index, 'summary', v)} /> : r.summary}{r.manually_corrected && <> <Corrected /></>}</p>}
+                    {r.chart && <ChartView chart={r.chart} edit={tools ? (f, v) => tools.onEdit(page.page, block.index, f, v) : undefined} />}
                     {r.components && <p className="rs-figure__parts"><b>Parts</b> {r.components.map(c => c.role ? `${c.name} (${c.role})` : c.name).join(' · ')}</p>}
                     {r.connections && <ul className="rs-figure__links">{r.connections.map((c, i) => <li key={i}>{c.from} → {c.to}{c.label ? ` (${c.label})` : ''}</li>)}</ul>}
                     {est > 0 && <p className="rs-figure__note">≈ marks values worked out from the picture{r.values_total ? `; ${r.values_confirmed ?? 0} of ${r.values_total} were found printed on it` : ''}. Treat them as estimates.</p>}
                     {r.limits && <p className="rs-figure__note">Not readable: {r.limits}</p>}
-                    <p className="rs-figure__note">Read by {r.model ?? 'a model'}.{tools && <> <button type="button" className="link" disabled={!tools.canRead || !!tools.busy} onClick={() => tools.onRead(page.page, block.index, true)}>Read again</button></>}</p>
+                    <p className="rs-figure__note">Read by {r.model ?? 'a model'}.{tools && <> <button type="button" className="link" disabled={!tools.canRead || !!tools.busy} onClick={() => tools.onRead(page.page, block.index, true)}>{edited ? 'Read again (replaces your edits)' : 'Read again'}</button></>}</p>
                 </div>)}
         </figure>);
 }

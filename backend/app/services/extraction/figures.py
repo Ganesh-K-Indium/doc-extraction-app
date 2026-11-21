@@ -702,14 +702,14 @@ def _clean(reply: Any) -> Dict[str, Any]:
             "connections": links or None, "text": [t for t in (s(x) for x in (r.get("text") or [])[:120]) if t], "limits": s(r.get("limits"))}
 
 
-async def read(path: str, page_num: int, box: BBox, labels: List[str], model: str, ask=None) -> Dict[str, Any]:
+async def read(path: str, page_num: int, box: BBox, labels: List[str], model: str, ask=None, fresh: bool = False) -> Dict[str, Any]:
     """Read one figure: one crop, one model, one reply. `ask(model, jpeg, prompt)` is injectable for tests. The same crop read by the
-    same model is answered from memory."""
+    same model is answered from memory, unless `fresh`: a person asked to read it again because the first reading was wrong."""
     jpeg = await asyncio.to_thread(crop_jpeg, path, page_num, box)
     prompt = PROMPT + ("\n\nText that code found printed on this figure (use it for labels and for any value you report as printed):\n"
                        + " | ".join(labels[:MAX_LABELS]) if labels else "")
     key = hashlib.sha256(jpeg + model.encode() + PROMPT_VERSION.encode() + prompt.encode()).hexdigest()
-    if key in _CACHE:
+    if key in _CACHE and not fresh:
         _CACHE.move_to_end(key)
         return json.loads(json.dumps(_CACHE[key]))
     if ask is None:

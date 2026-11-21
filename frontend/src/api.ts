@@ -57,10 +57,12 @@ export type Block =
 export interface FigureReading {
     kind: string; title: string | null; summary: string | null; model?: string; limits: string | null; text: string[];
     chart: { type: string; x_axis: { label: string | null; unit: string | null }; y_axis: { label: string | null; unit: string | null };
-        series: { name: string | null; points: { x: string | null; y: string | null; value?: number | null; estimated: boolean }[] }[] } | null;
+        series: { name: string | null; manually_corrected?: boolean; points: { x: string | null; y: string | null; value?: number | null; estimated: boolean; manually_corrected?: boolean }[] }[] } | null;
     components: { name: string | null; role: string | null }[] | null;
     connections: { from: string | null; to: string | null; label: string | null }[] | null;
     values_total?: number; values_confirmed?: number;
+    /** Set when a person typed over the summary or title. */
+    manually_corrected?: boolean;
 }
 
 /** A line the document repeats on its pages (a banner, a footer): kept once per page, out of the blocks. */
@@ -211,6 +213,9 @@ export const api = {
         if (!res.ok) throw new Error(`Figure image failed (${res.status})`);
         return URL.createObjectURL(await res.blob());
     },
+    /** Correct what a model read off a figure, by hand (no model call). `field` is summary, title, s0.name, or s0.p2.x / s0.p2.y for a chart point. */
+    editFigure: (wid: string, id: string, body: { page: number; index: number; field: string; value: string }) =>
+        send<{ ok: boolean }>(`${ws(wid)}/extractions/${id}/figures`, json('PATCH', body)),
     readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
     /** Download a JSON file (fetch + blob so the API key header is sent). */

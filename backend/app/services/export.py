@@ -1,4 +1,4 @@
-"""Shape the stored result into the two downloadable JSON files."""
+"""Shape the stored result into the downloadable JSON files."""
 from typing import Any, Dict
 
 
