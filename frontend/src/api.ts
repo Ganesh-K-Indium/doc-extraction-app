@@ -49,7 +49,18 @@ export type Block =
     | { type: 'key_value'; items: { label: string; value: string | null; bbox?: BBox }[]; bbox?: BBox }
     | { type: 'table'; columns: string[]; header: boolean; rows: string[][]; bbox?: BBox }
     | { type: 'list'; ordered: boolean; items: string[]; bbox?: BBox }
-    | { type: 'checkboxes'; items: { label: string; checked: boolean; group?: string | null }[]; bbox?: BBox };
+    | { type: 'checkboxes'; items: { label: string; checked: boolean; group?: string | null }[]; bbox?: BBox }
+    | { type: 'figure'; index: number; source?: string | null; caption: string | null; labels: string[]; kind: string | null; reading: FigureReading | null; decorative?: boolean; bbox?: BBox };
+/** What a model read off a figure. A chart value with `estimated` was worked out from the picture; one without was printed on it. */
+export interface FigureReading {
+    kind: string; title: string | null; summary: string | null; model?: string; limits: string | null; text: string[];
+    chart: { type: string; x_axis: { label: string | null; unit: string | null }; y_axis: { label: string | null; unit: string | null };
+        series: { name: string | null; points: { x: string | null; y: string | null; value?: number | null; estimated: boolean }[] }[] } | null;
+    components: { name: string | null; role: string | null }[] | null;
+    connections: { from: string | null; to: string | null; label: string | null }[] | null;
+    values_total?: number; values_confirmed?: number;
+}
+
 /** A line the document repeats on its pages (a banner, a footer): kept once per page, out of the blocks. */
 export interface Running { text: string; where: 'top' | 'bottom' }
 export interface Entity { type: string; value: string; block: number }
@@ -189,6 +200,15 @@ export const api = {
     promote: (wid: string, id: string, docIndex: number, title: string) => send<{ doc_type: string; title: string; fields: number }>(`${ws(wid)}/extractions/${id}/forms/${docIndex}/promote`, json('POST', { title })),
     correct: (wid: string, id: string, doc_index: number, key: string, value: unknown) => send<{ ok: boolean; needs_review: number }>(`${ws(wid)}/extractions/${id}/fields`, json('PATCH', { doc_index, key, value })),
     remove: (wid: string, id: string) => send<void>(`${ws(wid)}/extractions/${id}`, { method: 'DELETE' }),
+    /** Read figures with a vision model, on request: one figure (page and number on it) or every figure not yet read. */
+    readFigures: (wid: string, id: string, body: { page?: number; index?: number; all?: boolean; force?: boolean }) =>
+        send<{ read: number; failed: number; skipped: number; tokens: number; figures: { page: number; index: number; kind: string }[] }>(`${ws(wid)}/extractions/${id}/figures/read`, json('POST', body)),
+    /** A figure cropped from its page, as an object URL (fetched so the API key header is sent). The caller revokes it. */
+    figureImage: async (wid: string, id: string, page: number, index: number): Promise<string> => {
+        const res = await fetch(`${ws(wid)}/extractions/${id}/figures/${page}/${index}.jpg`, { headers: authHeaders() });
+        if (!res.ok) throw new Error(`Figure image failed (${res.status})`);
+        return URL.createObjectURL(await res.blob());
+    },
     readRest: (wid: string, id: string, docIndex: number) => send<{ added: boolean; doc_index: number | null; items: number }>(`${ws(wid)}/extractions/${id}/documents/${docIndex}/rest`, { method: 'POST' }),
     pdfUrl: (wid: string, id: string) => `${ws(wid)}/extractions/${id}/pdf`,
     /** Download a JSON file (fetch + blob so the API key header is sent). */

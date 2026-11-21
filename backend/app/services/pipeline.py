@@ -24,7 +24,7 @@ from app.engines.ocr import local
 from app.engines.strategy import ladder, plan as plans
 from app.services.documents import classify
 from app.services.quality import cross, validation
-from app.services.extraction import align, digital, discover, form_extractor, kv, remainder, structure
+from app.services.extraction import align, digital, discover, figures, form_extractor, kv, remainder, structure
 from app.services.reading import ocr, pdf_pages, router, tess
 
 logger = logging.getLogger("app.services.pipeline")
@@ -106,6 +106,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             info = await asyncio.to_thread(pdf_pages.analyze_page, work, n)  # geometry from the work PDF (has OCR layer on scans)
             lines_meta: Dict[str, Any] = {}
             layout, reference = None, None
+            jpeg = None
             handwritten = False
             reading: Dict[str, Any] = {"engine": "text-layer"}
             if route["reader"] in ("ocr_dual", "ocr_ladder", "ocr_local"):
@@ -133,10 +134,26 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
             if source == "text-layer" and info["words"]:
                 layout = local.build_reading([local.Word(*w["bbox"], w["text"]) for w in info["words"]], "text-layer",
                                              size=(info["size"]["width"], info["size"]["height"])).line_cells
+            # figures: pictures, charts and drawings, found by code (no model); reading one is a separate, requested step
+            figs: List[Dict[str, Any]] = []
+            page_tables = info["tables"]
+            w0, h0 = info["size"]["width"], info["size"]["height"]
+            if w0 and h0:
+                try:
+                    if source == "text-layer":
+                        raw_figs = await asyncio.to_thread(figures.find_digital, path, n, info["tables"])
+                    elif source in ("ocr", "ocr-local") and jpeg is not None:
+                        raw_figs = await asyncio.to_thread(figures.find_scanned, jpeg, info["words"], info["size"])
+                    else:
+                        raw_figs = []
+                    figs = [{**f, "bbox": [f["bbox"][0] / w0, f["bbox"][1] / h0, f["bbox"][2] / w0, f["bbox"][3] / h0]} for f in raw_figs]
+                    page_tables = [t for t in info["tables"] if not any(figures.overlap(t["bbox"], f["bbox"]) >= 0.5 for f in raw_figs if t.get("bbox"))]
+                except Exception:
+                    logger.exception("Finding figures on page %s failed", n)
             given = []
             if source == "text-layer" and info["size"]["width"] and info["size"]["height"]:
                 w, h = info["size"]["width"], info["size"]["height"]
-                for t in info["tables"]:
+                for t in page_tables:
                     lt = digital.labelled_table(path, n, t) if t.get("bbox") else None
                     # the extractor reads tables of amounts; a table of names and codes is found better from the layout (structure.py)
                     if lt and digital.is_amount_table(t):
@@ -155,7 +172,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     if got:
                         layout, placed, positions_from = got[0], got[1], name
                         break
-            structure_page = structure.build_page(layout, tables=given) if layout else structure.build_from_lines(content)
+            structure_page = structure.build_page(layout, tables=given, figures=figs) if layout else structure.build_from_lines(content)
             if placed is not None:
                 structure_page["positions_from"], structure_page["placement"] = positions_from, round(placed, 2)
             fillable = digital.fields_from_widgets(info["fields"], info["words"], info["size"]) if info.get("fields") and source == "text-layer" else None
@@ -163,7 +180,7 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     "size": info["size"], "source": source, "verified": verified, "scanned": original["scanned"],
                     "has_text_layer": bool(info["words"]), "handwritten": handwritten, "page_meta": meta,
                     "classification": _classify_page(text, structure_page, reading), "text": text, "lines": out_lines,
-                    "structure": structure_page, "blocks": info["blocks"], "tables": info["tables"], "form_widgets": info["widgets"], "route": route, "reading": reading}
+                    "structure": structure_page, "blocks": info["blocks"], "tables": page_tables, "form_widgets": info["widgets"], "route": route, "reading": reading}
         except Exception as e:
             logger.exception("Page %s failed", n)
             msg = str(e) if isinstance(e, ocr.OcrError) else "This page could not be read."
@@ -222,6 +239,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
     for p in pages:
         if p["page"] in layer_errors:
             p["text_layer_error"] = layer_errors[p["page"]]
+    figures.drop_logos(pages)
     _name_pages(pages)
     if template_choice != AUTO:
         # The user said what this file is. Every page that has content becomes that document; no guessing.
@@ -346,6 +364,7 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
         "pages": pages, "documents": documents, "forms": forms, "other_documents": others, "validation": findings,
         "rest_checked": rest_checked,
         "stats": {"pages": n_pages, "forms": len(forms),
+                  "figures": sum(1 for p in pages for b in (p.get("structure") or {}).get("blocks", []) if b.get("type") == "figure"),
                   "needs_review": sum(1 for f in forms for c in list(f["fields"].values()) + [x for rows in f["tables"].values() for r in rows for x in r.values()]
                                       if c.get("status") in ("review", "undetermined")),
                   "errors": sum(1 for v in findings if v["severity"] == "error"),

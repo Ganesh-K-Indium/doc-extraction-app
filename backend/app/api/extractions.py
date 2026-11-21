@@ -1,11 +1,12 @@
 import asyncio
+import copy
 import hashlib
 import logging
 import re
 from typing import Any, List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app import config, db
@@ -14,7 +15,7 @@ from app.engines.strategy import plan as plans
 from app.services import export, pipeline
 from app.services.documents import classify
 from app.services.reading import ocr, pdf_pages
-from app.services.extraction import remainder
+from app.services.extraction import figures, remainder
 from app.services.documents import template_draft, workspace_types
 from app.services.usage_tracker import track_usage
 
@@ -344,3 +345,98 @@ async def read_the_rest(workspace_id: str, extraction_id: str, doc_index: int):
         ex.result = result
         s.commit()
     return {"added": bool(extra), "doc_index": extra["doc_index"] if extra else None, "items": added}
+
+
+def _figure_blocks(result: dict):
+    """(page, block) of every figure in an extraction's pages, in reading order."""
+    for p in result.get("pages", []):
+        for b in (p.get("structure") or {}).get("blocks", []):
+            if b.get("type") == "figure":
+                yield p, b
+
+
+def _figure_box(page: dict, block: dict) -> list:
+    size = page.get("size") or {}
+    w, h = size.get("width") or 0, size.get("height") or 0
+    x0, y0, x1, y1 = block["bbox"]
+    return [x0 * w, y0 * h, x1 * w, y1 * h]
+
+
+class FigureRead(BaseModel):
+    page: int = 0                       # which figure: its page and its number on the page...
+    index: int = 0
+    all: bool = False                   # ...or every figure not yet read
+    force: bool = False                 # read again a figure that already has a reading
+
+
+@router.post("/{extraction_id}/figures/read")
+async def read_figures(workspace_id: str, extraction_id: str, body: FigureRead):
+    """Read figures (charts, diagrams, drawings, pictures) with a vision model, on request. One crop and one reply per figure, from
+    the workspace's first extraction model; a figure that already has a reading is not read again unless asked. The number of
+    figures read is capped (FIGURE_READ_MAX) because each is a model call."""
+    if not config.llm_enabled():
+        raise HTTPException(503, "Reading a figure needs a vision model, and none is configured on this server.")
+    with db.session() as s:
+        ex = _get(s, workspace_id, extraction_id)
+        result = copy.deepcopy(ex.result or {})
+    if not pdf_file(extraction_id).is_file():
+        raise HTTPException(404, "The original PDF is no longer available.")
+    every = list(_figure_blocks(result))
+    if not body.all and not any(p["page"] == body.page and b.get("index") == body.index for p, b in every):
+        raise HTTPException(404, "No such figure.")
+    wanted = [(p, b) for p, b in every if (body.all or (p["page"] == body.page and b.get("index") == body.index)) and (body.force or not b.get("reading"))]
+    already = sum(1 for _, b in every if b.get("reading"))
+    room = max(0, config.figure_read_max() - (0 if body.force else already)) if body.all else config.figure_read_max()
+    skipped = max(0, len(wanted) - room)
+    wanted = wanted[:room]
+    if not wanted:
+        return {"read": 0, "failed": 0, "skipped": skipped, "tokens": 0, "figures": []}
+    models = plans.for_workspace(workspace_id).extract_models
+    if not models:
+        raise HTTPException(503, "No model is set up to read figures.")
+    path = str(pdf_file(extraction_id))
+    sem = asyncio.Semaphore(2)
+    done: list = []
+    failed = 0
+
+    async def one(p: dict, b: dict) -> None:
+        nonlocal failed
+        async with sem:
+            try:
+                reading = await figures.read(path, p["page"], _figure_box(p, b), b.get("labels") or [], models[0])
+            except Exception:
+                logger.exception("Reading figure %s of page %s failed", b.get("index"), p["page"])
+                failed += 1
+                return
+        b["reading"], b["kind"] = reading, reading.get("kind")
+        b["decorative"] = reading.get("kind") == "logo"
+        done.append({"page": p["page"], "index": b.get("index"), "kind": reading.get("kind")})
+
+    with track_usage(f"figures:{extraction_id[:8]}") as usage:
+        await asyncio.gather(*[one(p, b) for p, b in wanted])
+    if failed and not done:
+        raise HTTPException(502, "The figure could not be read just now. Try again in a minute.")
+    tokens = usage.summary()["total_tokens"]
+    with db.session() as s:
+        ex = _get(s, workspace_id, extraction_id)
+        stats = dict(result.get("stats", {}))
+        u = dict(stats.get("usage") or {"calls": 0, "tokens": 0, "by_stage": {}})
+        u["calls"], u["tokens"] = u.get("calls", 0) + len(usage.entries), u.get("tokens", 0) + tokens
+        u["by_stage"] = {**u.get("by_stage", {}), "figures": u.get("by_stage", {}).get("figures", 0) + tokens}
+        stats["usage"], stats["figures_read"] = u, sum(1 for _, b in _figure_blocks(result) if b.get("reading"))
+        result["stats"] = stats
+        ex.result = result
+        s.commit()
+    return {"read": len(done), "failed": failed, "skipped": skipped, "tokens": tokens, "figures": sorted(done, key=lambda d: (d["page"], d["index"]))}
+
+
+@router.get("/{extraction_id}/figures/{page}/{index}.jpg")
+async def figure_image(workspace_id: str, extraction_id: str, page: int, index: int):
+    """The figure as cropped from its page: what a reader would be sent, for showing next to its reading."""
+    with db.session() as s:
+        result = _get(s, workspace_id, extraction_id).result or {}
+    hit = next(((p, b) for p, b in _figure_blocks(result) if p["page"] == page and b.get("index") == index), None)
+    if hit is None or not pdf_file(extraction_id).is_file():
+        raise HTTPException(404, "No such figure.")
+    jpeg = await asyncio.to_thread(figures.crop_jpeg, str(pdf_file(extraction_id)), page, _figure_box(*hit))
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})

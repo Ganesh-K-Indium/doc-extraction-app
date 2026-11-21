@@ -60,6 +60,7 @@ class _Row:
         self.y1 = max(c[4] for c in cells)
         self.h = statistics.median([max(c[4] - c[2], 1e-6) for c in cells])
         self.order = 0.0
+        self.figure: Optional[Dict[str, Any]] = None
         self.kind = "text"            # text | heading | list | kv | multi | given
         self.level = 0
         self.table: Optional[Dict[str, Any]] = None
@@ -153,7 +154,7 @@ def _pairs(cells: List[Cell]) -> List[Dict[str, Any]]:
 
 def _classify(rows: List[_Row], median_h: float) -> None:
     for r in rows:
-        if r.kind == "given":
+        if r.kind in ("given", "figure"):
             continue
         if r.pairs:
             r.kind = "kv"
@@ -258,7 +259,7 @@ def _drop_page_number(rows: List["_Row"]) -> Tuple[List["_Row"], Optional[str]]:
     kept = []
     for k, r in enumerate(rows):
         edge = k == 0 or k == len(rows) - 1 or r.y0 > 0.9 or r.y1 < 0.06          # first or last line of the page, or in a margin
-        if edge and len(r.cells) == 1 and r.kind != "given" and _PAGE_NUMBER.match(r.text.strip()):
+        if edge and len(r.cells) == 1 and r.kind not in ("given", "figure") and _PAGE_NUMBER.match(r.text.strip()):
             number = r.text.strip()
         else:
             kept.append(r)
@@ -275,7 +276,7 @@ def _pair_captions(rows: List["_Row"]) -> List["_Row"]:
         a = rows[i]
         b = rows[i + 1] if i + 1 < len(rows) else None
         done = False
-        if b is not None and a.kind != "given" and b.kind != "given" and all(_CAPTION.match(c[0].strip()) for c in b.cells) \
+        if b is not None and a.kind not in ("given", "figure") and b.kind not in ("given", "figure") and all(_CAPTION.match(c[0].strip()) for c in b.cells) \
                 and not any(_CAPTION.match(c[0].strip()) for c in a.cells) and -0.6 * b.h <= b.y0 - a.y1 <= b.h * 1.6 and len(a.cells) == len(b.cells):
             pairs, used = [], set()
             for cap in b.cells:
@@ -357,16 +358,81 @@ def _reading_order(rows: List[List[Cell]]) -> List[List[Cell]]:
     return rows[:a] + [r for r in left_rows if r] + [r for r in right_rows if r] + rows[b:]
 
 
-def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+_CAPTION_START = re.compile(r"^\s*(figure|fig\.?|chart|graph|diagram|plot|photo|drawing|illustration)\s*[\dA-Z][\w.\-]*\s*[:.\-–—]?", re.I)
+CAPTION_REACH = 0.07       # a caption is at most this far (page height) over or under its figure
+CAPTION_LINES = 3
+
+
+def _take_figures(rows_in: List[List[Cell]], figs: List[Dict[str, Any]]) -> Tuple[List[List[Cell]], List[Dict[str, Any]]]:
+    """Lift the figures out of the rows: the cells printed inside a figure's box become its labels, and a line such as "Figure 2:
+    Scaled dot-product attention" next to it becomes its caption (shared by the figures it sits under: "(left) ... (right) ...").
+    Returns the remaining rows and the figure blocks."""
+    rows = [list(r) for r in rows_in]
+    blocks: List[Dict[str, Any]] = []
+    for f in figs:
+        x0, y0, x1, y1 = f["bbox"]
+        labels: List[str] = list(f.get("labels") or [])
+        have = {re.sub(r"\W", "", t.lower()) for t in labels}
+        kept_rows: List[List[Cell]] = []
+        for r in rows:
+            inside = [c for c in r if x0 - 0.004 <= (c[1] + c[3]) / 2 <= x1 + 0.004 and y0 - 0.004 <= (c[2] + c[4]) / 2 <= y1 + 0.004]
+            for c in inside:
+                if re.sub(r"\W", "", c[0].lower()) not in have and c[0].strip():
+                    labels.append(c[0].strip())
+            rest = [c for c in r if c not in inside]
+            if rest:
+                kept_rows.append(rest)
+        rows = kept_rows
+        blocks.append({"type": "figure", "bbox": [round(v, 4) for v in f["bbox"]], "source": f.get("source"), "caption": None,
+                       "labels": labels[:80], "kind": None, "reading": None, **({"digest": f["digest"]} if f.get("digest") else {})})
+    gone: set = set()
+    for fb in blocks:
+        x0, y0, x1, y1 = fb["bbox"]
+        for k, r in enumerate(rows):
+            text = " ".join(c[0] for c in r).strip()
+            top, bottom = min(c[2] for c in r), max(c[4] for c in r)
+            near = (0 <= top - y1 <= CAPTION_REACH) or (0 <= y0 - bottom <= CAPTION_REACH)
+            across = min(max(c[3] for c in r), x1 + 0.1) - max(min(c[1] for c in r), x0 - 0.1) > 0
+            if near and across and _CAPTION_START.match(text):
+                lines, last = [text], k
+                while len(lines) < CAPTION_LINES and last + 1 < len(rows) and not re.search(r"[.!?]\s*$", lines[-1]):
+                    nxt = rows[last + 1]
+                    if min(c[2] for c in nxt) - max(c[4] for c in rows[last]) > 0.012:
+                        break
+                    lines.append(" ".join(c[0] for c in nxt).strip())
+                    last += 1
+                fb["caption"] = re.sub(r"\s+", " ", " ".join(lines)).strip()
+                gone.update(range(k, last + 1))
+                break
+    return [r for k, r in enumerate(rows) if k not in gone], blocks
+
+
+def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optional[List[Dict[str, Any]]] = None,
+               figures: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """{"blocks": [...], "entities": [...], "layout": bool} for one page given its rows of cells.
     Fax transmission stamps are not content and are left out. `tables` are tables another extractor already found
     (bbox as page fractions, columns, rows): the rows they cover are not rebuilt, the table takes their place."""
     from app.services.reading import pdf_pages
+    from app.services.extraction import figures as figs_mod
+    figs = [f for f in (figures or []) if has_layout]
+    fig_blocks: List[Dict[str, Any]] = []
+    if figs:
+        rows_in, fig_blocks = _take_figures(rows_in, figs)
+        tables = [t for t in (tables or []) if not any(figs_mod.overlap(t["bbox"], f["bbox"]) >= 0.5 for f in figs)]       # a drawing's labels are not a table
     rows = [_Row(r) for r in (_reading_order(rows_in) if has_layout else rows_in)
             if r and any(c[0].strip() for c in r) and not pdf_pages.is_fax_stamp(" ".join(c[0] for c in r))]
     for k, r in enumerate(rows):
         r.order = float(k)                                  # reading order: y, except down the columns of a column layout
-    usual_h = statistics.median(r.h for r in rows) if rows else 0.01        # the page's usual text height, taken before tables take their rows out
+    usual_h = statistics.median(r.h for r in rows) if rows else 0.01        # the page's usual text height, taken before figures and tables take their place
+    for fb in fig_blocks:                                   # each figure takes its place in the reading order, among the rows beside and below it
+        x0, y0, x1, y1 = fb["bbox"]
+        later = [r for r in rows if r.kind != "figure" and r.y0 >= y0 - 0.002 and min(max(c[3] for c in r.cells), x1) - max(min(c[1] for c in r.cells), x0) > 0]
+        later = later or [r for r in rows if r.kind != "figure" and r.y0 >= y0 - 0.002]
+        marker = _Row([("", x0, y0, x1, y1)])
+        marker.kind, marker.figure = "figure", fb
+        marker.order = (min(r.order for r in later) - 0.5) if later else float(len(rows))
+        rows.append(marker)
+    rows.sort(key=lambda r: r.order)
     for t in tables or []:
         x0, y0, x1, y1 = t["bbox"]
         # the table's own text, header rows included (they may have been folded into its column names)
@@ -409,6 +475,9 @@ def build_page(rows_in: List[List[Cell]], has_layout: bool = True, tables: Optio
         r = rows[i]
         if r.kind == "given":
             blocks.append(r.table)  # type: ignore[arg-type]
+            i += 1
+        elif r.kind == "figure":
+            blocks.append(r.figure)  # type: ignore[attr-defined]
             i += 1
         elif r.kind == "multi":
             j = i

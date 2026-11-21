@@ -270,7 +270,7 @@ def test_uneven_light_is_evened_out_and_blank_pages_are_not_retried():
 def test_a_page_that_comes_back_nearly_empty_is_read_again_on_the_cleaned_image(monkeypatch):
     calls = []
 
-    def fake_run(png):
+    def fake_run(png, psm=None):
         calls.append(png)
         tsv = "level\tpage\tblock\tpar\tline\tword\tl\tt\tw\th\tconf\ttext\n" + "".join(
             f"5\t1\t1\t1\t1\t{k}\t0\t0\t1\t1\t90\tw{k}\n" for k in range(60 if len(calls) == 2 else 3))
@@ -279,13 +279,13 @@ def test_a_page_that_comes_back_nearly_empty_is_read_again_on_the_cleaned_image(
     monkeypatch.setattr(tess, "_run", fake_run)
     monkeypatch.setattr(tess, "flatten", lambda png: (b"cleaned", 0.05))
     pdf, tsv = tess.png_to_pdf_and_words(b"photo")
-    assert len(calls) == 2 and calls[1] == b"cleaned" and pdf == b"pdf-2" and tess.word_count(tsv) == 60
+    assert len(calls) == 2 and pdf == b"pdf-2" and tess.word_count(tsv) == 60          # the second reading (sparse text) was better, and was kept
 
 
 def test_a_page_with_plenty_of_words_is_read_once(monkeypatch):
     calls = []
     tsv = "h\n" + "".join(f"5\t1\t1\t1\t1\t{k}\t0\t0\t1\t1\t90\tw{k}\n" for k in range(80))
-    monkeypatch.setattr(tess, "_run", lambda png: (calls.append(1), (b"pdf", tsv))[1])
+    monkeypatch.setattr(tess, "_run", lambda png, psm=None: (calls.append(1), (b"pdf", tsv))[1])
     tess.png_to_pdf_and_words(b"x")
     assert len(calls) == 1
 

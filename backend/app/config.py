@@ -72,6 +72,11 @@ def long_doc_pages() -> int:
     return int(os.getenv("DISCOVER_LONG_DOC_PAGES", "25"))
 
 
+def figure_read_max() -> int:
+    """Most figures read in one request, and in one document altogether: reading a figure is a model call, so it is capped."""
+    return int(os.getenv("FIGURE_READ_MAX", "12"))
+
+
 def digital_model_mode() -> str:
     """When a model reads a digital (text-layer) page with no template: "auto" (default) only for form-like pages code could
     not make sense of, "never" (code only), "always" (every digital page)."""

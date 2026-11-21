@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, authHeaders, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
+import { api, authHeaders, meta, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
 import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
 import { useWorkspace } from '../workspaceContext';
@@ -35,10 +35,13 @@ export default function ExtractionPage() {
     const [reading, setReading] = useState<number | null>(null);
     const [restNote, setRestNote] = useState<Record<number, string>>({});
     const [rereading, setRereading] = useState(false);
+    const [figBusy, setFigBusy] = useState<string | null>(null);
+    const [canRead, setCanRead] = useState(false);
     const nav = useNavigate();
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
+    useEffect(() => { meta.health().then(h => setCanRead(h.llm)).catch(() => setCanRead(false)); }, []);
     const load = useCallback(() => api.get(wid, id).then(setData).catch(e => setError(e.message)), [wid, id]);
     useEffect(() => { load(); }, [load]);
     useEffect(() => {
@@ -139,6 +142,13 @@ export default function ExtractionPage() {
         } catch (e) { setError((e as Error).message); }
         finally { setReading(null); }
     };
+    /** Read figures with a vision model: one (page and number) or every one not yet read. One model call each, only on request. */
+    const readFigures = async (body: { page?: number; index?: number; all?: boolean; force?: boolean }) => {
+        setFigBusy(body.all ? 'all' : `${body.page}:${body.index}`); setError('');
+        try { await api.readFigures(wid, id, body); await load(); }
+        catch (e) { setError((e as Error).message); }
+        finally { setFigBusy(null); }
+    };
     /** Read the file again under another strategy, or send chosen pages to the vision models. Makes a second extraction. */
     const reread = async (body: { strategy?: string; pages?: number[] }) => {
         setRereading(true); setError('');
@@ -178,7 +188,8 @@ export default function ExtractionPage() {
                                 restDone={f => forms.some(x => x.remainder_of === f.doc_index) || (data.fields?.rest_checked ?? []).includes(f.doc_index)}
                                 readingDoc={reading} restNote={active ? restNote[active.doc_index] : undefined} savedAs={active ? saved[active.doc_index] : undefined}
                                 onOpenDoc={openDoc} onSelect={select} onSave={save} onJump={jump} onPromote={promote} onReadRest={readRest} />)}
-                        {tab === 'pages' && data.pages && <PagesTab pages={data.pages} busy={rereading} onOpen={n => jump(n)} onJump={jump} onReread={n => reread({ pages: [n] })} />}
+                        {tab === 'pages' && data.pages && <PagesTab pages={data.pages} busy={rereading} onOpen={n => jump(n)} onJump={jump} onReread={n => reread({ pages: [n] })}
+                            figures={{ wid, id, canRead, busy: figBusy, onRead: (page, index, force) => readFigures({ page, index, force }) }} onReadAllFigures={() => readFigures({ all: true })} />}
                         {tab === 'findings' && <FindingsTab findings={findings} onOpen={findingJump} />}
                         {tab === 'json' && <JsonView fields={data.fields} pages={data.pages} structure={data.structure} onDownload={kind => api.download(wid, id, kind, data.filename)} />}
                     </div>

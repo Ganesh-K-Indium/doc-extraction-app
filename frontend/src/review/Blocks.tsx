@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import type { Block, BBox, Page } from '../api';
+import { useEffect, useState } from 'react';
+import { api } from '../api';
+import type { Block, BBox, FigureReading, Page } from '../api';
 
 const ENTITY_LABEL: Record<string, string> = { date: 'Dates', amount: 'Amounts', phone: 'Phones', email: 'Emails', url: 'Links', percent: 'Percentages' };
 
@@ -8,6 +9,76 @@ function toPoints(b: Block, page?: Page): BBox | null {
     if (!b.bbox || !page?.size) return null;
     const { width: w, height: h } = page.size;
     return [b.bbox[0] * w, b.bbox[1] * h, b.bbox[2] * w, b.bbox[3] * h];
+}
+
+/** What the figure cards need: which file they belong to, whether a model can read them, and what to do when someone asks. */
+export interface FigureTools {
+    wid: string; id: string; canRead: boolean; busy: string | null;
+    onRead: (page: number, index: number, force?: boolean) => void;
+}
+
+const KIND_LABEL: Record<string, string> = { chart: 'Chart', diagram: 'Diagram', drawing: 'Drawing', photo: 'Photo', table: 'Table', logo: 'Logo', other: 'Figure' };
+
+function FigureImage({ tools, page, index }: { tools: FigureTools; page: number; index: number }) {
+    const [src, setSrc] = useState<string | null>(null);
+    useEffect(() => {
+        let url: string | null = null, live = true;
+        api.figureImage(tools.wid, tools.id, page, index).then(u => { if (live) { url = u; setSrc(u); } else URL.revokeObjectURL(u); }).catch(() => undefined);
+        return () => { live = false; if (url) URL.revokeObjectURL(url); };
+    }, [tools.wid, tools.id, page, index]);
+    return src ? <img className="rs-figure__img" src={src} alt="" /> : <div className="rs-figure__img rs-figure__img--wait" aria-hidden="true" />;
+}
+
+function ChartView({ chart }: { chart: NonNullable<FigureReading['chart']> }) {
+    const unit = (a: { label: string | null; unit: string | null }) => [a.label, a.unit ? `(${a.unit})` : null].filter(Boolean).join(' ');
+    return (
+        <div className="rs-chart">
+            <p className="rs-chart__axes">{chart.type} chart{unit(chart.x_axis) ? ` · x: ${unit(chart.x_axis)}` : ''}{unit(chart.y_axis) ? ` · y: ${unit(chart.y_axis)}` : ''}</p>
+            {chart.series.map((s, i) => (
+                <div className="rs-tablewrap" key={i}>
+                    <table className="rs-table">
+                        <thead><tr><th>{s.name ?? 'Series'}</th><th>{unit(chart.x_axis) || 'x'}</th><th>{unit(chart.y_axis) || 'y'}</th></tr></thead>
+                        <tbody>{s.points.map((p, j) => (
+                            <tr key={j}><td /><td>{p.x}</td><td>{p.estimated ? <span className="rs-est" title="Worked out from the picture, not printed on it">≈ {p.value ?? p.y}</span> : p.y}</td></tr>))}</tbody>
+                    </table>
+                </div>))}
+        </div>);
+}
+
+function FigureView({ block, page, onJump, tools }: { block: Extract<Block, { type: 'figure' }>; page: Page; onJump: (page: number, bbox?: BBox | null) => void; tools?: FigureTools }) {
+    const r = block.reading;
+    const key = `${page.page}:${block.index}`;
+    const working = tools?.busy === key || tools?.busy === 'all';
+    const go = () => onJump(page.page, toPoints(block, page));
+    const est = r?.chart ? r.chart.series.reduce((n, s) => n + s.points.filter(p => p.estimated).length, 0) : 0;
+    return (
+        <figure className="rs-figure">
+            <div className="rs-figure__top" onClick={go}>
+                <span className="rv-chip rv-chip--muted">{KIND_LABEL[block.kind ?? 'other'] ?? 'Figure'}</span>
+                <figcaption>{block.caption ?? r?.title ?? `Figure on page ${page.page}`}</figcaption>
+            </div>
+            {tools && <FigureImage tools={tools} page={page.page} index={block.index} />}
+            {!r && (
+                <p className="rs-figure__ask">
+                    {block.labels.length > 0 ? `${block.labels.length} labels are printed on it. ` : 'No text is printed on it. '}
+                    {tools && (
+                        <button type="button" className="link" disabled={!tools.canRead || working || !!tools.busy} onClick={() => tools.onRead(page.page, block.index)}
+                            title={tools.canRead ? 'One model call for this figure' : 'Needs a vision model: connect one on the Settings page'}>
+                            {working ? 'Reading…' : 'Read this figure'}
+                        </button>)}
+                </p>)}
+            {r && block.decorative && <p className="muted">The model took this for a logo or decoration, so nothing was extracted from it.</p>}
+            {r && !block.decorative && (
+                <div className="rs-figure__read">
+                    {r.summary && <p>{r.summary}</p>}
+                    {r.chart && <ChartView chart={r.chart} />}
+                    {r.components && <p className="rs-figure__parts"><b>Parts</b> {r.components.map(c => c.role ? `${c.name} (${c.role})` : c.name).join(' · ')}</p>}
+                    {r.connections && <ul className="rs-figure__links">{r.connections.map((c, i) => <li key={i}>{c.from} → {c.to}{c.label ? ` (${c.label})` : ''}</li>)}</ul>}
+                    {est > 0 && <p className="rs-figure__note">≈ marks values worked out from the picture{r.values_total ? `; ${r.values_confirmed ?? 0} of ${r.values_total} were found printed on it` : ''}. Treat them as estimates.</p>}
+                    {r.limits && <p className="rs-figure__note">Not readable: {r.limits}</p>}
+                    <p className="rs-figure__note">Read by {r.model ?? 'a model'}.{tools && <> <button type="button" className="link" disabled={!tools.canRead || !!tools.busy} onClick={() => tools.onRead(page.page, block.index, true)}>Read again</button></>}</p>
+                </div>)}
+        </figure>);
 }
 
 const ROWS_SHOWN = 12;
@@ -29,7 +100,7 @@ function TableView({ block, onClick }: { block: Extract<Block, { type: 'table' }
         </div>);
 }
 
-function BlockView({ block, page, onJump, after }: { block: Block; page: Page; onJump: (page: number, bbox?: BBox | null) => void; after?: Block }) {
+function BlockView({ block, page, onJump, after, tools }: { block: Block; page: Page; onJump: (page: number, bbox?: BBox | null) => void; after?: Block; tools?: FigureTools }) {
     const go = () => onJump(page.page, toPoints(block, page));
     switch (block.type) {
         case 'heading': {
@@ -61,6 +132,8 @@ function BlockView({ block, page, onJump, after }: { block: Block; page: Page; o
                         </div>))}
                 </div>);
         }
+        case 'figure':
+            return <FigureView block={block} page={page} onJump={onJump} tools={tools} />;
         case 'list': {
             const Tag = block.ordered ? 'ol' : 'ul';
             return <Tag className="rs-list" onClick={go}>{block.items.map((t, i) => <li key={i}>{t}</li>)}</Tag>;
@@ -80,13 +153,13 @@ function EntityList({ entities }: { entities: { type: string; value: string }[] 
 }
 
 /** What is on one page: its blocks in reading order, then the dates, amounts and contacts found. Click a block to see it on the PDF. */
-export function Blocks({ page, onJump }: { page: Page; onJump: (page: number, bbox?: BBox | null) => void }) {
+export function Blocks({ page, onJump, tools }: { page: Page; onJump: (page: number, bbox?: BBox | null) => void; tools?: FigureTools }) {
     const st = page.structure;
     if (!st || st.blocks.length === 0) return <p className="muted">{page.error ? 'This page could not be read.' : 'Nothing readable on this page.'}</p>;
     return (
         <div className="rs-page">
             {!st.layout && <p className="rs-nolayout"><span className="rv-chip rv-chip--warn">No layout</span> Read without positions, so blocks cannot be shown on the page and tables are found from the text only.</p>}
-            {st.blocks.map((b, i) => <BlockView key={i} block={b} page={page} onJump={onJump} after={st.blocks[i - 1]} />)}
+            {st.blocks.map((b, i) => <BlockView key={i} block={b} page={page} onJump={onJump} after={st.blocks[i - 1]} tools={tools} />)}
             <EntityList entities={st.entities} />
             {st.running && st.running.length > 0 && <p className="rs-running">Repeated on every page: {st.running.map((r) => r.text).join(' · ')}</p>}
             {st.page_number && <p className="rs-pageno">Page number on the sheet: {st.page_number}</p>}

@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pymupdf as fitz
 
@@ -35,6 +35,8 @@ def available() -> bool:
     return binary() is not None
 
 
+BLANK_INK = 0.001       # a page with less ink than this is blank (a noisy empty page measures 0.0003; a sparse real one, over 0.03)
+SPARSE = 11              # Tesseract's page-segmentation mode for text scattered over a page, with no layout analysis
 FEW_WORDS = 40          # a page with fewer recognised words than this, yet with ink on it, is read again on a cleaned image
 
 
@@ -95,7 +97,7 @@ def evened(png: bytes) -> bytes:
         return png
 
 
-def _run(png: bytes) -> "tuple[bytes, str]":
+def _run(png: bytes, psm: Optional[int] = None) -> "tuple[bytes, str]":
     """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run."""
     exe = binary()
     if not exe:
@@ -104,7 +106,7 @@ def _run(png: bytes) -> "tuple[bytes, str]":
         src, base = Path(tmp) / "in.png", Path(tmp) / "out"
         src.write_bytes(png)
         env = {**os.environ, "OMP_THREAD_LIMIT": "1"}  # pages run in parallel; one thread each avoids oversubscription
-        proc = subprocess.run([exe, str(src), str(base), "-l", LANG, "--dpi", str(DPI), "pdf", "tsv"],
+        proc = subprocess.run([exe, str(src), str(base), "-l", LANG, "--dpi", str(DPI), *(["--psm", str(psm)] if psm else []), "pdf", "tsv"],
                               capture_output=True, timeout=TIMEOUT_SECONDS, env=env)
         out, words = base.with_suffix(".pdf"), base.with_suffix(".tsv")
         if proc.returncode != 0 or not out.exists():
@@ -112,24 +114,58 @@ def _run(png: bytes) -> "tuple[bytes, str]":
         return out.read_bytes(), (words.read_text(errors="replace") if words.exists() else "")
 
 
+def _otsu(gray: Any) -> int:
+    """The grey level that best separates dark strokes from light paper (Otsu's method), from a PIL grayscale image's histogram."""
+    hist = gray.histogram()
+    total = sum(hist)
+    sum_all = sum(i * n for i, n in enumerate(hist))
+    best, best_var, w0, sum0 = 128, -1.0, 0, 0.0
+    for t in range(256):
+        w0 += hist[t]
+        if w0 == 0 or w0 == total:
+            continue
+        sum0 += t * hist[t]
+        m0, m1 = sum0 / w0, (sum_all - sum0) / (total - w0)
+        var = w0 * (total - w0) * (m0 - m1) ** 2
+        if var > best_var:
+            best, best_var = t, var
+    return best
+
+
+def _binarized(clean_png: bytes) -> bytes:
+    """Black strokes on white paper, nothing between: the grain of a photograph is grey, and Tesseract can read a grainy page as noise."""
+    from io import BytesIO
+    from PIL import Image
+    im = Image.open(BytesIO(clean_png)).convert("L")
+    cut = _otsu(im)
+    out = BytesIO()
+    im.point(lambda v: 255 if v > cut else 0).save(out, "PNG")
+    return out.getvalue()
+
+
 def png_to_pdf_and_words(png: bytes) -> "tuple[bytes, str]":
     """One page of picture + invisible text, and Tesseract's word table (TSV) from the same run, so reading the page
     for its text costs no second pass. A page that comes back nearly empty although it has ink on it (a photo with uneven
-    light, a shadow) is read once more on a cleaned copy, and the better reading is kept. Raises RuntimeError with
-    Tesseract's own message on failure."""
-    pdf, tsv = _run(png)
-    if word_count(tsv) >= FEW_WORDS:
-        return pdf, tsv
+    light, a shadow, grain) is read again on a cleaned copy (lighting evened, then pure black on white), and the best reading is
+    kept. Raises RuntimeError with Tesseract's own message on failure."""
+    best = _run(png)
+    if word_count(best[1]) >= FEW_WORDS:
+        return best
     try:
         clean, ink = flatten(png)
-        if ink < 0.004:                                      # a blank page: nothing to find
-            return pdf, tsv
-        pdf2, tsv2 = _run(clean)
-        if word_count(tsv2) > word_count(tsv):
-            return pdf2, tsv2
+        if ink < BLANK_INK:                                  # a blank page: nothing to find
+            return best
+        # Two different things go wrong with a photographed page. Uneven light hides the text (a cleaned copy helps), and Tesseract's own
+        # page layout can take a page with a drawing on it for one big picture and skip the text (reading it as sparse text helps).
+        for make, psm in ((lambda: png, SPARSE), (lambda: clean, SPARSE), (lambda: clean, None), (lambda: _binarized(clean), None)):
+            got = _run(make(), psm)
+            if word_count(got[1]) > word_count(best[1]):
+                best = got
+            if word_count(best[1]) >= FEW_WORDS:
+                break
     except Exception as e:                                   # the first reading stands
         logger.warning("Cleaned-image retry failed: %s", e)
-    return pdf, tsv
+    return best
 
 
 def png_to_pdf(png: bytes) -> bytes:
