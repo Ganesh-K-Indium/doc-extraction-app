@@ -201,3 +201,21 @@ def test_numbers_in_callout_circles_do_not_count_against_a_table(tmp_path):
     doc.save(path)
     words = digital._words_in(str(path), 1, [0, 0, 400, 300])
     assert "13" not in words and "14" not in words and "6.9" in words
+
+
+def test_a_heading_with_its_instruction_is_not_a_value_and_a_label_amount_list_is_not_a_table():
+    from app.services.extraction import digital
+    assert digital._instruction("ALLERGIES", "(include allergies to medications, dyes)")
+    assert not digital._instruction("Allergies", "(none)") and not digital._instruction("TOTAL", "189.45")
+    note = {"headers": ["Column 1", "Column 2", "Column 3"], "rows": [["could be a discount", "you have a question", ""], ["off by the", "deductible on this claim", "x"]]}
+    assert digital._not_a_table(note)
+
+
+def test_the_lab_report_results_table_is_named_by_its_first_line():
+    import os
+    from app.services.extraction import digital
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "sample_data", "healthcare", "clinical", "lab_cbc_sample_report_testing_com.pdf")
+    if not os.path.exists(path):
+        return
+    got = asyncio.run(pipeline.process(path))
+    assert "complete_blood_count" in got["forms"][0]["tables"]

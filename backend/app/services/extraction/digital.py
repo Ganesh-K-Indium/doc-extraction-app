@@ -366,9 +366,15 @@ def facts_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> 
     for b in blocks:
         if b.get("type") == "key_value":
             for it in b["items"]:
-                if it.get("value") and len(it["value"]) <= 2 * MAX_VALUE_CHARS and len(it["label"]) <= MAX_VALUE_CHARS:
+                if it.get("value") and len(it["value"]) <= 2 * MAX_VALUE_CHARS and len(it["label"]) <= MAX_VALUE_CHARS and not _instruction(it["label"], it["value"]):
                     out.append({"label": it["label"], "value": it["value"], "bbox": _points(it.get("bbox"), size)})
     return out
+
+
+def _instruction(label: str, value: str) -> bool:
+    """A heading with its instruction after it ("ALLERGIES: (include allergies to medications, dyes ...)"): the words tell the person what to write, they are not a value."""
+    v = (value or "").strip()
+    return label.strip().isupper() and v.startswith("(") and v.endswith(")")
 
 
 def boxes_from_structure(blocks: List[Dict[str, Any]], size: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -528,6 +534,7 @@ def page_title(lines: List[str]) -> Optional[str]:
     return (best.title() if best.isupper() else best) if best else None
 
 
+_GENERIC_HEAD = re.compile(r"(?:Column \d+|Item|Line item|Col \d+)")
 _BOXES = "\u2610\u25a1\u2611\u2612\u2713\u25a0"
 
 
@@ -537,6 +544,8 @@ def _not_a_table(t: Dict[str, Any]) -> bool:
     cells = [str(c).strip() for r in [t.get("headers") or []] + list(t.get("rows") or []) for c in r if str(c).strip()]
     if len(cells) >= 4 and sum(1 for c in cells if c[0] in _BOXES) / len(cells) >= 0.6:
         return True
+    if all(_GENERIC_HEAD.fullmatch(str(h)) for h in (t.get("headers") or []) if str(h).strip()) and sum(1 for c in cells if c[:1].islower()) >= 2:
+        return True                                         # no real header, and cells that start in the middle of a sentence: a note cut into columns
     if cells and sum(1 for c in cells if len(c.split()) >= 4 and not re.search(r"\d", c)) / len(cells) >= 0.4:
         return True                                         # callout boxes and notes that the columns of the page cut into pieces
     body = [r for r in (t.get("rows") or [])[1:] if any(str(c).strip() for c in r)]
@@ -600,7 +609,15 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         if not body or ncols < 2:
             continue
         cols = await asyncio.to_thread(geometric_labels, path, page_num, t["bbox"], header, ncols) or await header_labels(header, ncols, model, ask, memo)
+        if ncols == 2 and all(_GENERIC_HEAD.fullmatch(c or "") for c in cols):      # a label and its amount, line after line: the page's pairs, not a table
+            for r in body:
+                if r[0].strip() and r[1].strip():
+                    box_fields.setdefault(labels.key(r[0]) or f"field_{n}", {**_cell(r[1].strip(), page_num), "label": r[0].strip(), "section": None, "type": "text", "normalized": None, "bbox": None})
+            continue
         ttl = t["title"] if "title" in t else table_title(lines, body[0][0] if body[0] else "")      # a layout-found table names itself from the page
+        if not ttl and len(body) >= 4 and body[0] and body[0][0].strip() and not any(c.strip() for c in body[0][1:]):
+            ttl = body[0][0].strip().title() if body[0][0].isupper() else body[0][0].strip()         # its own first line, a section name (COMPLETE BLOOD COUNT)
+            body = body[1:]
         title = title or ttl
         key = labels.key(ttl or "", f"table_{n}")
         key = key if key not in out_tables else f"{key}_{n}"
@@ -624,7 +641,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
     fields: Dict[str, Dict[str, Any]] = dict(box_fields)
     for p in kv.parse_kv(lines):
         label, value = p["label"], p["value"]
-        if len(value) > MAX_VALUE_CHARS or len(lines[p["line"]]) > MAX_PAIR_LINE or re.search(r"\d", label):
+        if len(value) > MAX_VALUE_CHARS or len(lines[p["line"]]) > MAX_PAIR_LINE or re.search(r"\d", label) or _instruction(label, value):
             continue                                   # a sentence, or "Heading: running text": not a labelled value
         key = labels.key(label)
         if key and key not in fields:
