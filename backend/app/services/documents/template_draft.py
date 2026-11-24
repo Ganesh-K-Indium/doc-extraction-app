@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.documents import classify
 from app.services.extraction import discover
+from app.services.extraction.discover import _canon
 from app.services.reading import pdf_pages, ocr
 
 FIELD_TYPES = {"text", "date", "phone", "state", "zip", "npi", "tax_id", "icd10", "number", "currency", "email", "id",
@@ -65,13 +66,20 @@ async def draft_from_blank(path: str, models: List[str], reader=None) -> Dict[st
     groups: List[Dict[str, Any]] = []
     tables: List[Dict[str, Any]] = []
     title = None
+    seen: "set[str]" = set()
     for page in range(1, n + 1):
         jpeg = await asyncio.to_thread(pdf_pages.render_jpeg, path, page)
         got = discover.parse(await asyncio.wait_for(reader(models[0], jpeg, discover.BLANK_PROMPT), ocr.ENGINE_TIMEOUT_SECONDS + 5))
         title = title or got["title"]
-        fields += got["fields"]
-        groups += got["choice_groups"]
+        # a block printed at the top of every page (patient name, record number, date) is one field of the form, listed once
+        new_fields = [f for f in got["fields"] if _canon(f["label"]) not in seen]
+        new_groups = [g for g in got["choice_groups"] if _canon(g["label"]) not in seen]
+        seen |= {_canon(x["label"]) for x in got["fields"] + got["choice_groups"]}
+        fields += new_fields
+        groups += new_groups
         tables += [{"title": t["title"], "columns": [{"label": c, "required": False} for c in t["columns"]]} for t in got["tables"]]
+    asked = {_canon(g["label"]) for g in groups}
+    fields = [f for f in fields if _canon(f["label"]) not in asked]            # a question with boxes is a choice, not also a blank to write in
     tpl = build(title or "Untitled document", fields, groups, tables, single_page=(n == 1))
     return {"template": tpl, "entry": _entry(tpl["doc_type"], tpl["title"])}
 

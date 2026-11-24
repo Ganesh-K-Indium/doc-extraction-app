@@ -85,6 +85,10 @@ Rules:
 - "required" is true when the label carries a star, asterisk or the word "required".
 - Rows of check boxes belong in choice_groups; "multiple" is true when more than one may be ticked.
 - A grid with column headers and empty rows is a table.
+- "section" is the nearest printed heading above the item (MEDICAL HISTORY, FOR WOMEN ONLY, ...). Use null only when the page has no heading above it.
+- A blank that only makes sense after another question ("If yes, when?", "If so, how much?", "Dose:") is labelled with that question: "Flu Vaccine - if yes, when", "Alcohol use - if yes, amount". Never give two blanks the same label.
+- The parts of one blank (Last / First / Middle Initial under LEGAL NAME) are fields named after it: "LEGAL NAME - Last", "LEGAL NAME - First", "LEGAL NAME - Middle Initial".
+- A question with check boxes (Yes / No) is one choice group; do not list it again as a text field.
 """
 
 

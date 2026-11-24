@@ -272,6 +272,19 @@ def describe(blocks: List[Dict[str, Any]], text: str, trust_text: bool = True) -
     return {"label": label, "title": title, "kind": kind} if label else {}
 
 
+_FILLER = {"form", "document", "report", "sheet", "record", "notice", "application", "request", "statement", "initial", "the", "and", "for", "with"}
+
+
+def _names_the_page(label: str, text: str) -> bool:
+    """A model's pick of a registered type must be backed by the page: at least half of the type's own name (physical, therapy,
+    examination) is in the page's text. A near miss (an intake form called a therapy examination) is no match."""
+    words = [w for w in re.findall(r"[a-z]{4,}", label.lower()) if w not in _FILLER]
+    if not words:
+        return True
+    low = text.lower()
+    return sum(1 for w in words if w in low) >= max(1, -(-len(words) // 2))
+
+
 async def classify_with_model(text: str, models: List[str], ask=None, previous_text: str = "") -> Dict[str, Any]:
     """Second opinion for a page the rules could not name. The model may only choose a REGISTERED type (or 'unknown'),
     so its answer is always routable, and it says whether the page continues the previous page's document or starts a
@@ -281,7 +294,9 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
     prompt = ("Classify one page from a PDF that may hold several documents. Answer with JSON "
               '{"type": <one of ' + ", ".join(f'"{t}" ({l})' for t, l in choices.items())
               + ' or "unknown">, "title": "<short title of this page\'s document, or null>", '
-              '"continues_previous": <true if this page is a continuation of the previous page\'s document, else false>}.\n\n'
+              '"continues_previous": <true if this page is a continuation of the previous page\'s document, else false>}. '
+              "Choose a registered type only when the page IS that kind of document (its title or its purpose names it). A form that merely "
+              'shares some topics with one (history, pain, medications) is "unknown". When in doubt, answer "unknown".\n\n'
               + (f"Previous page (top):\n{previous_text[:400]}\n\n" if previous_text else "")
               + "This page (top):\n" + (text or "")[:1200])
 
@@ -299,7 +314,7 @@ async def classify_with_model(text: str, models: List[str], ask=None, previous_t
         return unknown
     t = data.get("type")
     title = data.get("title") if isinstance(data.get("title"), str) and data["title"].strip() else None
-    if t in choices:
+    if t in choices and _names_the_page(choices[t], text or ""):
         return {"type": t, "label": choices[t], "confidence": 0.7, "by": "model"}
     return {**unknown, "label": title or "Unclassified", "title": title, "by": "model",
             "continuation": bool(data.get("continues_previous"))}
