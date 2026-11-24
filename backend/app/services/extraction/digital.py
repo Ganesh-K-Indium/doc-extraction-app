@@ -600,7 +600,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
             for label, value in _box_pairs(t):
                 key = labels.key(label)
                 if key and key not in box_fields:
-                    box_fields[key] = {**_cell(value, page_num), "label": label, "section": None, "type": "text", "normalized": None, "bbox": None}
+                    box_fields[key] = {**_cell(value, page_num), "label": label, "section": None, "type": "text", "normalized": None, "bbox": locate.find(path, page_num, value, label)}
             continue
         t, cov, missing = await asyncio.to_thread(verified_table, path, page_num, t)
         header, body = split_header(t)
@@ -612,7 +612,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         if ncols == 2 and all(_GENERIC_HEAD.fullmatch(c or "") for c in cols):      # a label and its amount, line after line: the page's pairs, not a table
             for r in body:
                 if r[0].strip() and r[1].strip():
-                    box_fields.setdefault(labels.key(r[0]) or f"field_{n}", {**_cell(r[1].strip(), page_num), "label": r[0].strip(), "section": None, "type": "text", "normalized": None, "bbox": None})
+                    box_fields.setdefault(labels.key(r[0]) or f"field_{n}", {**_cell(r[1].strip(), page_num), "label": r[0].strip(), "section": None, "type": "text", "normalized": None, "bbox": locate.find(path, page_num, r[1].strip(), r[0].strip())})
             continue
         ttl = t["title"] if "title" in t else table_title(lines, body[0][0] if body[0] else "")      # a layout-found table names itself from the page
         if not ttl and len(body) >= 4 and body[0] and body[0][0].strip() and not any(c.strip() for c in body[0][1:]):
@@ -630,9 +630,10 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         if cov < COVERAGE_OK:                               # neither reading captured every number printed in this region
             note = f"{round((1 - cov) * 100)}% of the numbers in this table were not captured (for example {', '.join(missing[:3])})"
             unverified.append(note)
-        for r in body:
-            r = r + [""] * (ncols - len(r))
-            row = {k: {**_cell(r[j], page_num), "label": cols[j]} for j, k in enumerate(keys)}
+        padded = [r + [""] * (ncols - len(r)) for r in body]
+        spots = iter(locate.in_order(path, page_num, t["bbox"], [c for r in padded for c in r]))
+        for r in padded:
+            row = {k: {**_cell(r[j], page_num), "label": cols[j], "bbox": next(spots)} for j, k in enumerate(keys)}
             if note:
                 for c in row.values():
                     if c["value"]:
