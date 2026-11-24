@@ -131,7 +131,7 @@ export default function ListPage() {
                     {choice !== 'discover' && (
                         <label className="intake__rest">
                             <input type="checkbox" checked={readRest} onChange={e => setReadRest(e.target.checked)} />
-                            <span>Also read the rest of each page <span className="muted">(text and tables around a form; may use model calls)</span></span>
+                            <span>Also structure the text around the form <span className="muted">(only for pages that match a template; extra model calls)</span></span>
                         </label>)}
                 </div>
                 <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={e => upload(e.target.files)} />

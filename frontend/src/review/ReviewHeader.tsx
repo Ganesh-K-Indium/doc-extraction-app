@@ -28,7 +28,12 @@ interface Props {
 export function ReviewHeader(p: Props) {
     return (
         <header className="rv-head">
-            <Link to={`/app/w/${p.wid}`} className="rv-head__back">← {p.workspaceName}</Link>
+            <nav className="rv-head__nav" aria-label="Back">
+                <Link to={`/app/w/${p.wid}`} className="rv-head__back">← Back to documents</Link>
+                <Link to="/app" className="rv-head__crumb">Workspaces</Link>
+                <span aria-hidden="true">/</span>
+                <Link to={`/app/w/${p.wid}`} className="rv-head__crumb">{p.workspaceName}</Link>
+            </nav>
             <div className="rv-head__title">
                 <h1 title={p.filename}>{p.filename}</h1>
                 {p.done && (
