@@ -260,7 +260,7 @@ def titled(tables: List[Dict[str, Any]], blocks: List[Dict[str, Any]], size: Dic
     for t in tables:
         t = dict(t)
         box = t.get("bbox")
-        if box and size and size.get("width"):
+        if box and size and size.get("width") and not t.get("title"):        # a title bar drawn over the table names it already
             mine = [box[0] / size["width"], box[1] / size["height"], box[2] / size["width"], box[3] / size["height"]]
             for i, b in enumerate(blocks):
                 bb = b.get("bbox")
@@ -274,6 +274,7 @@ def titled(tables: List[Dict[str, Any]], blocks: List[Dict[str, Any]], size: Dic
 
 
 FIELD_LABEL_REACH = 14.0    # a label above a field is at most this far (points) over its top edge
+FIELD_FAR = 240.0           # a label in the column to the left of a field may be this far from it
 FIELD_GAP = 22.0            # words of one label are at most this far apart
 
 
@@ -312,9 +313,28 @@ def fields_from_widgets(widgets: List[Dict[str, Any]], words: List[Dict[str, Any
             continue
         left = [t for t in ws if t[2] <= x0 + 1 and x0 - t[2] <= FIELD_GAP and abs((t[1] + t[3]) / 2 - (y0 + y1) / 2) <= max(6.0, (y1 - y0) * 0.7)
                 and not any(b[0] <= (t[0] + t[2]) / 2 <= b[2] and b[1] <= (t[1] + t[3]) / 2 <= b[3] for b in boxes_at)]
+        label_far = ""
+        if not left:                 # a label in the column to the left (a table of "Provider Name | [field]"): the nearest text on the row, with no other field between
+            row_mid = (y0 + y1) / 2
+            far = [t for t in ws if t[2] <= x0 + 1 and x0 - t[2] <= FIELD_FAR and abs((t[1] + t[3]) / 2 - row_mid) <= max(6.0, (y1 - y0) * 0.7)
+                   and not any(b is not w["bbox"] and b[2] <= x0 + 1 and b[0] >= t[2] - 1 and b[1] <= row_mid <= b[3] for b in boxes_at)
+                   and not any(b[0] <= (t[0] + t[2]) / 2 <= b[2] and b[1] <= (t[1] + t[3]) / 2 <= b[3] for b in boxes_at)]
+            left = far
+            if far:                  # such a label may run over several lines ("Reason for" / "Admission"), centred on its row
+                top_mid = y0 + (far[0][3] - far[0][1]) / 2
+                near = min(far, key=lambda t: (round(min(abs((t[1] + t[3]) / 2 - row_mid), abs((t[1] + t[3]) / 2 - top_mid)) / 3), -t[2]))
+                h = max(1.0, near[3] - near[1])
+                cols = [t for t in far if abs(t[0] - near[0]) <= FIELD_FAR and abs(((t[0] + t[2]) / 2) - ((near[0] + near[2]) / 2)) <= FIELD_FAR]
+                lines_y = sorted({round((t[1] + t[3]) / 2) for t in cols})
+                chain = [round((near[1] + near[3]) / 2)]
+                for yy in sorted(lines_y):
+                    if yy not in chain and min(abs(yy - c) for c in chain) <= h * 1.6:
+                        chain.append(yy)
+                got = sorted((t for t in cols if min(abs((t[1] + t[3]) / 2 - c) for c in chain) <= h * 0.6), key=lambda t: (round((t[1] + t[3]) / 2 / h), t[0]))
+                label_far = " ".join(t[4] for t in got)
         if left:
             near = max(left, key=lambda t: t[2])
-            label = " ".join([_near_run(ws, near, -1), near[4]]).strip()
+            label = label_far or " ".join([_near_run(ws, near, -1), near[4]]).strip()
         else:
             above = [t for t in ws if t[3] <= y0 + 2 and y0 - t[3] <= FIELD_LABEL_REACH and t[2] >= x0 - 2 and t[0] <= x1 + 2 and t not in inside]
             label = ""
@@ -534,7 +554,7 @@ def page_title(lines: List[str]) -> Optional[str]:
     return (best.title() if best.isupper() else best) if best else None
 
 
-_GENERIC_HEAD = re.compile(r"(?:Column \d+|Item|Line item|Col \d+)")
+_GENERIC_HEAD = re.compile(r"(?:Column \d+|Item|Line item|Col \d+|Field|Information|Value|Details?|Parameter)")
 _BOXES = "\u2610\u25a1\u2611\u2612\u2713\u25a0"
 
 
@@ -589,6 +609,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
     title = None
     unverified: List[str] = []
     box_fields: Dict[str, Dict[str, Any]] = {}
+    in_tables: set = set()                              # the text of every cell already read as part of a table
     for n, t in enumerate(tables, 1):
         if t.get("method") == "blank":                  # column labels over empty ruled lines: the columns are the template of the table
             key = labels.key(t.get("title") or f"{t['headers'][0]} table", f"table_{n}")
@@ -596,6 +617,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
             continue
         if _not_a_table(t):
             continue
+        in_tables.update(locate.alnum(c) for r in t.get("rows", []) for c in r if c)
         if t.get("header_rows") == 0 and t.get("method") == "grid":          # a ruled box of "LABEL: value" cells (specimen, dates), above a table's header
             for label, value in _box_pairs(t):
                 key = labels.key(label)
@@ -640,6 +662,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
                         c.update({"status": "review", "reason": note})
             out_tables[key].append(row)
     fields: Dict[str, Dict[str, Any]] = dict(box_fields)
+    lines = ["" if locate.alnum(l) in in_tables else l for l in lines]       # a table's own cells are not pairs of their own
     for p in kv.parse_kv(lines):
         label, value = p["label"], p["value"]
         if len(value) > MAX_VALUE_CHARS or len(lines[p["line"]]) > MAX_PAIR_LINE or re.search(r"\d", label) or _instruction(label, value):
@@ -655,6 +678,10 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
             fields[key] = {**_cell(f["value"], page_num), "label": f["label"], "section": None, "type": "text", "normalized": None, "bbox": f.get("bbox")}
     for f in form_fields or []:                        # a fillable form's own fields, named by the text beside them
         key = labels.key(f["label"], "field")
+        same = fields.get(key)
+        if same and (same.get("value") or "").strip() == (f["value"] or "").strip():
+            same["bbox"] = same.get("bbox") or f["bbox"]                  # the table already gave this value: the field only says where it is
+            continue
         base, k = key, 2
         while key in fields:
             key, k = f"{base}_{k}", k + 1

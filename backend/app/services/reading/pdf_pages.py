@@ -187,7 +187,7 @@ def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]
             out[0][i] = origin if header_rows == 2 else f"{origin} ({count})"
     # a row under the header that says the same thing in every column ("8 PINS", "20 PINS") is part of the header, and so is a
     # row of labels with no figures in it that sits right above rows that have them (package names over pin numbers)
-    while header_rows < len(out) - 1 and header_rows < 4:
+    while header_rows < len(out) - 1 and header_rows < 4 and len(out[0]) >= 3:        # two columns are a label and its value, never stacked headers
         row, after = out[header_rows], out[header_rows + 1]
         if sum(1 for x in row if x) >= 2 and not any(re.search(r"\d", x) for x in row) and any(re.search(r"\d", x) for x in after):
             header_rows += 1
@@ -347,25 +347,8 @@ def _lines(words: "List[Word]") -> "List[List[Word]]":
     return [sorted(l, key=lambda w: w[0]) for l in out]
 
 
-def _rebuild_by_header(t: Dict[str, Any], words: "List[Word]") -> Dict[str, Any]:
-    """A table whose column labels are set on two or three stacked lines (Service / Code, Total / Amount) comes out of the word-position
-    reader with the labels run together in the first cell. Here the labels make the columns: words that overlap across the lines are
-    one label (Not / Covered), and each row's words go to the label they sit under."""
-    rows = t.get("rows") or []
-    fig = [i for i, r in enumerate(rows) if sum(1 for c in r if _AMOUNT_CELL.match(str(c).strip())) >= 3]
-    if not fig or fig[0] < 2 or sum(1 for c in rows[0] if str(c).strip()) < 4:
-        return t
-    lead = fig[0]
-    if any(re.search(r"\d", str(c)) for r in rows[:lead] for c in r):
-        return t
-    texts = {str(c).strip() for c in rows[fig[0]] if _AMOUNT_CELL.match(str(c).strip())}
-    x0, y0, x1, y1 = t["bbox"]
-    box = [w for w in words if x0 - 2 <= w[0] and w[2] <= x1 + 2 and y0 - 2 <= w[1] and w[3] <= y1 + 2]
-    body_lines = _lines(box)
-    first = next((k for k, l in enumerate(body_lines) if len({w[4] for w in l if w[4] in texts}) >= min(3, len(texts))), None)
-    if first is None or first < lead:
-        return t
-    head = body_lines[first - lead:first]
+def _by_labels(head: "List[List[Word]]", body_lines: "List[List[Word]]"):
+    """(labels, rows) when the stacked caption lines `head` make at least four columns that the `body_lines` can be sorted into, else None."""
     phrases: "List[List[Any]]" = []                               # [x0, x1, [(y, text), ...]]
     for ln in head:
         cur: "List[Word]" = []
@@ -386,17 +369,81 @@ def _rebuild_by_header(t: Dict[str, Any], words: "List[Word]") -> Dict[str, Any]
             cols.append(ph)
     cols.sort(key=lambda c: c[0])
     if len(cols) < 4:
-        return t
+        return None
     labels = [" ".join(txt for _, txt in sorted(c[2])) for c in cols]
     centres = [(c[0] + c[1]) / 2 for c in cols]
     out_rows: "List[List[str]]" = []
-    for ln in body_lines[first:]:
+    for ln in body_lines:
         cells = [[] for _ in cols]
         for w in ln:
             cx = (w[0] + w[2]) / 2
             k = next((k for k, c in enumerate(cols) if c[0] - 2 <= cx <= c[1] + 2), None)
             cells[k if k is not None else min(range(len(cols)), key=lambda k: abs(centres[k] - cx))].append(w[4])
-        out_rows.append([" ".join(c) for c in cells])
+        row = [" ".join(c) for c in cells]
+        if out_rows and not any(_AMOUNT_CELL.match(c.strip()) for c in row) and any(_AMOUNT_CELL.match(c.strip()) for c in out_rows[-1]):
+            out_rows[-1] = [f"{a} {b}".strip() for a, b in zip(out_rows[-1], row)]       # the second line of a wrapped cell (3/20/22 over care)
+        else:
+            out_rows.append(row)
+    return labels, out_rows
+
+
+def _attach_header(t: Dict[str, Any], words: "List[Word]") -> Dict[str, Any]:
+    """A table of figures whose column captions sit just above it, set apart from it (the reader left them out): the captions, on up to
+    four lines of short labels with no numbers, make the columns, as in _rebuild_by_header."""
+    rows = t.get("rows") or []
+    if len(rows) < 2 or sum(1 for c in rows[0] if _AMOUNT_CELL.match(str(c).strip())) < 3:
+        return t                                                 # it has its own header
+    x0, y0, x1, y1 = t["bbox"]
+    texts = {str(c).strip() for c in rows[0] if _AMOUNT_CELL.match(str(c).strip())}
+    lines = _lines([w for w in words if x0 - 2 <= w[0] and w[2] <= x1 + 2 and y0 - 90 <= w[1] and w[3] <= y1 + 2])
+    first = next((k for k, l in enumerate(lines) if len({w[4] for w in l if w[4] in texts}) >= min(3, len(texts))), None)
+    if first is None:
+        return t
+    head: "List[List[Word]]" = []
+    for ln in reversed(lines[:first]):
+        h = max(w[3] - w[1] for w in ln)
+        nxt = head[0] if head else lines[first]
+        if min(w[1] for w in nxt) - max(w[3] for w in ln) > 1.8 * h:
+            break
+        if any(re.search(r"\d", w[4]) for w in ln) or len(ln) > 14:
+            break
+        head.insert(0, ln)
+        if len(head) == 4:
+            break
+    if not head:
+        return t
+    body = lines[first:]
+    got = _by_labels(head, body)
+    if got is None:
+        return t
+    labels, out_rows = got
+    top = min(w[1] for w in head[0]) - 2
+    return {**t, "headers": labels, "rows": [labels] + out_rows, "bbox": [x0, round(top, 2), x1, y1]}
+
+
+def _rebuild_by_header(t: Dict[str, Any], words: "List[Word]") -> Dict[str, Any]:
+    """A table whose column labels are set on two or three stacked lines (Service / Code, Total / Amount) comes out of the word-position
+    reader with the labels run together in the first cell. Here the labels make the columns: words that overlap across the lines are
+    one label (Not / Covered), and each row's words go to the label they sit under."""
+    rows = t.get("rows") or []
+    fig = [i for i, r in enumerate(rows) if sum(1 for c in r if _AMOUNT_CELL.match(str(c).strip())) >= 3]
+    if not fig or fig[0] < 2 or sum(1 for c in rows[0] if str(c).strip()) < 4:
+        return t
+    lead = fig[0]
+    if any(re.search(r"\d", str(c)) for r in rows[:lead] for c in r):
+        return t
+    texts = {str(c).strip() for c in rows[fig[0]] if _AMOUNT_CELL.match(str(c).strip())}
+    x0, y0, x1, y1 = t["bbox"]
+    box = [w for w in words if x0 - 2 <= w[0] and w[2] <= x1 + 2 and y0 - 2 <= w[1] and w[3] <= y1 + 2]
+    body_lines = _lines(box)
+    first = next((k for k, l in enumerate(body_lines) if len({w[4] for w in l if w[4] in texts}) >= min(3, len(texts))), None)
+    if first is None or first < lead:
+        return t
+    head = body_lines[first - lead:first]
+    got = _by_labels(head, body_lines[first:])
+    if got is None:
+        return t
+    labels, out_rows = got
     top = min(w[1] for w in head[0]) - 2                       # the table starts at its labels, not at whatever the reader took in above them
     return {**t, "headers": labels, "rows": [labels] + out_rows, "bbox": [x0, round(top, 2), x1, y1]}
 
@@ -433,6 +480,51 @@ def _overlap(a: List[float], b: List[float]) -> float:
     return w * h / max(1e-6, min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])))
 
 
+def _blank_grid(g, words: "List[Word]") -> "List[Dict[str, Any]]":
+    """A titled grid with labels in its first row and nothing in the rows under it (a place to write each dose): its columns are its content."""
+    if len(g.rows) < 2:
+        return []
+    def text(b) -> str:
+        return _join([w for w in words if b[0] <= (w[0] + w[2]) / 2 <= b[2] and b[1] <= (w[1] + w[3]) / 2 <= b[3]]) if b else ""
+    labels = [text(b) for b in g.rows[0].cells]
+    if any(text(b) for r in g.rows[1:] for b in r.cells) or sum(1 for x in labels if x) < 2:
+        return []
+    labels = [x for x in labels if x]
+    bar = g.title_bar
+    box = round_rect(g.bbox)
+    title = g.title.title() if g.title.isupper() and len(g.title) > 8 else g.title
+    return [{"bbox": [min(box[0], bar[0]), min(box[1], bar[1]), max(box[2], bar[2]), box[3]], "headers": labels,
+             "rows": [labels] + [[""] * len(labels)] * (len(g.rows) - 1), "method": "blank", "header_rows": 1, "title": title}]
+
+
+def _emit_grid(g, words: "List[Word]") -> "List[Dict[str, Any]]":
+    """The table dicts for ruled grid `g` (two when a header is found part-way down: the box above it and the table below), or []."""
+    got = _grid_rows(g, words)
+    box = round_rect(g.bbox)
+    title = getattr(g, "title", None)
+    if not got:
+        return _blank_grid(g, words) if title else []
+    rows, header_rows, cut = got
+    if cut:                                                         # a header found part-way down: a box above it, the table below
+        y = _row_top(g, rows, cut)
+        above = _drop_empty_columns([[re.sub(r" \(\d+\)$", "", c) if re.search(r" \(\d+\)$", c) and c.startswith(prev) else c
+                                      for prev, c in zip([""] + r, r)] for r in rows[:cut]])
+        below = _drop_empty_columns(rows[cut:])
+        return [{"bbox": [box[0], box[1], box[2], y], "headers": above[0], "rows": above, "method": "grid", "header_rows": 0},
+                {"bbox": [box[0], y, box[2], box[3]], "headers": below[0], "rows": below, "method": "grid", "header_rows": 1}]
+    rows = _drop_empty_columns(rows)
+    t: Dict[str, Any] = {"bbox": box, "headers": rows[0], "rows": rows, "method": "grid", "header_rows": header_rows}
+    if title:
+        t["title"] = title.title() if title.isupper() and len(title) > 8 else title
+        bar = g.title_bar
+        t["bbox"] = [min(box[0], bar[0]), min(box[1], bar[1]), max(box[2], bar[2]), box[3]]
+    body = rows[header_rows:]
+    if title is not None and header_rows >= 1 and len(body) >= 1 and not any(c.strip() for r in body for c in r[1:]):
+        # a record card: the labels, a column of dose numbers and nothing written yet. It is a form to fill in, so the columns are its content
+        t.update({"method": "blank", "rows": [rows[0]] + [[""] * len(rows[0])] * len(body), "header_rows": 1})
+    return [t]
+
+
 def _tables(page, page_num: int, noise=lambda w: False, shown=lambda w: w[4]) -> List[Dict[str, Any]]:
     """Tables on a page. A table drawn with ruling lines is read from its rules: the lines say exactly where the cells are,
     including cells that span rows (datasheets, forms with boxes). A table without rules (statements, schedules) comes from
@@ -443,7 +535,7 @@ def _tables(page, page_num: int, noise=lambda w: False, shown=lambda w: w[4]) ->
     try:
         from app.services.reading.table_extractor import extract_page_tables_with_bbox
         for t, bb in extract_page_tables_with_bbox(page, page_num):
-            out.append(_rebuild_by_header(_trim_trailing({"bbox": round_rect(bb), "headers": t["headers"], "rows": t["rows"], "method": "layout"}, lwords), lwords))
+            out.append(_attach_header(_rebuild_by_header(_trim_trailing({"bbox": round_rect(bb), "headers": t["headers"], "rows": t["rows"], "method": "layout"}, lwords), lwords), lwords))
     except Exception:
         out = []
     try:
@@ -452,21 +544,24 @@ def _tables(page, page_num: int, noise=lambda w: False, shown=lambda w: w[4]) ->
         for g in page.find_tables(strategy="lines_strict").tables:
             if _vertical_rules(draws, g.bbox) < max(2, g.col_count - 1):
                 continue
-            got = _grid_rows(g, words)
-            if got:
-                rows, header_rows, cut = got
-                box = round_rect(g.bbox)
-                out = [t for t in out if _overlap(t["bbox"], box) < 0.5]       # the ruled grid replaces what the extractor made of the same area
-                if cut:                                                         # a header found part-way down: a box above it, the table below
-                    y = _row_top(g, rows, cut)
-                    above = _drop_empty_columns([[re.sub(r" \(\d+\)$", "", c) if re.search(r" \(\d+\)$", c) and c.startswith(prev) else c
-                                                  for prev, c in zip([""] + r, r)] for r in rows[:cut]])
-                    below = _drop_empty_columns(rows[cut:])
-                    out.append({"bbox": [box[0], box[1], box[2], y], "headers": above[0], "rows": above, "method": "grid", "header_rows": 0})
-                    out.append({"bbox": [box[0], y, box[2], box[3]], "headers": below[0], "rows": below, "method": "grid", "header_rows": 1})
-                else:
-                    rows = _drop_empty_columns(rows)
-                    out.append({"bbox": box, "headers": rows[0], "rows": rows, "method": "grid", "header_rows": header_rows})
+            made = _emit_grid(g, words)
+            if made:
+                out = [t for t in out if _overlap(t["bbox"], round_rect(g.bbox)) < 0.5]       # the ruled grid replaces what the extractor made of the same area
+                out += made
+        from app.services.reading import drawn_grids
+        grids = drawn_grids.find_grids(page, words)             # cells drawn as separate strokes, which the library does not see as a table
+        card = sum(1 for g in grids if g.title) >= 2            # a record card: several sections, each under a dark title bar. Only then do they replace what another reader found
+        for g in grids:
+            box = round_rect(g.bbox)
+            titled = bool(g.title) and card
+            if not titled and out:                              # elsewhere a box on a page that already has tables is a form's header or a callout, not a table
+                continue
+            if not titled:
+                g.title = g.title_bar = None
+            made = _emit_grid(g, words)
+            if made:
+                out = [t for t in out if _overlap(t["bbox"], box) < 0.3]
+                out += made
     except Exception:
         pass
     try:

@@ -55,3 +55,12 @@ def test_a_diagnosis_written_in_words_is_not_checked_as_a_code():
     assert not healthcare.check({"d": F("Final Diagnosis", "Pancreatic mass, one lymph node negative")}, {})
     assert rules(healthcare.check({"d": F("Diagnosis", "9999")}, {})) == {"icd10_format"}
     assert rules(healthcare.check({"d": F("ICD-10", "pancreatic mass")}, {})) == {"icd10_format"}
+
+
+def test_code_with_a_description_in_brackets_is_judged_by_the_code_alone():
+    from app.services.quality import healthcare
+    fields = {"procedure_codes": {"label": "Procedure Codes", "value": "99223 (Hospital Inpatient Care)"},
+              "diagnosis_codes": {"label": "Diagnosis Codes", "value": "I10 (Essential Hypertension)"}}
+    assert healthcare.check(fields, {}) == []
+    bad = {"procedure_codes": {"label": "Procedure Codes", "value": "9922 (Hospital Inpatient Care)"}}
+    assert [f["rule"] for f in healthcare.check(bad, {})] == ["cpt_format"]

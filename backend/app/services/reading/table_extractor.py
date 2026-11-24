@@ -460,7 +460,19 @@ def _is_data_line(ln: dict) -> bool:
     label_words = [w for w in ln["words"] if w[2] <= first[0] + 1]
     between = [w for w in ln["words"] if first[2] - 1 <= w[0] and w[2] <= last[2] + 1 and not _is_num(w[4]) and w[4] != "$"]
     if any(re.search(r"[A-Za-z]", w[4]) for w in between):  # "Level 1  Level 2  Level 3": column captions, not values
-        return False
+        # ...but a row that starts with a line number, a date and a description ("1  3/20/22  Medical  Paid  $31.60  $2.15  $0.00") has its
+        # values in the run of numbers at its end
+        run, best = [], []
+        for w in ln["words"]:                       # the longest run of numbers; a code may follow it (PDC)
+            if _is_num(w[4]):
+                run.append(w)
+            elif w[4] != "$":
+                run = []
+            if len(run) > len(best):
+                best = list(run)
+        after = [w for w in ln["words"] if w[0] >= best[-1][2] - 1] if best else []
+        before = [w for w in ln["words"] if w[2] <= best[0][0] + 1] if best else []
+        return len(best) >= 3 and len(after) <= 2 and len(before) <= BORDERLESS_LABEL_WORDS
     return len(label_words) <= BORDERLESS_LABEL_WORDS
 
 

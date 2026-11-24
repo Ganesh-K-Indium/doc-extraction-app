@@ -88,18 +88,22 @@ def _codes(fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, A
         if not isinstance(value, str) or not value.strip():
             return
         v = value.strip().upper()
+        bare = re.sub(r"\([^)]*\)", " ", v).strip()                  # "99223 (Hospital Inpatient Care)": the words in brackets describe the code
         if re.search(r"\bnpi\b", label):
             if not npi_valid(v):
                 out.append(_f("npi_check_digit", f"'{value}' is not a valid NPI (ten digits ending in a correct check digit).", where))
         elif re.search(r"icd|diagnos", label):
-            tokens = [t for t in re.split(r"[,;\s]+", v) if t]
-            if not re.search(r"icd", label) and not all(len(t) <= 8 and re.search(r"\d", t) for t in tokens):
+            tokens = [t for t in re.split(r"[,;\s]+", bare) if t]
+            if not tokens or (not re.search(r"icd", label) and not all(len(t) <= 8 and re.search(r"\d", t) for t in tokens)):
                 return                                  # a "Diagnosis" field holding words ("pancreatic mass") is not a code field
-            for code in re.split(r"[,;\s]+", v):
+            for code in tokens:
                 if code and not _ICD10.match(code):
                     out.append(_f("icd10_format", f"'{code}' does not look like an ICD-10 code.", where))
         elif re.search(r"\bcpt\b|hcpcs|procedure code", label):
-            for code in re.split(r"[,;\s]+", v):
+            tokens = [t for t in re.split(r"[,;\s]+", bare) if t]
+            if not any(re.search(r"\d", t) for t in tokens):
+                return                                  # words, not codes
+            for code in tokens:
                 if code and not _CPT.match(code):
                     out.append(_f("cpt_format", f"'{code}' does not look like a CPT or HCPCS code.", where))
         elif re.search(r"\bdose\b|dosage|strength", label):
