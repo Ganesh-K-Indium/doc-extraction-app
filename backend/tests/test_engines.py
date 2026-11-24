@@ -30,7 +30,21 @@ def clean_env(monkeypatch):
     for k in KEYS:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("LLM_ENABLED", "1")
+    monkeypatch.setenv("LOCAL_OCR_ENGINE", "tesseract")       # these tests are about the plan and the ladder, with Tesseract's own calibrated confidence
     return monkeypatch
+
+
+def test_default_engine_depends_on_whether_a_model_follows(clean_env, monkeypatch):
+    """With no engine chosen: the most accurate one when the local reading is final, the one that sends fewest pages on when a model follows."""
+    clean_env.delenv("LOCAL_OCR_ENGINE")
+    ready = [type("E", (), {"id": i})() for i in ("tesseract", "rapidocr", "paddleocr")]
+    monkeypatch.setattr(plan.local, "ready", lambda: ready)
+    assert plan.resolve(None, {"strategy": "economy"}).local_engine == "rapidocr"
+    assert plan.resolve(None, {"strategy": "balanced"}).local_engine == "paddleocr"
+    ready.pop(2)                                                           # PaddleOCR not installed: the next in line
+    assert plan.resolve(None, {"strategy": "balanced"}).local_engine == "tesseract"
+    clean_env.setenv("LOCAL_OCR_ENGINE", "rapidocr")                       # a choice always wins
+    assert plan.resolve(None, {"strategy": "balanced"}).local_engine == "rapidocr"
 
 
 # ---- model specs and providers ---------------------------------------------------------------------------------------

@@ -151,7 +151,7 @@ Everything lives inside a workspace: its documents, results, answer keys and **i
 
 ## How a file is processed
 
-1. **Work PDF.** Scanned pages get a Tesseract text layer (`reading/tess.py`), laid over the original so page size and coordinates are unchanged. A page that comes back nearly empty although it has ink on it (a photo with uneven light, a shadow) is read again on a lighting-corrected copy and the better reading is kept; the same correction is applied to the image any vision model sees, but only when the paper is clearly darker on one side, so a clean scan is never altered. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original.
+1. **Work PDF.** Scanned pages get a Tesseract text layer (`reading/tess.py`), laid over the original so page size and coordinates are unchanged. A page that comes back nearly empty although it has ink on it (a photo with uneven light, a shadow) is read again on a lighting-corrected copy and the better reading is kept; the same correction is applied to the image any vision model sees, but only when the paper is clearly darker on one side, so a clean scan is never altered. A tilted scan is straightened first (the tilt is measured from its text lines, up to 3 degrees; a level page is never touched), and the same tilt is taken out of every later picture of that page, so words and pictures stay aligned. Every geometric step (highlighting, label search, checkbox pixels, table rebuild) runs on it; the viewer shows the original, so on a skewed scan a highlight can sit a few points off.
 2. **Read.** `reading/router.py` profiles each page and picks a reader, stored with its reasons (`route` in pages.json): embedded text, two vision models compared (`ocr_dual`), or Tesseract alone (`ocr_local`, nothing leaves the machine). Lines are compared by content, not line breaks, so layout differences are not disagreements but a different digit is.
 3. **Sort.** Fax stamps are split off as metadata; pages are classified (keyword rules first, a small model only for unknown pages and only among registered types) and grouped into documents.
 4. **Extract.** Each document with a template is read page by page by two models against the template's fields, and the best-supported reading per field wins. Checkboxes are read from the pixels (a hollow square beside the label, then the ink inside it), never from a model unless the box can't be located. Tables use the layout extractor ported from the SEC pipeline (`reading/table_extractor.py`), with PyMuPDF's grid finder as fallback.
@@ -177,6 +177,8 @@ Scanned pages and handwriting can be read three ways, and each workspace chooses
 | **Custom** | The same knobs, set by hand: when to use a model, the confidence needed, a token cap per document. | as set |
 
 **How "doubtful" is decided.** Tesseract reports a confidence per word: clean print scores about 90 to 95%, handwriting 40 to 50%, a badly degraded scan about 40%. A page is escalated when its confidence is below the threshold (85% by default), many words or numbers were hard to read, nothing was recognised on a page that has marks, or the text is garbled. Other engines (RapidOCR, PaddleOCR, docTR) report confidences that look alike on clean print and handwriting, so their pages are accepted only when Tesseract's reading, which the preparation step already produces, agrees with them (75% word overlap; clean pages score 80 to 90%, handwriting under 35%). The lines they disagree on are the ones flagged. Every decision and its reason is stored per page and shown on the review screen, where any page can also be sent to the vision models by hand, or the whole file read again under another strategy (this makes a second copy; the first is kept).
+
+**Which engine is used.** With no choice made, Economy uses RapidOCR (it read the most values correctly in our scan tests), Balanced uses PaddleOCR (it sent the fewest pages on to a model), and each falls back to Tesseract, then the others, when it is not installed. A workspace's choice, or `LOCAL_OCR_ENGINE`, always wins. See *Scanned pages* below for the numbers.
 
 **Local OCR engines.** Tesseract is built in. RapidOCR, PaddleOCR and docTR appear on the page once installed (see *Install and run*). All four were run here on a sample page and on real scans: they read the sample's values correctly (about 1 to 2 seconds a page warm; the first page also loads the model, 15 to 20 seconds) and their cross-checks separated clean print (agreement 85 to 99%) from handwriting (6 to 34%). The neural engines run one page at a time, each in its own process (see below). Their models download on first use into `backend/data/models`; `python -m app.engines.warmup`, or the *Download models* button, fetches them in advance (see *Install and run*).
 
@@ -274,6 +276,18 @@ Handwriting goes through the same two-reader path as any scan; these rules exist
 
 Cost: vision calls dominate (roughly 3 to 4k tokens per page image per call). A scanned page costs two reads for the transcript, two for the fields, and one more only if a value is disputed (about 10% extra on the samples tried). Knobs: `ADJUDICATE=0` turns the third look off; `ADJUDICATION_MODEL` picks its model (default: the first of `EXTRACTION_MODELS`); `HANDWRITING_OCR_MODELS` set to one model halves the transcript cost at the price of an unverified transcript. Pages with a real text layer cost nothing, and an identical file is never read twice.
 
+## Scanned pages
+
+Scans used to lose their tables: the table finders read printed rules and word positions, and a scan has pixels only. What changed, all measured with `eval/scan_eval.py` (below):
+
+- **Straightening.** The tilt of a scan is measured and taken out before OCR (`reading/tess.py`). On a noisy copy of the lab report this alone took the fields found from 7 to 10 of 14, because rows stop sloping across the page.
+- **Printed rules, from the picture.** Long thin dark shapes are found with OpenCV (`reading/image_rules.py`, part of the backend requirements; without it scans simply have no rules) and handed to the same grid reader that reads drawn lines on digital pages (`reading/drawn_grids.py`): lines that touch form a grid, a line crossed by fewer than two others is a letter stroke or a chart bar and is dropped, cells with no line between them are one cell, a shaded band of labels is dealt out to the columns beneath it, and a frame holding a specimen box over a results table is cut where its columns change. Tables read this way are measured, not guessed from word positions.
+- **Boxes of "LABEL: value" cells are fields**, on scans and digital pages alike.
+- **The models and the rules check each other.** When a ruled table has clearly more rows than the table the models returned (a model gives up after a few rows of a long table), the table read from the rules fills it in, every cell marked for review. Disputes between the two readers about an NPI, an ICD-10 code, a CPT code or a date of birth are settled without a model call when only one reading fits: a ten-digit NPI whose check digit works settles it; a code format only puts the fitting reading first and says so. The prompt now tells the models to give every table row one cell per column, `""` for an empty cell, and to treat a multi-line header as one name.
+- **Highlights for values the page text does not contain** (handwriting, marks) point at the strip beside the printed label instead of nothing. A table's cells are located in reading order, so the fifth "0.00" is the fifth one on the page.
+
+Measured on the sample lab report, claim explanations, discharge summary, pathology report, vaccine card and intake form, each rasterised and degraded three ways (clean, noisy and skewed, fax), with the digital reading as the answer key and no model calls: values found **74% to 83%**, table cells found **11% to 69%** (78% on the noisy copies), rows exactly right **13% to 55%**, silent wrong values **8 to 2**. With the real models on one noisy page: Balanced needed no model call and found 86 of 91 table cells; Accuracy found 81 of 91 once the rule-read table filled the rows the models skipped (44 before). Local engines compared on 18 scanned pages with a model standing by: Tesseract sent 8 pages to a model, RapidOCR 11, PaddleOCR 5.
+
 ## Forms inside other content
 
 Real files mix things: a cover letter, a form, free-text notes, another form. How each case is handled:
@@ -360,6 +374,16 @@ To get an answer key without typing one: review an extraction in the UI (fix wha
 
 On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, the one wrong value flagged for review, 31 of 35 filled fields highlighted on the page.
 
+**Scans, without typing an answer key.** A born-digital PDF gives an exact reading, so that reading is the key for a scanned copy of the same file:
+
+```bash
+cd backend
+LLM_ENABLED=0 READING_STRATEGY=economy python eval/scan_batch.py          # the healthcare set, three scan qualities, no model calls
+python eval/scan_eval.py ../sample_data/healthcare/clinical/lab_cbc_sample_report_testing_com.pdf --pages 1 --profile scan
+```
+
+Profiles: `clean` (rasterised), `scan` (tilt, blur, noise, JPEG), `fax` (1-bit, low resolution, a transmission stamp). The report gives values found under the same label or any label, wrong values not flagged, table cells found, rows exactly right, and how many values can be highlighted. Economy never calls a model; run Balanced or Accuracy on one or two pages only.
+
 ## Setup notes
 
 - Tesseract is covered under *Install and run*. Without it scans have no highlighting and there is no default local OCR engine.
@@ -367,12 +391,13 @@ On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, 
 
 ## Known limits
 
-- Health records have been checked on three documents in depth (an annotated lab report, a claim explanation, a 5-page intake form) and run on the rest only as far as the code reads them. There are no real scanned or handwritten medical pages in the sample set yet.
+- Health records have been checked on nine documents (an annotated lab report, claim explanations, a 5-page intake form, a discharge summary, a vaccine record card and others) and run on the rest only as far as the code reads them. Scans of them are measured on rasterised and degraded copies of the digital files; there are no real scanned or handwritten medical pages in the sample set yet, so real fax and handwriting quality is not measured.
 - Callout boxes drawn beside a table (an annotated sample) can still appear as small tables.
 - A single-page file whose title repeats only in a page banner is named from its first heading; the banner is used when a file has two or more pages.
 
-- Skewed scans are not straightened before OCR, and rotated pages are not turned upright. Uneven light is corrected (see How a file is processed).
-- Tables drawn with borders are read from their rules on digital pages only. A scan's tables come from the OCR layout or the models, so a scanned datasheet table is weaker than a digital one.
+- Scans are straightened up to 3 degrees of tilt; a page turned sideways or upside down is not turned upright. Uneven light is corrected (see How a file is processed).
+- A scan's table rules are found from the picture, so a very faint or broken rule, or a table whose long rules the straightening left slightly crooked (a form that is mostly rules, such as the UB-04 claim at scan quality), may not form a grid; the table then comes from the OCR layout or the models as before. A table with no rules at all is read from word positions only.
+- Scanned header text in a shaded band can be misread by local OCR ("Abnormal" read as "Ona"); the columns are right and the values below are read separately.
 - The package pinout drawings on datasheets (text round a drawing of the chip) can come out as small junk tables.
 - A vision page whose text cannot be matched to Tesseract's reading (a very poor photo) has no positions, so it shows "No layout", cannot be highlighted on the PDF, and its tables are found from the text alone.
 - The "incomplete table" check needs a trustworthy text layer: on a photo whose Tesseract reading is poor it stays silent rather than guess, so a dropped row there would not be flagged.

@@ -38,6 +38,31 @@ def npi_valid(value: str) -> bool:
     return total % 10 == 0
 
 
+def check_reading(label: str, value: str) -> Optional[Tuple[bool, str, bool]]:
+    """Does one reading of a value fit what its label says it is? (fits, what it should be, decisive), or None when the label names nothing
+    that can be checked. Decisive means a wrong reading almost never passes (a ten-digit NPI with the right check digit: about one in ten
+    wrong readings gets through); a code format or a date only rules out the readings that are not shaped like one."""
+    lab, v = (label or "").lower(), (value or "").strip()
+    if not v or "[?]" in v:
+        return None
+    bare = re.sub(r"\([^)]*\)", " ", v).upper()
+    if re.search(r"\bnpi\b", lab):
+        return npi_valid(v), "an NPI (ten digits ending in the right check digit)", True
+    if re.search(r"icd", lab):
+        codes = [t for t in re.split(r"[,;\s]+", bare) if t]
+        return (bool(codes) and all(_ICD10.match(c) for c in codes)), "an ICD-10 code", False
+    if re.search(r"\bcpt\b|hcpcs|procedure code", lab):
+        codes = [t for t in re.split(r"[,;\s]+", bare) if t and re.search(r"\d", t)]
+        return (bool(codes) and all(_CPT.match(c) for c in codes)), "a CPT or HCPCS code", False
+    if re.search(r"date of birth|\bdob\b|birth ?date", lab):
+        d = N.parse_date(v)
+        if not d:
+            return False, "a date", False
+        dd = date.fromisoformat(d) if isinstance(d, str) else d
+        return (dd <= date.today() and (date.today() - dd).days <= MAX_AGE * 366), "a possible date of birth", False
+    return None
+
+
 def _label(c: Dict[str, Any], key: str) -> str:
     return f"{c.get('label') or key} {c.get('section') or ''}".lower()
 

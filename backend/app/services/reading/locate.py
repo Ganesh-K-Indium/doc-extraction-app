@@ -117,3 +117,17 @@ def in_order(path: str, page_num: int, region: List[float], values: List[str]) -
             cursor = hit[1]
         out.append(_union(ws[hit[0]:hit[1]]) if hit else None)
     return out
+
+
+def beside(path: str, page_num: int, label: str, reach: float = 0.45) -> Optional[List[float]]:
+    """The strip on the page to the right of the printed `label`, on its line: where its value is written. Used for a value the page's text
+    does not contain (handwriting, a mark): the highlight cannot be exact, but it points at the right place. None when the label is not found."""
+    box = find(path, page_num, label.rstrip(": ")) if label and len(alnum(label)) >= 3 else None
+    ws = page_words(path, page_num)
+    if not box or not ws:
+        return None
+    right = max(w[2] for w in ws)
+    left = max(w[0] for w in ws)
+    x0 = box[2] + 2
+    x1 = min(right, x0 + max(120.0, reach * max(1.0, right - left)))
+    return [round(x0, 2), round(box[1] - 1, 2), round(x1, 2), round(box[3] + 1, 2)] if x1 - x0 > 20 else None

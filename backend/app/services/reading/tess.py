@@ -172,13 +172,85 @@ def png_to_pdf(png: bytes) -> bytes:
     return png_to_pdf_and_words(png)[0]
 
 
+SKEW_MAX = 3.0          # degrees: a page more tilted than this is a photo at an angle, not a scanner's skew
+SKEW_MIN = 0.12         # degrees: a smaller tilt moves a line by less than a pixel across the page
+SKEW_GAIN = 1.06        # the straightened page's line profile must be this much sharper than the original's to be trusted
+
+
+def _sharpness(im: Any) -> float:
+    """How strongly the ink falls into rows: the spread of the row sums. Straight text lines make tall peaks and empty gaps."""
+    import numpy as np
+    rows = np.asarray(im, dtype=np.float32).sum(axis=1)
+    return float(rows.var())
+
+
+def skew_angle(png: bytes) -> float:
+    """The tilt of the page's text lines in degrees (positive = counter-clockwise needed to straighten), 0.0 when it is level or unclear.
+    Found by trying small rotations of a reduced, ink-only copy and keeping the one whose rows are most distinct."""
+    from io import BytesIO
+    from PIL import Image
+    try:
+        im = Image.open(BytesIO(png)).convert("L")
+        scale = 900.0 / max(im.width, 1)
+        if scale < 1:
+            im = im.resize((900, max(1, int(im.height * scale))))
+        cut = _otsu(im)
+        ink = im.point(lambda v: 255 if v <= cut else 0)         # ink is white on black, so rows of text add up
+        if sum(ink.histogram()[200:]) < 0.004 * ink.width * ink.height:
+            return 0.0                                           # almost no ink: nothing to align
+        base = _sharpness(ink)
+        best, best_v = 0.0, base
+        for step, span, centre in ((0.5, SKEW_MAX, 0.0), (0.1, 0.5, None), (0.03, 0.1, None)):
+            c = best if centre is None else centre
+            a = c - span
+            while a <= c + span + 1e-9:
+                v = _sharpness(ink.rotate(a, resample=Image.BILINEAR, fillcolor=0))
+                if v > best_v:
+                    best, best_v = a, v
+                a += step
+        if abs(best) < SKEW_MIN or abs(best) > SKEW_MAX - 0.4 or best_v < base * SKEW_GAIN:      # level, or at the edge of the search (not a real answer)
+            return 0.0
+        return round(best, 2)
+    except Exception:
+        return 0.0
+
+
+ANGLES: "dict[tuple, float]" = {}       # (source path, page) -> the tilt taken out of its OCR copy, so every later render of that page is straightened the same way
+
+
+def rotated(png: bytes, angle: float) -> bytes:
+    """The page picture turned by `angle` degrees to take a tilt out (white fills the corners)."""
+    from io import BytesIO
+    from PIL import Image
+    if not angle:
+        return png
+    im = Image.open(BytesIO(png))
+    # the corners the turn uncovers take the colour of the paper (not pure white): a dim or unevenly lit photo would otherwise get bright corners
+    # that fool every later estimate of the light on the page
+    paper = int(sorted(im.convert("L").resize((64, 64)).getdata())[int(64 * 64 * 0.9)])
+    fill = paper if im.mode == "L" else tuple([paper] * len(im.getbands())) if im.mode in ("RGB", "RGBA") else 255
+    out = BytesIO()
+    im.rotate(angle, resample=Image.BICUBIC, fillcolor=fill).save(out, "PNG")
+    return out.getvalue()
+
+
+def straightened(png: bytes) -> "tuple[bytes, float]":
+    """(the page picture with its tilt taken out, the angle removed). A level page comes back untouched."""
+    angle = skew_angle(png)
+    return (rotated(png, angle), angle) if angle else (png, 0.0)
+
+
 def render_png(page: "fitz.Page") -> bytes:
-    return page.get_pixmap(dpi=DPI).tobytes("png")
+    return straightened(page.get_pixmap(dpi=DPI).tobytes("png"))[0]
 
 
-def searchable_page_with_words(page: "fitz.Page") -> "tuple[fitz.Document, str]":
-    """A one-page document: `page`'s picture with Tesseract's text laid over it, at `page`'s size; plus the word table."""
-    pdf_bytes, tsv = png_to_pdf_and_words(render_png(page))
+def searchable_page_with_words(page: "fitz.Page", key: "Optional[tuple]" = None) -> "tuple[fitz.Document, str]":
+    """A one-page document: `page`'s picture (straightened) with Tesseract's text laid over it, at `page`'s size; plus the word table.
+    `key` names the page for later renders, which must take out the same tilt (see ANGLES)."""
+    png, angle = straightened(page.get_pixmap(dpi=DPI).tobytes("png"))
+    if key is not None:
+        ANGLES[key] = angle
+    pdf_bytes, tsv = png_to_pdf_and_words(png)
     ocr = fitz.open("pdf", pdf_bytes)
     out = fitz.open()
     new = out.new_page(width=page.rect.width, height=page.rect.height)

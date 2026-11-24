@@ -49,6 +49,8 @@ Rules:
 - A label is something printed that names a value ("Date of Birth", "Invoice No."). Do not turn sentences of running text into fields.
 - A checkbox is checked only if the box contains a tick, cross or fill.
 - Put repeated structures (line items, rows of measurements) in "tables", every row on this page.
+- In a table every row has exactly one cell per column, in the printed column order. A cell with nothing printed in it is "" : never leave it out and shift the next value left, and decide each value's column from where it is printed under the header, not from the order of the values.
+- A column header printed over two or three lines is one column name ("Date of" over "Service" is "Date of Service"). Text that continues on the next line inside one cell is one cell, not another row. A row that spans the whole table (a section name such as COMPLETE BLOOD COUNT) is not a data row: use it as the table's title.
 - Ignore fax header/footer stamps and page numbers.
 """
 
@@ -483,6 +485,45 @@ LAYER_TRUSTED = 0.6       # the layer must confirm at least this share of the re
 COMPLETE_OK = 0.95         # a little below the digital bar: the numbers come from an OCR layer, which misreads a few
 
 
+def rescue_tables(path: str, page_num: int, tables: Dict[str, List[Dict[str, Any]]], columns: Dict[str, List[str]]) -> int:
+    """A table the page rules off, whose rows the readers left out (a model gives up after a few rows of a long table): the table measured from
+    the rules and read from the page's words replaces the incomplete one. Every cell is marked for a person to check, because it is
+    one reading from OCR or from the text layer and no model has seen it. Returns how many tables were replaced or added."""
+    from collections import Counter
+    try:
+        info = pdf_pages.analyze_page(path, page_num)
+    except Exception:
+        return 0
+    n = 0
+    for t in info.get("tables", []):
+        if t.get("method") != "grid" or not t.get("bbox"):
+            continue
+        lt = digital.labelled_table(path, page_num, t)
+        if not lt or len(lt["rows"]) < RESCUE_MIN_ROWS:
+            continue
+        want = Counter(locate.alnum(c) for r in lt["rows"] for c in r if c.strip())
+        best, shared = None, 0
+        for k, rows in tables.items():
+            have = Counter(locate.alnum(c.get("value")) for r in rows for c in r.values() if c.get("value"))
+            ov = sum(min(v, have[x]) for x, v in want.items())
+            if ov > shared:
+                best, shared = k, ov
+        if best is not None and len(tables[best]) >= RESCUE_KEEP * len(lt["rows"]):
+            continue                                                  # the readers got most of it
+        keys: List[str] = []
+        for j, c in enumerate(lt["columns"]):
+            k = labels.key(c, f"col_{j + 1}")
+            keys.append(k if k not in keys else f"{k}_{j + 1}")
+        why = f"the readers gave {len(tables[best]) if best else 0} of this table's {len(lt['rows'])} rows; this one is read from its printed rules"
+        rows_out = [{k: {"value": (r[j].strip() or None), "status": "review" if r[j].strip() else "empty", "alternatives": [], "method": "ocr-local",
+                         "label": lt["columns"][j], "reason": why if r[j].strip() else None, "bbox": None, "page": page_num}
+                     for j, k in enumerate(keys)} for r in lt["rows"]]
+        key = best or f"table_{len(tables) + 1}"
+        tables[key], columns[key] = rows_out, list(lt["columns"])
+        n += 1
+    return n
+
+
 def uncaptured(path: str, page_num: int, fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[str, Any]]]) -> Optional[str]:
     """A note when amounts printed in rows of figures on the page are in none of the extracted cells: a row or a column a reader
     dropped. Two readers can both skip the same row, so agreement does not prove a table is whole; the page's own text layer
@@ -535,6 +576,7 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
     boxes = await asyncio.to_thread(merge_checkboxes, path, page_num, a["checkboxes"], b["checkboxes"] if b else None)
     fields.update({k: v for k, v in boxes.items() if k not in fields})
     tables, columns = merge_tables(a["tables"], b["tables"] if b else None, conf_a, conf_b)
+    await asyncio.to_thread(rescue_tables, path, page_num, tables, columns)
 
     page_alnum = await asyncio.to_thread(locate.page_alnum, path, page_num)
 
@@ -545,11 +587,25 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
         await adjudicate.settle(jpeg, items, adjudicator)
 
     def ground():
-        for cell in list(fields.values()) + [c for rows in tables.values() for r in rows for c in r.values()]:
+        # a table's cells are found in reading order, so the fifth "0.00" is the fifth one on the page and not the first
+        tcells = [c for rows in tables.values() for r in rows for c in r.values()]
+        placed = {}
+        try:
+            spots = locate.in_order(path, page_num, [0.0, 0.0, 1e5, 1e5], [str(c.get("value") or "") for c in tcells]) if tcells else []
+            placed = {id(c): s for c, s in zip(tcells, spots) if s}
+        except Exception:
+            placed = {}
+        for cell in list(fields.values()) + tcells:
             v = cell.get("value")
             if isinstance(v, str) and v:
                 hit = locate.find_with_text(path, page_num, v, cell.get("label"))
+                if id(cell) in placed:
+                    hit = (placed[id(cell)], hit[1] if hit else v, hit[2] if hit else 1.0)
                 cell["bbox"] = hit[0] if hit else None
+                if hit is None and cell.get("label") and not cell.get("bbox"):
+                    near = locate.beside(path, page_num, str(cell["label"]))        # not in the page's text (handwriting): the strip beside its label
+                    if near:
+                        cell["bbox"], cell["bbox_from"] = near, "label"
                 if not handwritten:                  # Tesseract cannot read handwriting: its "second opinion" would only add noise
                     fx._third_opinion(cell, hit)
             elif cell.get("method") == "pixel" or isinstance(v, bool):
@@ -568,6 +624,8 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
             "readers": [r["model"] for r in replies], "unverified": [note] if note else []}
 
 
+RESCUE_MIN_ROWS = 6      # a ruled table at least this long is worth comparing with what the readers returned
+RESCUE_KEEP = 0.7        # ...and is used instead when they returned fewer than this share of its rows
 DISCOVER_CONCURRENCY = 4  # pages read at once; a 60-page document must not fire 60 model calls together
 
 

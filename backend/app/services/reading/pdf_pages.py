@@ -4,6 +4,7 @@ scan detection) plus a JPEG render for the vision readers.
 
 PyMuPDF (MuPDF) is not thread-safe; every use goes through FITZ_LOCK.
 """
+import os
 import re
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -154,7 +155,8 @@ def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]
     # each grid column becomes one column, or several when its header cell holds labels set well apart
     layout: "List[List[float]]" = []
     for c in range(ncols):
-        centres = _sub_centres(inside[0][c]) if geom[0][c] else []
+        single = c + 1 >= ncols or geom[0][c + 1] is not None          # a header cell that spans several columns is not one column to be split
+        centres = _sub_centres(inside[0][c]) if geom[0][c] and single else []
         layout.append(centres if len(centres) >= 2 else [])
     out: "List[List[str]]" = []
     for r in range(len(geom)):
@@ -171,15 +173,18 @@ def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]
             else:
                 row.append(_join(ws))
         out.append(row)
+    early = _lumped_header(out, inside, ncols, layout, first_only=True)       # a first row that is one band of labels over the columns (scans, shaded headers)
     # a header cell that spans columns, with its own labels under it, makes a two-row header (PIN over NAME and NO.)
     spanned = [c for c in range(1, ncols) if geom[0][c] is None and len(geom) > 1 and geom[1][c] is not None and (0, c) not in covered]
     # ...which shows in the other header cells reaching down over the second row (TYPE and DESCRIPTION span both); a header whose
     # spanning cell merely sits over data (TEST CONDITIONS over a row of conditions) has nothing reaching down
-    header_rows = 2 if spanned and any((1, c) in covered for c in range(ncols)) else 1
+    header_rows = 2 if spanned and early is None and any((1, c) in covered for c in range(ncols)) else 1
     col_of = [sum(max(1, len(layout[k])) for k in range(c)) for c in range(ncols)]     # where each grid column starts in the output
     origin, count = "", 1
     for c in range(ncols):
         i = col_of[c]
+        if early is not None:
+            break
         if geom[0][c] is not None or layout[c]:
             origin, count = out[0][i], 1
         elif c > 0 and not out[0][i] and origin:                    # the rest of a header cell that spans this column too
@@ -200,7 +205,7 @@ def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]
             header_rows += 1
         else:
             break
-    split = _lumped_header(out, inside, ncols, layout)
+    split = early if early is not None else _lumped_header(out, inside, ncols, layout)
     rows = [r for r in out if any(r)]
     # blank cells are counted over the rows that have two or more values: a section title or a footnote that runs across the grid is
     # one cell and six blanks by nature, and a lab table (one of "Normal" and "Abnormal" is always blank) is sparse by design
@@ -214,20 +219,24 @@ def _grid_rows(t, words: "List[Word]") -> "Optional[Tuple[List[List[str]], int]]
     return rows, header_rows, split
 
 
-def _lumped_header(out: "List[List[str]]", inside: "List[List[List[Word]]]", ncols: int, layout) -> "Optional[int]":
+def _lumped_header(out: "List[List[str]]", inside: "List[List[List[Word]]]", ncols: int, layout, first_only: bool = False) -> "Optional[int]":
     """A header row whose labels came out as one cell (Test, Normal, Abnormal, Flag, Units, Reference Range in a shaded band that has
     no rules between them). Its words are dealt out to the columns the values below them sit in, and the row's index is returned
     so the grid can be cut there: what is above it (specimen, dates) is a form box, what is below is the table."""
     if any(layout):                                                  # sub-columns already changed the shape of the rows
         return None
-    for i in range(1, len(out) - 1):
+    for i in range(0, 1 if first_only else len(out) - 1):
         filled = [c for c, v in enumerate(out[i]) if v]
-        if len(filled) != 1 or re.search(r"\d", out[i][filled[0]]) or len(out[i][filled[0]].split()) < 4:
+        # one cell holding the labels, or (on a scan, where the band's ends were ruled off) that cell and a short one beside it
+        toks = [t for c in filled for t in out[i][c].split()]
+        if not filled or len(filled) > 3 or len(toks) < 4 or sum(1 for t in toks if re.search(r"\d", t)) > len(toks) * 0.25:       # a stray mark from a scan may hold a digit
             continue
+        if len(filled) > 1 and sorted(len(out[i][c].split()) for c in filled)[-2] > 3:
+            continue                                      # two long cells are two statements, not one label band
         below = [r for r in range(i + 1, len(out)) if sum(1 for v in out[r] if v) >= 3]
         if len(below) < 3:
             continue
-        src = inside[i][filled[0]]
+        src = [w for c in filled for w in inside[i][c]]
         if len(_sub_centres(src)) < 4:
             continue
         centres: "dict[int, float]" = {}
@@ -497,6 +506,19 @@ def _blank_grid(g, words: "List[Word]") -> "List[Dict[str, Any]]":
              "rows": [labels] + [[""] * len(labels)] * (len(g.rows) - 1), "method": "blank", "header_rows": 1, "title": title}]
 
 
+def _scan_rules(page) -> "Optional[Tuple[List[List[float]], List[List[float]]]]":
+    """The ruling lines of a scanned page, found in its picture; None for a page that is not a scan or has none."""
+    try:
+        from app.services.reading import image_rules
+        if not image_rules.available() or not ocr._is_scanned_page(page):
+            return None
+        png = page.get_pixmap(dpi=150).tobytes("png")
+        hs, vs = image_rules.find_rules(png, page.rect.width, page.rect.height)
+        return (hs, vs) if len(hs) >= 3 and len(vs) >= 3 else None
+    except Exception:
+        return None
+
+
 def _emit_grid(g, words: "List[Word]") -> "List[Dict[str, Any]]":
     """The table dicts for ruled grid `g` (two when a header is found part-way down: the box above it and the table below), or []."""
     got = _grid_rows(g, words)
@@ -549,7 +571,15 @@ def _tables(page, page_num: int, noise=lambda w: False, shown=lambda w: w[4]) ->
                 out = [t for t in out if _overlap(t["bbox"], round_rect(g.bbox)) < 0.5]       # the ruled grid replaces what the extractor made of the same area
                 out += made
         from app.services.reading import drawn_grids
-        grids = drawn_grids.find_grids(page, words)             # cells drawn as separate strokes, which the library does not see as a table
+        rules = _scan_rules(page)                               # a scan's printed rules, found in its picture
+        grids = drawn_grids.find_grids(page, words, rules)      # cells drawn as separate strokes, which the library does not see as a table
+        if rules:
+            for g in grids:                                     # the rules of a scanned table are its ruled grid, as for a digital page: it replaces what the word reader made
+                made = _emit_grid(g, words)
+                if made:
+                    out = [t for t in out if _overlap(t["bbox"], round_rect(g.bbox)) < 0.5]
+                    out += made
+            grids = []
         card = sum(1 for g in grids if g.title) >= 2            # a record card: several sections, each under a dark title bar. Only then do they replace what another reader found
         for g in grids:
             box = round_rect(g.bbox)
@@ -752,7 +782,7 @@ def build_work_pdf(src: str, dst: str, scanned: "set[int]", tsv_out: "Optional[d
         for n in range(1, pdf.page_count + 1):
             if n in scanned and tess.available():
                 try:
-                    one, tsv = tess.searchable_page_with_words(pdf[n - 1])
+                    one, tsv = tess.searchable_page_with_words(pdf[n - 1], key=(os.path.abspath(src), n))
                     if tsv_out is not None:
                         tsv_out[n] = tsv
                     out.insert_pdf(one)
@@ -770,7 +800,9 @@ def render_jpeg(path: str, page_num: int) -> bytes:
     with FITZ_LOCK, open_pdf(path) as pdf:
         png = pdf[page_num - 1].get_pixmap(dpi=ocr.RENDER_DPI).tobytes("png")
     from app.services.reading import tess
-    return ocr.normalize_image(tess.evened(png))
+    known = tess.ANGLES.get((os.path.abspath(path), page_num))          # the tilt taken out of this page's OCR copy: take out the same
+    png = tess.evened(png)                                              # light first: the white corners a turned page gets would fool the estimate of uneven light
+    return ocr.normalize_image(tess.rotated(png, known) if known is not None else tess.straightened(png)[0])
 
 
 def search_rects(path: str, page_num: int, needle: str) -> List[List[float]]:

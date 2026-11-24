@@ -86,6 +86,18 @@ def _clusters(values: List[float], tol: float = TOUCH) -> List[float]:
     return [sum(c) / len(c) for c in out]
 
 
+def _crossings(seg: Seg, others: List[Seg], vertical: bool) -> int:
+    """How many of `others` (the lines running the other way) touch `seg`."""
+    n = 0
+    for o in others:
+        if vertical:        # seg is [x, y0, y1]; o is [y, x0, x1]
+            if o[1] - TOUCH <= seg[0] <= o[2] + TOUCH and seg[1] - TOUCH <= o[0] <= seg[2] + TOUCH:
+                n += 1
+        elif seg[1] - TOUCH <= o[0] <= seg[2] + TOUCH and o[1] - TOUCH <= seg[0] <= o[2] + TOUCH:
+            n += 1
+    return n
+
+
 def _components(hs: List[Seg], vs: List[Seg]) -> List[Tuple[List[Seg], List[Seg]]]:
     n = len(hs) + len(vs)
     parent = list(range(n))
@@ -123,6 +135,11 @@ def _grid(hs: List[Seg], vs: List[Seg]) -> Optional[Grid]:
     # a cell is part of the grid when it has a line above or below it and one on its left or right
     inside = [[(_covers(hs, ys[r], xs[c], xs[c + 1]) or _covers(hs, ys[r + 1], xs[c], xs[c + 1]))
                and (_covers(vs, xs[c], ys[r], ys[r + 1]) or _covers(vs, xs[c + 1], ys[r], ys[r + 1])) for c in range(nc)] for r in range(nr)]
+    for r in range(nr):                       # a shaded band with no rules between its labels: the cells between two ruled ones belong to the grid
+        got = [c for c in range(nc) if inside[r][c]]
+        if len(got) >= 2:
+            for c in range(got[0], got[-1]):
+                inside[r][c] = True
     parent = {(r, c): (r, c) for r in range(nr) for c in range(nc) if inside[r][c]}
 
     def find(a):
@@ -173,13 +190,46 @@ def _clip(hs: List[Seg], vs: List[Seg], lo: float, hi: float) -> Tuple[List[Seg]
     return h2, v2
 
 
-def find_grids(page, words: List[Any]) -> List[Grid]:
+def _structure_bands(hs: List[Seg], vs: List[Seg]) -> List[Tuple[float, float]]:
+    """Cut a grid into stacked tables where its columns change: rows whose inner rules sit in one set of places belong together, and a
+    row band ruled in quite different places starts another table (a specimen box over a results table inside one frame).
+    A band with no inner rules at all (a title or section row) joins the table above it. Returns [(top, bottom)], one for an uncut grid."""
+    xs, ys = _clusters([v[0] for v in vs]), _clusters([h[0] for h in hs])
+    if len(xs) < 4 or len(ys) < 4:
+        return [(min(ys, default=0), max(ys, default=0))]
+    sigs = []
+    for r in range(len(ys) - 1):
+        sigs.append(frozenset(i for i in range(1, len(xs) - 1) if _covers(vs, xs[i], ys[r], ys[r + 1])))
+    cuts, last = [0], None
+    for r, sg in enumerate(sigs):
+        if not sg:
+            continue
+        if last is not None and len(sg & last) / min(len(sg), len(last)) < 0.5:       # a subset is the same table with some cells merged
+            top = r
+            while top - 1 > cuts[-1] and not sigs[top - 1]:        # the band of labels above its figures has no inner rules: it heads the table below
+                top -= 1
+            cuts.append(top)
+        last = sg
+    if len(cuts) <= 1:
+        return [(ys[0], ys[-1])]
+    bounds = cuts + [len(ys) - 1]
+    return [(ys[bounds[k]], ys[bounds[k + 1]]) for k in range(len(bounds) - 1)]
+
+
+def find_grids(page, words: List[Any], rules: Optional[Tuple[List[Seg], List[Seg]]] = None) -> List[Grid]:
     """The tables drawn on `page` as separate strokes. A dark title bar across a grid cuts it into sections: the bar's text is the
-    name of the section under it, and a bar just above a grid names that grid."""
+    name of the section under it, and a bar just above a grid names that grid. `rules` are lines found in a scan's picture
+    (image_rules.find_rules), used in place of drawing commands the page does not have."""
     hs, vs, bars = _strokes(page)
+    if rules:
+        hs, vs = hs + [list(h) for h in rules[0]], vs + [list(v) for v in rules[1]]
     if len(hs) + len(vs) < 12:
         return []
     hs, vs = _merge(hs), _merge(vs)
+    if rules:                                                 # lines read from a picture include chart bars and tall letters: a table rule crosses at least two others
+        for _ in range(2):
+            vs = [v for v in vs if _crossings(v, hs, True) >= 2]
+            hs = [h for h in hs if _crossings(h, vs, False) >= 2]
     out: List[Grid] = []
     for ch, cv in _components(hs, vs):
         if len(ch) < 3 or len(cv) < 3:
@@ -193,6 +243,8 @@ def find_grids(page, words: List[Any]) -> List[Grid]:
                 bands.append((cy0, across[0][1], None))                 # a section above the first bar, with no bar of its own
             for k, b in enumerate(across):
                 bands.append((b[3], across[k + 1][1] if k + 1 < len(across) else cy1 + 1, b))
+        elif rules:
+            bands = [(lo - TOUCH, hi + TOUCH, None) for lo, hi in _structure_bands(ch, cv)]
         else:
             bands.append((cy0, cy1 + 1, None))
         for lo, hi, bar in bands:

@@ -64,6 +64,33 @@ def is_disputed(cell: Cell) -> bool:
             and cell.get("type") != "checkbox" and cell.get("method") != "pixel")
 
 
+def settle_by_rule(cell: Cell) -> bool:
+    """Settle a dispute without a model when the label says what the value is and only one reading fits (an NPI whose check digit works,
+    a code in the right format). A decisive check (the NPI check digit) settles it; a format only puts the fitting reading first and says so.
+    True when the cell changed."""
+    from app.services.quality import healthcare
+    label = cell.get("label") or ""
+    cands = candidates(cell)
+    if len(cands) < 2:
+        return False
+    marks = [healthcare.check_reading(label, c) for c in cands]
+    if any(m is None for m in marks):
+        return False
+    fits = [c for c, m in zip(cands, marks) if m[0]]
+    what, decisive = marks[0][1], marks[0][2]
+    if len(fits) == 1:
+        cell.update({"value": fits[0], "alternatives": [c for c in cands if c != fits[0]], "status": "agreed" if decisive else "review"})
+        if decisive:
+            cell["settled_by"] = "check digit"
+            cell.pop("reason", None)
+        else:
+            cell["reason"] = f"only this reading is shaped like {what}"
+        return True
+    if not fits:
+        cell["reason"] = f"none of the readings is {what}"
+    return False
+
+
 def _same(a: str, b: str, ftype: str) -> bool:
     if "[?]" in a or "[?]" in b:
         return False  # N.normalize drops the marker, so "2[?]5" would otherwise equal "25"
@@ -115,8 +142,10 @@ async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = No
 
     `reader` is None in production (the real model is used, if one is configured); tests pass their own."""
     disputed = [(i, c, t) for i, c, t in items if is_disputed(c)][:MAX_ITEMS]
+    by_rule = sum(1 for _, c, _t in disputed if settle_by_rule(c))            # free: a check digit or a code format settles some disputes
+    disputed = [(i, c, t) for i, c, t in disputed if is_disputed(c)]           # a value the rule settled as agreed is not sent to a model
     if not disputed or not enabled():
-        return 0
+        return by_rule
     model = config.adjudicator_model()
     if reader is None:
         if not model:
@@ -128,7 +157,7 @@ async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = No
         answers = await reader(model, jpeg, prompt)
     except Exception as e:  # a failed third look must never lose the extraction: the disputes just stay for a human
         logger.warning("Adjudication failed: %s", e)
-        return 0
+        return by_rule
     if not isinstance(answers, dict):
-        return 0
-    return sum(apply(c, answers.get(str(n)), t) for n, (_, c, t) in enumerate(disputed, 1))
+        return by_rule
+    return by_rule + sum(apply(c, answers.get(str(n)), t) for n, (_, c, t) in enumerate(disputed, 1))

@@ -89,6 +89,10 @@ def _int(v: Any, default: int) -> int:
         return default
 
 
+DEFAULT_ENGINES_LOCAL = ("rapidocr", "paddleocr", "tesseract", "doctr")       # tried in this order when nobody has chosen one, local reading final
+DEFAULT_ENGINES_ESCALATE = ("paddleocr", "tesseract", "rapidocr", "doctr")    # ...and when doubtful pages go on to a vision model
+
+
 def resolve(stored: Optional[Dict[str, Any]] = None, override: Optional[Dict[str, Any]] = None) -> Plan:
     """The plan in force for the given saved settings and optional per-upload override."""
     stored, override = stored or {}, override or {}
@@ -99,9 +103,13 @@ def resolve(stored: Optional[Dict[str, Any]] = None, override: Optional[Dict[str
     mode = stored.get("mode") if strategy == "custom" and stored.get("mode") in MODES else _BY_ID[strategy]["mode"]
 
     ready = [e.id for e in local.ready()]
-    wanted = stored.get("local_engine") or os.getenv("LOCAL_OCR_ENGINE", "tesseract")
+    asked = stored.get("local_engine") or os.getenv("LOCAL_OCR_ENGINE")
+    # With no choice made, the engine that did best in our scan tests (eval/scan_eval.py, eval/scan_batch.py). When the local reading is
+    # final (Economy) the one that reads the most correctly; when a model is there to fix doubts (Balanced) the one that raises the fewest.
+    order = DEFAULT_ENGINES_LOCAL if mode == "local" else DEFAULT_ENGINES_ESCALATE
+    wanted = asked or next((e for e in order if e in ready), "tesseract")
     engine = wanted if wanted in ready else (ready[0] if ready else None)
-    if engine != wanted and wanted:
+    if engine != wanted and wanted and asked:
         notes.append(f"{wanted} is not installed, so {engine or 'no local engine'} is used")
     chosen = local.get(engine)
     if chosen is not None and not chosen.calibrated and "tesseract" not in ready:

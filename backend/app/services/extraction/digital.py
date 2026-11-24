@@ -572,11 +572,21 @@ def _not_a_table(t: Dict[str, Any]) -> bool:
     return len(body) <= 1 and bool(cells) and not any(re.search(r"\d", c) for c in cells) and sum(1 for c in cells if c.endswith(":")) >= 2
 
 
+def _label_box(t: Dict[str, Any]) -> bool:
+    """A ruled box whose cells are mostly "LABEL:" and the value beside it (patient, specimen, dates): fields, whatever its first row looks like."""
+    cells = [str(c).strip() for r in list(t.get("rows") or []) for c in r if str(c).strip()]
+    labels_ = [c for c in cells if c.endswith(":") and len(c) > 2]
+    return len(cells) >= 4 and len(labels_) >= 2 and len(labels_) / len(cells) >= 0.2 and len(_box_pairs(t)) >= 2
+
+
 def _box_pairs(t: Dict[str, Any]) -> List[Tuple[str, str]]:
     """(label, value) pairs of a box whose cells read "LABEL:" then its value (and sometimes a second part, a date then a time)."""
     out: List[Tuple[str, str]] = []
     for r in t.get("rows") or []:
-        cells = [str(c).strip() for c in r]
+        cells = []
+        for c in r:                                    # a cell that holds several parts ("Doe, John Q. | Age/Sex: | 73/M", ruled as one) is read part by part
+            c = re.sub(r"\s*\(\d+\)$", "", str(c).strip())
+            cells += [x.strip() for x in c.split(" | ")] if " | " in c else [c]
         i = 0
         while i < len(cells):
             if cells[i].endswith(":") and len(cells[i]) > 2:
@@ -618,7 +628,7 @@ async def read_page(path: str, page_num: int, lines: List[str], tables: List[Dic
         if _not_a_table(t):
             continue
         in_tables.update(locate.alnum(c) for r in t.get("rows", []) for c in r if c)
-        if t.get("header_rows") == 0 and t.get("method") == "grid":          # a ruled box of "LABEL: value" cells (specimen, dates), above a table's header
+        if t.get("method") == "grid" and (t.get("header_rows") == 0 or _label_box(t)):          # a ruled box of "LABEL: value" cells (specimen, dates), above a table's header
             for label, value in _box_pairs(t):
                 key = labels.key(label)
                 if key and key not in box_fields:

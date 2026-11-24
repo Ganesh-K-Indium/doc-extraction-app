@@ -171,18 +171,27 @@ async def _page(path: str, work: str, n: int, models: List[str], use_llm: bool, 
                     else:
                         raw_figs = []
                     figs = [{**f, "bbox": [f["bbox"][0] / w0, f["bbox"][1] / h0, f["bbox"][2] / w0, f["bbox"][3] / h0]} for f in raw_figs]
-                    page_tables = [t for t in info["tables"] if not any(figures.overlap(t["bbox"], f["bbox"]) >= 0.5 for f in raw_figs if t.get("bbox"))]
+                    def covered(t) -> float:        # the share of the table that figures cover (figures.overlap is relative to the smaller of the two boxes)
+                        x0, y0, x1, y1 = t["bbox"]
+                        area = max(1e-6, (x1 - x0) * (y1 - y0))
+                        return max((max(0.0, min(x1, f["bbox"][2]) - max(x0, f["bbox"][0])) * max(0.0, min(y1, f["bbox"][3]) - max(y0, f["bbox"][1])) / area for f in raw_figs), default=0.0)
+                    # a table whose rules were measured in a scan is dropped for a figure only when figures cover most of it
+                    page_tables = [t for t in info["tables"] if not t.get("bbox") or (covered(t) < 0.6 if source != "text-layer" and t.get("method") == "grid"
+                                                                                        else not any(figures.overlap(t["bbox"], f["bbox"]) >= 0.5 for f in raw_figs))]
                 except Exception:
                     logger.exception("Finding figures on page %s failed", n)
             given = []
-            if source == "text-layer" and info["size"]["width"] and info["size"]["height"]:
+            scan_layer = source in ("ocr", "ocr-local") and bool(info["words"])      # a scan: the rules found in its picture and the OCR words give the tables
+            if (source == "text-layer" or scan_layer) and info["size"]["width"] and info["size"]["height"]:
                 w, h = info["size"]["width"], info["size"]["height"]
                 for t in page_tables:
+                    if scan_layer and t.get("method") not in ("grid", "blank"):
+                        continue                                    # from OCR words alone a table is a guess; a ruled grid is measured
                     if t.get("method") == "blank" and t.get("bbox"):          # column labels over empty ruled lines: nothing to read but the labels
                         given.append({"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": t["headers"],
                                       "rows": t["rows"], "method": "blank", "all_rows": [t["headers"]]})
                         continue
-                    lt = digital.labelled_table(path, n, t) if t.get("bbox") else None
+                    lt = digital.labelled_table(work if scan_layer else path, n, t) if t.get("bbox") else None
                     # the extractor reads tables of amounts; a table of names and codes is found better from the layout (structure.py)
                     if lt and digital.is_amount_table(t):
                         given.append({"bbox": [t["bbox"][0] / w, t["bbox"][1] / h, t["bbox"][2] / w, t["bbox"][3] / h], "columns": lt["columns"],
@@ -346,7 +355,11 @@ async def _process(path: str, progress: Optional[Progress], ocr_reader, form_rea
                                     # amounts by the extractor, everything else by the layout; and the pairs and boxes the layout found
                                     "tables": digital.titled([t for t in pg["tables"] if digital.is_amount_table(t)], blocks, size) + digital.tables_from_structure(blocks, size)
                                     + digital.titled([t for t in pg["tables"] if t.get("method") == "blank"], blocks, size)
-                                    if not laid_out_scan else digital.tables_from_structure(blocks, size),
+                                    if not laid_out_scan else
+                                    # a scan: the tables whose rules were found in the picture are measured; the rest come from the layout
+                                    digital.titled([t for t in pg["tables"] if t.get("method") == "grid" and digital.is_amount_table(t)], blocks, size)
+                                    + digital.tables_from_structure(blocks, size)
+                                    + digital.titled([t for t in pg["tables"] if t.get("method") == "blank"], blocks, size),
                                     "facts": digital.facts_from_structure(blocks, size),
                                     "boxes": (pg.get("fillable") or {}).get("boxes") or digital.boxes_from_structure(blocks, size),
                                     "form_fields": (pg.get("fillable") or {}).get("fields", [])}

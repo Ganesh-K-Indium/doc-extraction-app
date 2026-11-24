@@ -57,3 +57,11 @@ def test_symbol_only_cell_is_located():
     path = sample("clinical/lab_cbc_sample_report_testing_com.pdf")
     boxes = locate.in_order(path, 1, [0, 0, 612, 792], ["%"])
     assert boxes[0] is not None
+
+
+def test_a_value_the_text_does_not_contain_is_pointed_at_beside_its_label():
+    path = sample("clinical/lab_cbc_sample_report_testing_com.pdf")
+    box = locate.beside(path, 1, "Patient ID:")
+    label = locate.find(path, 1, "Patient ID")
+    assert box and label and box[0] >= label[2] and abs(box[1] - label[1]) < 4          # to the right of the label, on its line
+    assert locate.beside(path, 1, "A label that is not on the page") is None
