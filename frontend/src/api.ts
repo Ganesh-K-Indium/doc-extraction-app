@@ -49,7 +49,7 @@ export type Block =
     | { type: 'heading'; level: number; text: string; bbox?: BBox }
     | { type: 'paragraph'; text: string; bbox?: BBox }
     | { type: 'key_value'; items: { label: string; value: string | null; bbox?: BBox }[]; bbox?: BBox }
-    | { type: 'table'; columns: string[]; header: boolean; rows: string[][]; bbox?: BBox }
+    | { type: 'table'; columns: string[]; header: boolean; rows: string[][]; bbox?: BBox; method?: string }
     | { type: 'list'; ordered: boolean; items: string[]; bbox?: BBox }
     | { type: 'checkboxes'; items: { label: string; checked: boolean; group?: string | null }[]; bbox?: BBox }
     | { type: 'figure'; index: number; source?: string | null; caption: string | null; labels: string[]; kind: string | null; reading: FigureReading | null; decorative?: boolean; bbox?: BBox };

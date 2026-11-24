@@ -98,6 +98,18 @@ export default function Landing() {
                     </div>
                 </section>
 
+                <section id="health" className="lp-sec">
+                    <div className="lp-wrap">
+                        <h2>Health records and forms, read as they are laid out</h2>
+                        <p className="lp-sub">Claims, explanations of benefits, lab reports and intake forms are mostly boxes, ticks and half-empty tables. Each is read as what it is.</p>
+                        <div className="lp-points lp-points--cols">
+                            <div><h3>Forms are not tables</h3><p>A grid of check boxes becomes a list of options, grouped under its question. A box of &ldquo;Label: value&rdquo; cells becomes fields. Column labels over empty lines are a blank table to fill in. A watermark or a numbered key beside a report is set aside, so it does not end up in a cell.</p></div>
+                            <div><h3>Checks that know health records</h3><p>NPI check digits, ICD-10 and CPT formats, birth and service dates, doses without a unit, and totals that do not add up. They raise a flag with the reason; a person decides.</p></div>
+                            <div><h3>Review a stack, then export</h3><p>Finish one file and jump to the next one that still has something to check. Export every value and table cell, with your corrections, as a spreadsheet-ready CSV, or as JSON.</p></div>
+                        </div>
+                    </div>
+                </section>
+
                 <section id="engines" className="lp-sec lp-sec--tint">
                     <div className="lp-wrap">
                         <h2>You choose how scans are read</h2>

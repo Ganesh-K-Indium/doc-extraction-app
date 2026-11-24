@@ -208,6 +208,7 @@ function TableView({ block, onClick }: { block: Extract<Block, { type: 'table' }
                 {block.header && <thead><tr>{block.columns.map((c, i) => <th key={i}>{c}</th>)}</tr></thead>}
                 <tbody>{rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{v}</td>)}</tr>)}</tbody>
             </table>
+            {block.method === 'blank' && <p className="rs-tablewrap__note">Blank table: the columns are printed, the lines are left to fill in.</p>}
             {block.rows.length > ROWS_SHOWN && (
                 <button type="button" className="rs-more" onClick={(e) => { e.stopPropagation(); setAll(!all); }}>
                     {all ? 'Show fewer rows' : `Show all ${block.rows.length} rows`}

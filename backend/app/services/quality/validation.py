@@ -6,6 +6,7 @@ import re
 from typing import Any, Dict, List
 
 from app.services.extraction import normalize as N
+from app.services.quality import healthcare
 
 _ICD10 = re.compile(r"^[A-TV-Z]\d[0-9A-Z](\.?[0-9A-Z]{1,4})?$")
 
@@ -69,6 +70,7 @@ def validate_form(template: Dict[str, Any], fields: Dict[str, Dict[str, Any]], t
             for col in tbl["columns"]:
                 if col.get("required") and not (row.get(col["key"], {}).get("value") or "").strip():
                     out.append(_f("required_missing", "error", f"Row {i}: '{col['label']}' is empty.", f"{tbl['key']}[{i}].{col['key']}"))
+    out += [x for x in healthcare.check(fields, tables) if not any(o.get("field") == x.get("field") and o["rule"] == x["rule"] for o in out)]
     return out
 
 
@@ -83,4 +85,4 @@ def review_notes(fields: Dict[str, Dict[str, Any]], tables: Dict[str, List[Dict[
         n = sum(1 for r in rows for c in r.values() if c.get("status") == "review")
         if n:
             out.append(_f("needs_review", "info", f"{n} cell{'s' if n != 1 else ''} in the {tkey.replace('_', ' ')} table need a check."))
-    return out
+    return out + healthcare.check(fields, tables)

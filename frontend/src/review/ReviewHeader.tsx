@@ -19,6 +19,9 @@ interface Props {
     onShowFindings: () => void;
     onReread: (strategy: string) => void;
     onDownload: (kind: 'fields' | 'pages' | 'structure' | 'truth') => void;
+    onCsv: () => void;
+    /** The next file in this workspace that still has something to check. */
+    next?: { id: string; name: string; toCheck: number } | null;
 }
 
 /** Who this is, what is left to do, and the two things you may want to do with the file: export it, or read it again. */
@@ -34,6 +37,7 @@ export function ReviewHeader(p: Props) {
                             <button onClick={() => p.onDownload('fields')}>fields.json<small>Values for each document</small></button>
                             <button onClick={() => p.onDownload('structure')}>structure.json<small>Headings, text, tables and lists in reading order</small></button>
                             <button onClick={() => p.onDownload('pages')}>pages.json<small>Text and layout of every page</small></button>
+                            <button onClick={p.onCsv}>reviewed.csv<small>Every value and table cell, with your corrections, for a spreadsheet</small></button>
                             <button onClick={() => p.onDownload('truth')}>Answer key<small>Your reviewed values, for accuracy scoring</small></button>
                         </Menu>
                         {p.hasScans && (
@@ -52,6 +56,7 @@ export function ReviewHeader(p: Props) {
                         <button className={p.toCheck ? 'rv-stat rv-stat--flag' : 'rv-stat'} onClick={p.onShowCheck} disabled={!p.toCheck}><b>{p.toCheck}</b> to check</button>
                         <button className={p.errors ? 'rv-stat rv-stat--flag' : 'rv-stat'} onClick={p.onShowFindings} disabled={!p.errors}><b>{p.errors}</b> {p.errors === 1 ? 'error' : 'errors'}</button>
                     </div>
+                    {p.next && <p className="rv-head__next"><Link to={`/app/w/${p.wid}/e/${p.next.id}`}>Next to review: {p.next.name} ({p.next.toCheck} to check) →</Link></p>}
                     {p.stats && <p className="rv-head__read" title="How the pages of this file were read">{readSummary(p.stats, p.engines)}</p>}
                 </>)}
         </header>

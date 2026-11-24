@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { api, authHeaders, meta, type BBox, type Cell, type Detail, type Finding, type Form } from '../api';
+import { api, authHeaders, meta, type BBox, type Cell, type Detail, type Finding, type Form, type Summary } from '../api';
 import { type Overlay, type PdfViewerHandle } from '../components/PdfViewer';
 import { Split } from '../components/Split';
 import { useMediaQuery } from '../lib/useMediaQuery';
@@ -8,6 +8,7 @@ import { useWorkspace } from '../workspaceContext';
 import { FieldsTab } from '../review/FieldsTab';
 import { FindingsTab } from '../review/FindingsTab';
 import { allCells, cellAt, FLAGGED, revealInPane, rowId, withEdit, type Filter, type QItem, type Value } from '../review/helpers';
+import { reviewCsv, downloadText } from '../review/csv';
 import { JsonView } from '../review/JsonView';
 import { PagesTab } from '../review/PagesTab';
 import { ProcessingView } from '../review/ProcessingView';
@@ -41,10 +42,12 @@ export default function ExtractionPage() {
     const narrow = useMediaQuery('(max-width: 900px)');
     const [view, setView] = useState<'review' | 'pdf'>(params.get('view') === 'pdf' ? 'pdf' : 'review');          // on a small screen only one of the two panes shows
     const [canRead, setCanRead] = useState(false);
+    const [others, setOthers] = useState<Summary[]>([]);
     const nav = useNavigate();
     const viewer = useRef<PdfViewerHandle>(null);
     const headers = useMemo(() => authHeaders(), []);
 
+    useEffect(() => { api.list(wid).then(setOthers).catch(() => setOthers([])); }, [wid, id]);
     useEffect(() => { meta.health().then(h => setCanRead(h.llm)).catch(() => setCanRead(false)); }, []);
     const load = useCallback(() => api.get(wid, id).then(setData).catch(e => setError(e.message)), [wid, id]);
     useEffect(() => { load(); }, [load]);
@@ -61,6 +64,13 @@ export default function ExtractionPage() {
         return [...new Set(ids)].map(e => label[e] ?? e);
     }, [data]);
     const findings = useMemo(() => data?.fields?.validation ?? [], [data]);
+    // The next file in the list (wrapping round) that still has something to check, so a stack of documents can be cleared one after another.
+    const next = useMemo(() => {
+        const at = others.findIndex(o => o.id === id);
+        const order = at < 0 ? others : [...others.slice(at + 1), ...others.slice(0, at)];
+        const hit = order.find(o => o.id !== id && o.status === 'done' && (o.stats?.needs_review ?? 0) > 0);
+        return hit ? { id: hit.id, name: hit.filename, toCheck: hit.stats?.needs_review ?? 0 } : null;
+    }, [others, id]);
 
     // Everything that needs a person: flagged fields and table cells, plus fields an error finding points at.
     const queue = useMemo<QItem[]>(() => {
@@ -194,7 +204,8 @@ export default function ExtractionPage() {
             <ReviewHeader wid={wid} filename={data.filename} workspaceName={workspace.name} done={done} stats={data.stats} engines={engineNames} verified={verified} toCheck={queue.length} errors={errors}
                 hasScans={(data.stats?.scanned_pages ?? 0) > 0} busy={rereading}
                 onShowCheck={() => { setTab('fields'); setFilter('check'); setQuery(''); if (queue.length) select(queue[0], cellAt(forms.find(f => f.doc_index === queue[0].doc), queue[0].key)); }}
-                onShowFindings={() => setTab('findings')} onReread={s => reread({ strategy: s })} onDownload={kind => api.download(wid, id, kind, data.filename)} />
+                onShowFindings={() => setTab('findings')} onReread={s => reread({ strategy: s })} onDownload={kind => api.download(wid, id, kind, data.filename)}
+                next={next} onCsv={() => downloadText(`${data.filename.replace(/\.pdf$/i, '')}.reviewed.csv`, reviewCsv(forms, Object.fromEntries((data.pages?.documents ?? []).map(d => [d.doc_index, d.label]))))} />
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {!done ? (
                 data.status === 'failed' ? <div><p className="notice notice--error" role="alert">{data.error}</p><p><Link to={`/app/w/${wid}`}>Back to documents</Link></p></div> :

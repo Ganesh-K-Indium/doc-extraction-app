@@ -333,6 +333,21 @@ Checkboxes on scans are judged from the pixels, never from the `☑`/`☐` chara
 
 `sample_data/` holds the files used while building and testing; none of it is needed to run the app. `sample_data/variety/` is a set of public documents of other kinds, with a README naming each source: two chip datasheets and an Arduino spec (bordered tables, pin lists, multi-level headers), the IRS W-9 and Form 1040 (fillable forms), a two-column research paper, and two synthetic scans made from those pages (a skewed form and a tilted, unevenly lit photo). `backend/tests/test_variety.py` covers the behaviour they exposed with small generated PDFs instead, so the tests do not depend on those files.
 
+`sample_data/healthcare/` (claims, intake and immunization forms, lab and pathology reports, discharge summaries, explanation-of-benefits samples), `sample_data/complex/` (a 26-page enrollment form, a guideline, scanned registry reports) and `sample_data/handwritten/` (real filled labels) are real public documents, each folder with a README naming sources and licences. No real patient data.
+
+## Health records and forms
+
+Claims, explanations of benefits, lab reports and intake forms are mostly boxes, ticks and half-empty tables, and are read as such:
+
+- **Check boxes.** A ruled grid of boxes becomes a list of options grouped under its question; a question with "Yes / No / Don't know" becomes one group. Symbol-font boxes (a Wingdings "o" that the PDF text calls a letter) are read as the boxes they draw.
+- **Boxes of "Label: value" cells** become fields. A line to write on (`Pregnancies: ______`) is an empty value, and an instruction in brackets after a heading is not a value.
+- **Blank tables.** Column labels over empty ruled lines are a table to fill in; its columns are kept, with no rows.
+- **Annotations are set aside.** A diagonal watermark and the numbered circles of a key do not become cells, and do not count against a table's completeness check. A numbered key beside a report is read after the report, not mixed into it.
+- **Stacked column labels** (Service / Code, Total / Amount over two lines) make the columns, and each value goes under its label.
+- **Healthcare checks** (`quality/healthcare.py`), as warnings that give the reason: NPI check digit, ICD-10 and CPT/HCPCS format, a date of birth in the future or a service date before it, a dose with a number but no unit, and a Totals row that does not add up. They read the labels, so a field named "Provider ID" gets no NPI check.
+- **Review.** *Next to review* in the header goes to the next file with something to check; Export has `reviewed.csv`, one row per value and table cell, with your corrections.
+- **Templates from a blank form.** A drafted template lists a header repeated on every page once, names a follow-up blank after its question ("Flu Vaccine - if yes, when"), and lists a question with boxes as a choice, not also a text field.
+
 ## Measure accuracy
 
 ```bash
@@ -351,6 +366,10 @@ On the sample prior-authorization form (50 values): 98% exact, 0 silent errors, 
 - Without any model provider the app still runs: digital pages use embedded text and scans use a local OCR engine (single reader, marked unverified). Connect a provider on the **Settings** page, or with an environment variable, to read handwriting and poor scans.
 
 ## Known limits
+
+- Health records have been checked on three documents in depth (an annotated lab report, a claim explanation, a 5-page intake form) and run on the rest only as far as the code reads them. There are no real scanned or handwritten medical pages in the sample set yet.
+- Callout boxes drawn beside a table (an annotated sample) can still appear as small tables.
+- A single-page file whose title repeats only in a page banner is named from its first heading; the banner is used when a file has two or more pages.
 
 - Skewed scans are not straightened before OCR, and rotated pages are not turned upright. Uneven light is corrected (see How a file is processed).
 - Tables drawn with borders are read from their rules on digital pages only. A scan's tables come from the OCR layout or the models, so a scanned datasheet table is weaker than a digital one.

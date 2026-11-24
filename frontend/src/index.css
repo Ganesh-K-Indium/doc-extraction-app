@@ -550,3 +550,10 @@ button.rv-stat:not(:disabled) { cursor: pointer; } button.rv-stat:not(:disabled)
 .pv__note { margin: 0; font-size: 12px; color: var(--text-2); max-width: 60ch; }
 @media (prefers-reduced-motion: reduce) { .pv__scan, .pv__dots i, .pv__step--now .pv__mark, .pv__cell--work { animation: none; } .pv__scan { top: 30%; } .pv__bar span { transition: none; } }
 @media (max-width: 560px) { .pv__top { gap: 12px; } .pv__page { width: 52px; height: 68px; } }
+
+/* Review: next file to check, rule tag on a finding, blank-table note */
+.rv-head__next { margin: 4px 0 0; font-size: 0.8125rem; }
+.rv-head__next a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.rv-head__next a:hover { text-decoration: underline; }
+.finding__rule { margin-right: 8px; padding: 1px 6px; border-radius: 4px; font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; background: var(--well); color: var(--text-2); }
+.rs-tablewrap__note { margin: 6px 0 0; font-size: 0.75rem; color: var(--text-2); }
