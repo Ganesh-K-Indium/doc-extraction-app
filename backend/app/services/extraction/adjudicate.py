@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from app import config
 from app.services.extraction import normalize as N
@@ -34,6 +34,9 @@ For each item give the text exactly as it is written at that place on the page.
 - Choose one of the candidate readings if it is right, or write what you actually see if none is.
 - Copy letter by letter and digit by digit. Keep a leading decimal point (.2% is not 2%), percent and currency signs, ranges (7-20), units.
 - Do not correct spelling, complete a name, or calculate.
+- Letters and digits can look alike in handwriting. Decide from what the entry is: a place or country code is letters (N.Z.), an identifier or a quantity is digits. Do not read a letter as a digit, or the reverse, only because the shapes are similar.
+- A mark that is printed on the form (a degree or minute sign, a unit, a currency sign, a frame) is not what was written. If the blank holds only printed marks and nothing was written, answer "[blank]".
+- A crossed-out word is not the answer: give what replaced it, or "[?]" if nothing did.
 - If you cannot read it with certainty, answer "[?]". Never guess.
 
 Items:
@@ -97,14 +100,26 @@ def _same(a: str, b: str, ftype: str) -> bool:
     return N.normalize(a, ftype) == N.normalize(b, ftype)
 
 
-def apply(cell: Cell, answer: Any, ftype: str = "text") -> bool:
-    """Fold the third reading into the cell. True when the cell changed."""
+def apply(cell: Cell, answer: Any, ftype: str = "text", shared: Optional[int] = None) -> bool:
+    """Fold the third reading into the cell. True when the cell changed.
+
+    `shared` is the position (0 = the value, 1 = the alternative) of the candidate that came from the same model as this third reading,
+    or None. A third look that only repeats its own model's earlier answer is not a second opinion, so it settles nothing."""
     ans = str(answer).strip() if answer is not None else ""
+    if ans.lower() == "[blank]":                  # nothing was written: the readers took a printed mark for a value
+        cands = candidates(cell)
+        cell.update({"value": None, "alternatives": cands, "status": "review", "reason": "a third look found nothing written here, only printed marks"})
+        if "normalized" in cell:
+            cell["normalized"] = None
+        return True
     if not ans or "[?]" in ans:
         return False
     cands = candidates(cell)
     match = next((c for c in cands if _same(c, ans, ftype)), None)
     if match is not None:
+        if shared is not None and cands.index(match) == shared:
+            cell["reason"] = "a third look by the same model repeated its own answer, which is not a second opinion"
+            return False
         cell.update({"value": match, "alternatives": [c for c in cands if not _same(c, match, ftype)], "status": "agreed",
                      "settled_by": "third reading"})
         cell.pop("reason", None)
@@ -137,10 +152,11 @@ async def read(model: str, jpeg: bytes, prompt: str) -> Dict[str, str]:
     return parse(await llm.complete(model, prompt, jpeg, stage="adjudicate"))
 
 
-async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = None) -> int:
+async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = None, readers: Sequence[str] = ()) -> int:
     """Settle the disputed cells among `items` with one call. Returns how many were changed.
 
-    `reader` is None in production (the real model is used, if one is configured); tests pass their own."""
+    `reader` is None in production (the real model is used, if one is configured); tests pass their own. `readers` are the models that made
+    the two readings, in order: when the third look is by one of them, siding with that model's own earlier answer does not settle a dispute."""
     disputed = [(i, c, t) for i, c, t in items if is_disputed(c)][:MAX_ITEMS]
     by_rule = sum(1 for _, c, _t in disputed if settle_by_rule(c))            # free: a check digit or a code format settles some disputes
     disputed = [(i, c, t) for i, c, t in disputed if is_disputed(c)]           # a value the rule settled as agreed is not sent to a model
@@ -152,6 +168,7 @@ async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = No
             return 0
         reader = read
     model = model or "adjudicator"
+    shared = next((k for k, m in enumerate(list(readers)[:2]) if m == model), None)
     prompt = PROMPT.format(items="\n".join(_describe(n, c) for n, (_, c, _) in enumerate(disputed, 1)))
     try:
         answers = await reader(model, jpeg, prompt)
@@ -160,4 +177,4 @@ async def settle(jpeg: bytes, items: List[Item], reader: Optional[Callable] = No
         return by_rule
     if not isinstance(answers, dict):
         return by_rule
-    return by_rule + sum(apply(c, answers.get(str(n)), t) for n, (_, c, t) in enumerate(disputed, 1))
+    return by_rule + sum(apply(c, answers.get(str(n)), t, shared) for n, (_, c, t) in enumerate(disputed, 1))

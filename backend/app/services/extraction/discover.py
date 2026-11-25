@@ -48,6 +48,9 @@ Rules:
 - Include labelled blanks that are empty (value null): an empty field is information.
 - A label is something printed that names a value ("Date of Birth", "Invoice No."). Do not turn sentences of running text into fields.
 - A checkbox is checked only if the box contains a tick, cross or fill.
+- Marks printed on the form are not values: a degree or minute sign, a unit, a currency sign, a frame. A blank that holds only such marks and nothing written is empty (null). A stamp (RECEIVED, a data-bank or archive stamp, a watermark) is not the value of the field it overlaps.
+- A crossed-out entry is not the value: give what was written in its place, or null if nothing was.
+- Letters and digits can look alike in handwriting. Decide from what the entry is: a place or country code is letters (N.Z.), an identifier or a quantity is digits. Do not read a letter as a digit, or the reverse, only because the shapes are similar.
 - Put repeated structures (line items, rows of measurements) in "tables", every row on this page.
 - In a table every row has exactly one cell per column, in the printed column order. A cell with nothing printed in it is "" : never leave it out and shift the next value left, and decide each value's column from where it is printed under the header, not from the order of the values.
 - A column header printed over two or three lines is one column name ("Date of" over "Service" is "Date of Service"). Text that continues on the next line inside one cell is one cell, not another row. A row that spans the whole table (a section name such as COMPLETE BLOOD COUNT) is not a data row: use it as the table's title.
@@ -584,7 +587,7 @@ async def discover_page(path: str, page_num: int, models: List[str], reader=None
         # one focused extra call for this page, only because the readers left something in dispute
         items = [(f"f:{k}", c, TYPE_MAP.get(c.get("type"), "text")) for k, c in fields.items()]
         items += [(f"t:{k}:{r}:{ck}", c, "text") for k, rows in tables.items() for r, row in enumerate(rows) for ck, c in row.items()]
-        await adjudicate.settle(jpeg, items, adjudicator)
+        await adjudicate.settle(jpeg, items, adjudicator, readers=models[:2])
 
     def ground():
         # a table's cells are found in reading order, so the fifth "0.00" is the fifth one on the page and not the first

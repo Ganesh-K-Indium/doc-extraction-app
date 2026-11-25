@@ -104,3 +104,46 @@ def test_empty_title_and_sentence_fields_are_pruned_but_real_blanks_and_filled_v
               "long_but_filled": cell("ok", "Increase the load slowly and hold for one minute", "agreed")}
     assert discover.prune_empty_noise(fields, "Weekly Site Report") == 2
     assert set(fields) == {"blank", "long_but_filled"}
+
+
+# ---- a third look by one of the two readers' own model --------------------------------------------------------------------
+
+def _third(answer):
+    async def third(model, jpeg, prompt):
+        return {"1": answer}
+    return third
+
+
+def test_a_third_look_that_repeats_its_own_models_answer_settles_nothing(monkeypatch):
+    monkeypatch.setattr(adjudicate.config, "adjudicator_model", lambda: "model-a")
+    cell = _cell("N.2.", ["N.Z."])                              # reader A (model-a) wrote the value; reader B the alternative
+    assert asyncio.run(adjudicate.settle(b"img", [("a", cell, "text")], _third("N.2."), readers=["model-a", "model-b"])) == 0
+    assert cell["status"] == "review" and cell["value"] == "N.2." and "same model" in cell["reason"]
+
+
+def test_a_third_look_that_sides_with_the_other_reader_settles_it(monkeypatch):
+    monkeypatch.setattr(adjudicate.config, "adjudicator_model", lambda: "model-a")
+    cell = _cell("N.2.", ["N.Z."])
+    assert asyncio.run(adjudicate.settle(b"img", [("a", cell, "text")], _third("N.Z."), readers=["model-a", "model-b"])) == 1
+    assert cell["value"] == "N.Z." and cell["status"] == "agreed" and cell["alternatives"] == ["N.2."]
+
+
+def test_the_same_applies_when_the_third_look_is_the_second_readers_model(monkeypatch):
+    monkeypatch.setattr(adjudicate.config, "adjudicator_model", lambda: "model-b")
+    cell = _cell("0", ["° '"])
+    assert asyncio.run(adjudicate.settle(b"img", [("a", cell, "text")], _third("° '"), readers=["model-a", "model-b"])) == 0
+    assert cell["status"] == "review"
+    assert asyncio.run(adjudicate.settle(b"img", [("a", cell, "text")], _third("0"), readers=["model-a", "model-b"])) == 1 and cell["status"] == "agreed"
+
+
+def test_a_third_model_different_from_both_readers_is_a_real_second_opinion(monkeypatch):
+    monkeypatch.setattr(adjudicate.config, "adjudicator_model", lambda: "model-c")
+    cell = _cell("Smyth", ["Smith"])
+    assert asyncio.run(adjudicate.settle(b"img", [("a", cell, "text")], _third("Smyth"), readers=["model-a", "model-b"])) == 1
+    assert cell["value"] == "Smyth" and cell["status"] == "agreed"
+
+
+def test_nothing_written_but_printed_marks_is_offered_as_blank_and_still_checked(monkeypatch):
+    cell = _cell("0", ["° '"])
+    assert asyncio.run(adjudicate.settle(b"img", [("lat", cell, "text")], _third("[blank]"))) == 1
+    assert cell["value"] is None and cell["status"] == "review" and set(cell["alternatives"]) == {"0", "° '"}
