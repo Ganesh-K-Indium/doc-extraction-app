@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, meta, type RegistryType, type Summary } from '../api';
 import { Suggestions } from '../components/Suggestions';
+import { Icon } from '../components/Icon';
 import { useWorkspace } from '../workspaceContext';
 
 const STATE_LABEL: Record<Summary['status'], string> = { queued: 'Waiting', processing: 'Reading', done: 'Ready to review', failed: 'Failed' };
@@ -38,7 +39,7 @@ function ModelUse({ x }: { x: Summary }) {
     if (!u) return <span className="muted">{x.status === 'done' ? '–' : ''}</span>;
     if (u.calls === 0) return <span className="muted" title="Read entirely by code: no model was called">None</span>;
     const tip = Object.entries(u.by_stage).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v.toLocaleString()} tokens`).join('\n');
-    return <span title={tip}>{u.tokens >= 1000 ? `${(u.tokens / 1000).toFixed(1)}k` : u.tokens} tokens</span>;
+    return <span title={`${u.tokens.toLocaleString()} tokens\n${tip}`}>{u.tokens >= 1000 ? `${(u.tokens / 1000).toFixed(1)}k` : u.tokens}</span>;
 }
 
 export default function ListPage() {
@@ -59,7 +60,7 @@ export default function ListPage() {
     const input = useRef<HTMLInputElement>(null);
     const nav = useNavigate();
     const { wid = '' } = useParams();
-    const { reload } = useWorkspace();
+    const { reload, workspace } = useWorkspace();
 
     const loadTypes = useCallback(() => meta.registry(wid).then(r => setTypes(r.types.filter(t => t.template))).catch(() => undefined), [wid]);
     useEffect(() => { loadTypes(); }, [loadTypes]);
@@ -102,40 +103,25 @@ export default function ListPage() {
         : choice === 'discover' ? 'The whole file is read as one document, with no template.'
             : 'Every page is read with the template you picked. For a packet of several documents, use automatic detection.';
 
+    const reading = (items ?? []).filter(x => x.status === 'queued' || x.status === 'processing').length;
+    const toCheckTotal = (items ?? []).reduce((n, x) => n + (x.status === 'done' ? toCheck(x) : 0), 0);
+
     return (
         <main className="list">
-            <div className={over ? 'intake intake--over' : 'intake'}
-                onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
-                onDrop={e => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files); }}>
-                <div>
-                    <h1>Extract data from any PDF</h1>
-                    <p className="muted">Digital reports and statements, scans, faxes, forms, handwritten notes. Drop one file or many. You get page-by-page JSON, structured JSON for each document, and a short list of values to check. Digital pages are read directly from the PDF, so they cost no model calls. {hint}</p>
+            <header className="pagehead">
+                <div className="pagehead__text">
+                    <p className="pagehead__eyebrow">{workspace.name}</p>
+                    <h1 className="page-title">Documents</h1>
                 </div>
-                <div className="intake__actions">
-                    <label className="intake__pick">Document type
-                        <select value={choice} onChange={e => setChoice(e.target.value)}>
-                            <option value="auto">Detect automatically</option>
-                            {types.length > 0 && <optgroup label="Use a template">{types.map(t => <option key={t.type} value={t.type}>{t.label}{t.custom ? ' (yours)' : ''}</option>)}</optgroup>}
-                            <option value="discover">Read without a template</option>
-                        </select>
-                    </label>
-                    <label className="intake__pick">Scanned pages
-                        <select value={scanReading} onChange={e => setScanReading(e.target.value)}>
-                            <option value="">Workspace setting</option>
-                            <option value="economy">Economy: local OCR only</option>
-                            <option value="balanced">Balanced: models if doubtful</option>
-                            <option value="accuracy">Accuracy: vision models</option>
-                        </select>
-                    </label>
-                    <button className="btn btn--primary" disabled={!!busy} onClick={() => input.current?.click()}>{busy || 'Choose PDFs'}</button>
-                    {choice !== 'discover' && (
-                        <label className="intake__rest">
-                            <input type="checkbox" checked={readRest} onChange={e => setReadRest(e.target.checked)} />
-                            <span>Also structure the text around the form <span className="muted">(only for pages that match a template; extra model calls)</span></span>
-                        </label>)}
-                </div>
-                <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={e => upload(e.target.files)} />
-            </div>
+                {items && items.length > 0 && (
+                    <div className="kpis" aria-label="This workspace">
+                        <div className="kpi"><b>{items.length}</b><span>Documents</span></div>
+                        <div className={toCheckTotal ? 'kpi kpi--flag' : 'kpi'}><b>{toCheckTotal}</b><span>Values to check</span></div>
+                        {reading > 0 && <div className="kpi"><b>{reading}</b><span>Reading now</span></div>}
+                    </div>)}
+            </header>
+            <div className="docs">
+            <div className="docs__main">
             {!llm && <p className="notice" role="status">No vision model is connected. Digital PDFs are read in full and scans by local OCR, but handwriting and poor scans need a model. <Link to="/app/settings">Connect a provider in Settings</Link>.</p>}
             {error && <p className="notice notice--error" role="alert">{error}</p>}
             {notes.length > 0 && <div className="notice notice--error" role="alert"><b>{notes.length === 1 ? 'One file was not uploaded' : `${notes.length} files were not uploaded`}</b><ul>{notes.map(n => <li key={n}>{n}</li>)}</ul></div>}
@@ -143,7 +129,7 @@ export default function ListPage() {
             <Suggestions wid={wid} refreshKey={doneCount} onSaved={() => { reload(); loadTypes(); }} onError={setError} />
 
             {items === null ? <p className="muted">Loading documents</p> : items.length === 0 ? (
-                <p className="empty">No documents in this workspace yet. Drop PDFs above to read their pages and fields.</p>
+                <p className="empty">No documents in this workspace yet. Add PDFs with the panel beside this list to read their pages and fields.</p>
             ) : (
                 <>
                     <div className="listbar">
@@ -160,17 +146,16 @@ export default function ListPage() {
                     {rows.length === 0 ? <p className="empty">No documents match. {view !== 'all' || query ? <button className="link" onClick={() => { setView('all'); setQuery(''); setShown(PAGE); }}>Show all</button> : null}</p> : (
                         <div className="tablewrap">
                             <table className="ledger">
-                                <thead><tr><th scope="col">Document</th><th scope="col">State</th><th scope="col">Read as</th><th scope="col" className="num">Pages</th><th scope="col" className="num">To check</th><th scope="col" className="num">Errors</th><th scope="col" className="num">Model use</th><th scope="col">Uploaded</th><td /></tr></thead>
+                                <thead><tr><th scope="col">Document</th><th scope="col">State</th><th scope="col">Read as</th><th scope="col" className="num">Pages</th><th scope="col" className="num">To check</th><th scope="col" className="num">Errors</th><th scope="col" className="num" title="Model tokens used to read this file">Tokens</th><td /></tr></thead>
                                 <tbody>{rows.slice(0, shown).map(x => (
                                     <tr key={x.id}>
-                                        <th scope="row"><Link to={`/app/w/${wid}/e/${x.id}`}>{x.filename}</Link>{x.labels && x.labels.length > 0 && <small className="ledger__sub">{x.labels.join(' · ')}</small>}</th>
+                                        <th scope="row"><Link to={`/app/w/${wid}/e/${x.id}`}>{x.filename}</Link>{x.labels && x.labels.length > 0 && <small className="ledger__sub">{x.labels.join(' · ')}</small>}<small className="ledger__sub ledger__when">{new Date(x.created_at + 'Z').toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</small></th>
                                         <td><span className={`state state--${x.status}`} title={x.status === 'failed' ? x.error ?? undefined : undefined}>{STATE_LABEL[x.status]}{x.status === 'processing' && x.progress.total ? ` ${x.progress.done} of ${x.progress.total}` : ''}</span></td>
                                         <td><ReadBy x={x} /></td>
                                         <td className="num">{x.stats?.pages ?? ''}</td>
                                         <td className="num">{x.stats ? <span className={x.stats.needs_review ? 'flagtext' : ''}>{x.stats.needs_review}</span> : ''}</td>
                                         <td className="num">{x.stats ? <span className={x.stats.errors ? 'flagtext' : ''}>{x.stats.errors}</span> : ''}</td>
                                         <td className="num"><ModelUse x={x} /></td>
-                                        <td className="muted">{new Date(x.created_at + 'Z').toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}</td>
                                         <td><button className="btn btn--quiet" aria-label={`Delete ${x.filename}`}
                                             onClick={async () => { if (confirm(`Delete “${x.filename}” and its extraction? This cannot be undone.`)) { await api.remove(wid, x.id); load(); reload(); } }}>Delete</button></td>
                                     </tr>))}
@@ -180,6 +165,44 @@ export default function ListPage() {
                     {rows.length > shown && <p className="listmore"><button className="btn" onClick={() => setShown(n => n + PAGE)}>Show {Math.min(PAGE, rows.length - shown)} more</button> <span className="muted">{shown} of {rows.length}</span></p>}
                 </>
             )}
+            </div>
+            <aside className="docs__side" aria-label="Add documents">
+                <div className={over ? 'intake intake--over' : 'intake'}
+                    onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
+                    onDrop={e => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files); }}>
+                    <div>
+                        <h2>Add documents</h2>
+                        <p className="muted">Drop one file or many. Digital pages are read straight from the PDF, so they cost no model calls. {hint}</p>
+                    </div>
+                    <button type="button" className="drop" disabled={!!busy} onClick={() => input.current?.click()}>
+                        <Icon name="upload" size={30} />
+                        <b>{busy || 'Drop PDFs here'}</b>
+                        {!busy && <span>or choose files from your computer</span>}
+                    </button>
+                    <label className="intake__pick">Document type
+                        <select value={choice} onChange={e => setChoice(e.target.value)}>
+                            <option value="auto">Detect automatically</option>
+                            {types.length > 0 && <optgroup label="Use a template">{types.map(t => <option key={t.type} value={t.type}>{t.label}{t.custom ? ' (yours)' : ''}</option>)}</optgroup>}
+                            <option value="discover">Read without a template</option>
+                        </select>
+                    </label>
+                    <label className="intake__pick">Scanned pages
+                        <select value={scanReading} onChange={e => setScanReading(e.target.value)}>
+                            <option value="">Workspace setting</option>
+                            <option value="economy">Economy: local OCR only</option>
+                            <option value="balanced">Balanced: models if doubtful</option>
+                            <option value="accuracy">Accuracy: vision models</option>
+                        </select>
+                    </label>
+                    {choice !== 'discover' && (
+                        <label className="intake__rest">
+                            <input type="checkbox" checked={readRest} onChange={e => setReadRest(e.target.checked)} />
+                            <span>Also structure the text around the form <span className="muted">(only for pages that match a template; extra model calls)</span></span>
+                        </label>)}
+                    <input ref={input} type="file" accept="application/pdf" multiple hidden onChange={e => upload(e.target.files)} />
+                </div>
+            </aside>
+            </div>
         </main>
     );
 }

@@ -3,8 +3,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 const KEY = 'pagewise.panelWidth';
 const MIN = 360;
 
+/** About two fifths of the window, so the fields have room beside the document on a wide screen. */
+function fallback(): number { return Math.min(720, Math.max(480, Math.round(window.innerWidth * 0.38))); }
+
 function stored(): number {
-    try { const n = Number(window.localStorage.getItem(KEY)); return n >= MIN ? n : 520; } catch { return 520; }
+    try { const n = Number(window.localStorage.getItem(KEY)); return n >= MIN ? n : fallback(); } catch { return fallback(); }
 }
 
 /** Two panes with a draggable divider. The right pane's width is remembered. Keyboard: focus the divider, then arrows. */

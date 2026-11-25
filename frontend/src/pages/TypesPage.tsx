@@ -32,7 +32,7 @@ export default function TypesPage() {
     const input = useRef<HTMLInputElement>(null);
     const viewer = useRef<PdfViewerHandle>(null);
     const { wid = '' } = useParams();
-    const { reload } = useWorkspace();
+    const { reload, workspace } = useWorkspace();
 
     const load = useCallback(() => meta.registry(wid).then(setReg).catch(e => setError(e.message)), [wid]);
     useEffect(() => { load(); }, [load]);
@@ -101,20 +101,13 @@ export default function TypesPage() {
 
     return (
         <main className="list">
-            <h1 className="page-title">Document types</h1>
-            <p className="lede">You never have to define a type first: files that match nothing are read without a template, and your files are watched for layouts that repeat. A known type is read against its template, validated, and named the same way every time. Save a reviewed result as a type, accept a suggestion below, or upload a blank form to draft one. Types you add belong to this workspace only; the built-in ones are available everywhere.</p>
+            <header className="pagehead"><div className="pagehead__text"><p className="pagehead__eyebrow">{workspace.name}</p><h1 className="page-title">Document types</h1>
+            <p className="lede">You never have to define a type first: files that match nothing are read without a template, and your files are watched for layouts that repeat. A known type is read against its template, validated, and named the same way every time. Save a reviewed result as a type, accept a suggestion below, or upload a blank form to draft one. Types you add belong to this workspace only; the built-in ones are available everywhere.</p></div></header>
             {error && <p className="notice notice--error" role="alert">{error}</p>}
-            <Suggestions wid={wid} limit={5} onSaved={() => { load(); reload(); }} onError={setError} />
-
-            <div className="intake intake--row">
-                <div><h2 className="section-title" style={{ margin: 0 }}>Add a type from a blank form</h2>
-                    <p className="muted" style={{ margin: '4px 0 0' }}>Upload a scan or PDF with nothing filled in. You then see what was found next to the form, and can correct, add or remove anything before saving.</p></div>
-                <button className="btn" disabled={busy} onClick={() => input.current?.click()}>{busy ? 'Reading the form' : 'Upload blank form'}</button>
-                <input ref={input} type="file" accept="application/pdf" hidden onChange={e => readBlank(e.target.files?.[0])} />
-            </div>
-
-            {!reg ? !error && <p className="muted">Loading types</p> : (
-                <>
+            <div className="types">
+                <div className="types__main">
+                    {!reg ? !error && <p className="muted">Loading types</p> : (
+                        <div className="tablewrap">
                     <table className="ledger">
                         <thead><tr><th scope="col">Type</th><th scope="col">Extraction</th><th scope="col">Template</th><th scope="col" className="num">Fields</th><th scope="col" className="num">Required</th><td /></tr></thead>
                         <tbody>{reg.types.map(t => (
@@ -130,10 +123,25 @@ export default function TypesPage() {
                                 </td>
                             </tr>))}</tbody>
                     </table>
-                    <h2 className="section-title">How pages are read</h2>
+                        </div>
+                    )}
+                </div>
+                <aside className="types__side">
+            <Suggestions wid={wid} limit={5} onSaved={() => { load(); reload(); }} onError={setError} />
+
+            <div className="intake">
+                <div><h2 className="section-title" style={{ margin: 0 }}>Add a type from a blank form</h2>
+                    <p className="muted" style={{ margin: '4px 0 0' }}>Upload a scan or PDF with nothing filled in. You then see what was found next to the form, and can correct, add or remove anything before saving.</p></div>
+                <button className="btn" disabled={busy} onClick={() => input.current?.click()}>{busy ? 'Reading the form' : 'Upload blank form'}</button>
+                <input ref={input} type="file" accept="application/pdf" hidden onChange={e => readBlank(e.target.files?.[0])} />
+            </div>
+
+                    {reg && <section className="card card__pad types__how">
+                    <h2>How pages are read</h2>
                     <dl className="defs">{reg.readers.map(r => (<div key={r.id}><dt>{r.label}</dt><dd>{r.summary}</dd></div>))}</dl>
-                </>
-            )}
+                    </section>}
+                </aside>
+            </div>
         </main>
     );
 }

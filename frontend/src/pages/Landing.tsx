@@ -1,5 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { APP_NAME } from '../brand';
+import { LivingCanvas } from '../components/LivingCanvas';
 import { ThemeToggle } from '../components/ThemeToggle';
 import './landing.css';
 
@@ -49,14 +51,33 @@ const STEPS = [
     { t: 'Extract and check', d: 'Each document is read against its template, or its fields are found from the page when it has none. Rules then compare documents with each other.', note: 'Required fields, formats, cross-document facts' },
 ];
 
+/** Quiet motion for the whole page: sections ease in as they come into view, and the nav shows where you are. */
+function usePageMotion(root: React.RefObject<HTMLDivElement | null>) {
+    const [on, setOn] = useState('');
+    useEffect(() => {
+        const scroller = root.current;
+        if (!scroller) return;
+        const calm = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const seen = new IntersectionObserver(entries => entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('is-in'); seen.unobserve(e.target); } }), { root: scroller, rootMargin: '0px 0px -8% 0px' });
+        if (!calm) scroller.querySelectorAll('.lp-sec .lp-wrap > *, .lp-band .lp-wrap > *, .lp-close .lp-wrap > *').forEach(el => { el.classList.add('lp-rv'); seen.observe(el); });
+        const where = new IntersectionObserver(entries => entries.forEach(e => { if (e.isIntersecting) setOn(e.target.id); }), { root: scroller, rootMargin: '-45% 0px -50% 0px' });
+        scroller.querySelectorAll('section[id]').forEach(el => where.observe(el));
+        return () => { seen.disconnect(); where.disconnect(); };
+    }, [root]);
+    return on;
+}
+
 export default function Landing() {
+    const root = useRef<HTMLDivElement>(null);
+    const on = usePageMotion(root);
     return (
-        <div className="lp">
+        <div className="lp" ref={root}>
+            <LivingCanvas />
             <header className="lp-head">
                 <div className="lp-wrap lp-head__in">
                     <Link to="/" className="brand"><span className="brand__mark" aria-hidden="true" />{APP_NAME}</Link>
                     <nav className="lp-nav" aria-label="Page sections">
-                        <a href="#kinds">Any document</a><a href="#scans">Scans</a><a href="#engines">Engines</a><a href="#how">How it works</a><a href="#output">Output</a><a href="#review">Review</a><a href="#types">Document types</a>
+                        <a href="#kinds" className={on === 'kinds' ? 'is-on' : undefined}>Any document</a><a href="#scans" className={on === 'scans' ? 'is-on' : undefined}>Scans</a><a href="#engines" className={on === 'engines' ? 'is-on' : undefined}>Engines</a><a href="#how" className={on === 'how' ? 'is-on' : undefined}>How it works</a><a href="#output" className={on === 'output' ? 'is-on' : undefined}>Output</a><a href="#review" className={on === 'review' ? 'is-on' : undefined}>Review</a><a href="#types" className={on === 'types' ? 'is-on' : undefined}>Document types</a>
                     </nav>
                     <ThemeToggle />
                     <Link to="/app" className="btn btn--primary">Open workspaces</Link>
@@ -64,15 +85,19 @@ export default function Landing() {
             </header>
 
             <main>
-                <section className="lp-hero">
-                    <div className="lp-wrap">
+                <section className="lp-hero" aria-label="Introduction">
+                    <div className="lp-wrap lp-hero__in">
                         <h1>Read the whole packet. Check only what’s in doubt.</h1>
                         <p className="lp-lede">Upload any PDF: a financial filing, a scanned form, a fax, a handwritten note. {APP_NAME} reads every page the cheapest reliable way, sorts the file into its documents, and flags only the values it could not prove.</p>
                         <div className="lp-cta">
                             <Link to="/app" className="btn btn--primary btn--lg">Open workspaces</Link>
                             <a href="#output" className="btn btn--lg">See the output</a>
                         </div>
+                    </div>
+                </section>
 
+                <section className="lp-band" aria-label="A sample packet">
+                    <div className="lp-wrap">
                         <figure className="lp-packet">
                             <div className="lp-strip">{PAGES.map(p => <Sheet key={p.n} kind={p.kind} n={p.n} />)}</div>
                             <div className="lp-groups">{GROUPS.map(g => (

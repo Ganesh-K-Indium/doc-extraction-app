@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useWorkspace } from '../workspaceContext';
 import { ModelPicker } from '../components/ModelPicker';
 import { engines, reading, type EngineTest, type EnginesOverview, type ReadingSettings, type ReadingView } from '../api';
 
@@ -30,6 +31,7 @@ function Result({ t }: { t?: EngineTest | 'running' }) {
 
 export default function ReadingPage() {
     const { wid = '' } = useParams();
+    const { workspace } = useWorkspace();
     const [info, setInfo] = useState<EnginesOverview | null>(null);
     const [view, setView] = useState<ReadingView | null>(null);
     const [draft, setDraft] = useState<ReadingSettings>({});
@@ -98,13 +100,15 @@ export default function ReadingPage() {
 
     return (
         <main className="list rd">
-            <h1 className="page-title">Reading engines</h1>
-            <p className="lede">Choose how scanned pages and handwriting are read in this workspace: free local OCR, vision models, or both. Documents you upload from now on follow these settings; you can still choose differently for a single upload.</p>
+            <header className="pagehead"><div className="pagehead__text"><p className="pagehead__eyebrow">{workspace.name}</p><h1 className="page-title">Reading engines</h1>
+            <p className="lede">Choose how scanned pages and handwriting are read in this workspace: free local OCR, vision models, or both. Documents you upload from now on follow these settings; you can still choose differently for a single upload.</p></div></header>
 
             {info.local_only && <p className="notice rd__notice" role="status"><b>Local-only mode.</b> This server is set so that nothing leaves it: cloud models are switched off. Local OCR and models on your own hardware still work.</p>}
             {!info.llm_enabled && !info.local_only && <p className="notice rd__notice" role="status">No vision model is configured on this server, so every scanned page is read by local OCR. Add a provider key (see below) to let doubtful pages go to a model.</p>}
             {error && <p className="notice notice--error rd__notice" role="alert">{error}</p>}
 
+            <div className="rd__cols">
+            <div className="rd__col">
             <section aria-labelledby="rd-strategy">
                 <h2 className="section-title" id="rd-strategy">Strategy</h2>
                 <div className="rd__cards" role="radiogroup" aria-labelledby="rd-strategy">
@@ -121,33 +125,6 @@ export default function ReadingPage() {
                         <select value={mode} onChange={e => set({ mode: e.target.value })}>{MODES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
                     </label>)}
             </section>
-
-            {usesLocal && (
-                <section aria-labelledby="rd-local">
-                    <h2 className="section-title" id="rd-local">Local OCR engine</h2>
-                    <p className="hint">Runs on this server. Nothing is sent anywhere, and it costs nothing per page.</p>
-                    <div className="rd__list" role="radiogroup" aria-labelledby="rd-local">
-                        {info.local_engines.map(e => (
-                            <div key={e.id} className={engine === e.id ? 'rd__row rd__row--on' : 'rd__row'}>
-                                <label className="rd__pick">
-                                    <input type="radio" name="engine" disabled={!e.ready} checked={engine === e.id} onChange={() => set({ local_engine: e.id })} />
-                                    <span><b>{e.label}</b> <span className={`rd__chip rd__chip--${e.ready ? 'ok' : 'off'}`}>{e.ready ? 'Installed' : 'Not installed'}</span>
-                                        <span className="rd__sub">{e.summary}{e.cross_checked && e.ready ? ' Its pages are checked against Tesseract before they are trusted.' : ''}</span>
-                                        {!e.ready && <span className="rd__sub">Install: <code>{e.hint}</code></span>}
-                                        {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
-                                            <span className="rd__sub rd__sub--warn">Models not downloaded yet (about {e.models.approx_mb} MB). They are saved in the app’s data folder.</span>)}
-                                        {e.ready && e.models.state === 'downloaded' && <span className="rd__sub">Models ready ({Math.round((e.models.bytes ?? 0) / 1e6)} MB in the app’s data folder).</span>}
-                                        {e.prepare?.state === 'running' && <span className="rd__sub" role="status">Downloading the models. This can take a minute or two.</span>}
-                                        {e.prepare?.state === 'failed' && <span className="rd__sub rd__sub--bad" role="alert">{e.prepare.error}</span>}</span>
-                                </label>
-                                {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
-                                    <button className="btn" onClick={() => download(e.id)} disabled={downloading || info.local_only || info.locked}
-                                        title={info.local_only ? 'Local-only mode: this server downloads nothing' : info.locked ? 'Settings are locked on this server' : undefined}>Download models</button>)}
-                                {e.ready && <button className="btn" onClick={() => test('local', e.id)} disabled={tests[`local:${e.id}`] === 'running' || e.prepare?.state === 'running'}>Test</button>}
-                                <Result t={tests[`local:${e.id}`]} />
-                            </div>))}
-                    </div>
-                </section>)}
 
             {usesModels && (
                 <section aria-labelledby="rd-models">
@@ -181,11 +158,43 @@ export default function ReadingPage() {
                     </label>
                 </details>)}
 
+            </div>
+            <div className="rd__col">
+            {usesLocal && (
+                <section aria-labelledby="rd-local">
+                    <h2 className="section-title" id="rd-local">Local OCR engine</h2>
+                    <p className="hint">Runs on this server. Nothing is sent anywhere, and it costs nothing per page.</p>
+                    <div className="rd__list" role="radiogroup" aria-labelledby="rd-local">
+                        {info.local_engines.map(e => (
+                            <div key={e.id} className={engine === e.id ? 'rd__row rd__row--on' : 'rd__row'}>
+                                <label className="rd__pick">
+                                    <input type="radio" name="engine" disabled={!e.ready} checked={engine === e.id} onChange={() => set({ local_engine: e.id })} />
+                                    <span><b>{e.label}</b> <span className={`rd__chip rd__chip--${e.ready ? 'ok' : 'off'}`}>{e.ready ? 'Installed' : 'Not installed'}</span>
+                                        <span className="rd__sub">{e.summary}{e.cross_checked && e.ready ? ' Its pages are checked against Tesseract before they are trusted.' : ''}</span>
+                                        {!e.ready && <span className="rd__sub">Install: <code>{e.hint}</code></span>}
+                                        {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
+                                            <span className="rd__sub rd__sub--warn">Models not downloaded yet (about {e.models.approx_mb} MB). They are saved in the app’s data folder.</span>)}
+                                        {e.ready && e.models.state === 'downloaded' && <span className="rd__sub">Models ready ({Math.round((e.models.bytes ?? 0) / 1e6)} MB in the app’s data folder).</span>}
+                                        {e.prepare?.state === 'running' && <span className="rd__sub" role="status">Downloading the models. This can take a minute or two.</span>}
+                                        {e.prepare?.state === 'failed' && <span className="rd__sub rd__sub--bad" role="alert">{e.prepare.error}</span>}</span>
+                                </label>
+                                {e.ready && e.models.state === 'missing' && e.prepare?.state !== 'running' && (
+                                    <button className="btn" onClick={() => download(e.id)} disabled={downloading || info.local_only || info.locked}
+                                        title={info.local_only ? 'Local-only mode: this server downloads nothing' : info.locked ? 'Settings are locked on this server' : undefined}>Download models</button>)}
+                                {e.ready && <button className="btn" onClick={() => test('local', e.id)} disabled={tests[`local:${e.id}`] === 'running' || e.prepare?.state === 'running'}>Test</button>}
+                                <Result t={tests[`local:${e.id}`]} />
+                            </div>))}
+                    </div>
+                </section>)}
+
             <section aria-labelledby="rd-summary">
                 <h2 className="section-title" id="rd-summary">What this means</h2>
                 <ul className="rd__summary">{summary.map(l => <li key={l}>{l}</li>)}</ul>
                 {view.plan.notes.length > 0 && <div className="notice rd__notice" role="status"><b>Heads up</b><ul>{view.plan.notes.map(n => <li key={n}>{n}</li>)}</ul></div>}
             </section>
+
+            </div>
+            </div>
 
             <div className="rd__actions">
                 <button className="btn btn--primary" onClick={save} disabled={busy || !dirty}>{busy ? 'Saving' : 'Save settings'}</button>

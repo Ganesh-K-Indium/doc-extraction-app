@@ -6,6 +6,7 @@ import App from './App';
 import { applyTheme, getTheme } from './lib/theme';
 import './theme.css';
 import './index.css';
+import './ui.css';
 
 applyTheme(getTheme());          // also keeps the browser's own chrome in step with the canvas
 

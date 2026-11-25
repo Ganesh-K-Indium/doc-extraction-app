@@ -79,8 +79,8 @@ export default function SettingsPage() {
     if (!view) return <main className="list"><p className="muted">Loading settings</p></main>;
     return (
         <main className="list st">
-            <h1 className="page-title">Settings</h1>
-            <p className="lede">Connect the model providers this server can use. Keys you enter here are stored encrypted and are never shown again, only their last four characters. Which models read a document is chosen per workspace under Reading engines.</p>
+            <header className="pagehead"><div className="pagehead__text"><h1 className="page-title">Settings</h1>
+            <p className="lede">Connect the model providers this server can use. Keys you enter here are stored encrypted and are never shown again, only their last four characters. Which models read a document is chosen per workspace under Reading engines.</p></div></header>
             {view.local_only && <p className="notice st__notice" role="status"><b>Local-only mode.</b> Cloud providers are switched off on this server, so nothing can leave it. Models on your own hardware still work.</p>}
             {view.locked && <p className="notice st__notice" role="status"><b>Settings are locked.</b> Whoever runs this server manages these through its environment, so they are shown but cannot be changed here.</p>}
             {view.encryption === 'unavailable' && !view.locked && <p className="notice notice--error st__notice" role="alert">This server cannot encrypt saved keys right now, so keys cannot be saved here. Set them as environment variables instead.</p>}

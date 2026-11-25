@@ -62,7 +62,10 @@
   --shadow-bar: 0 -10px 20px -16px rgb(20 30 40 / .07);
 
   /* shape and type */
-  --r: 6px;
+  --r: 8px;
+  --r-lg: 14px;              /* cards and panels */
+  --side-w: 252px;           /* the navigation rail, open */
+  --side-w-rail: 68px;       /* and folded */
   --font: 'Instrument Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
