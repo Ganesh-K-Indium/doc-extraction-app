@@ -6,6 +6,7 @@ import './textLayer.css';
 import type { BBox } from '../api';
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+const PDFJS_ASSETS = `${import.meta.env.BASE_URL}pdfjs/`;
 
 export interface Overlay { page: number; rects: BBox[]; kind: 'hl' | 'region' | 'hover' | 'block' }
 
@@ -115,7 +116,11 @@ export const PdfViewer = forwardRef<PdfViewerHandle, Props>(({ url, headers, sca
     const lastVisible = useRef(0);
 
     useEffect(() => {
-        const task = pdfjs.getDocument({ url, httpHeaders: headers, disableAutoFetch: true, rangeChunkSize: 262144 });
+        const task = pdfjs.getDocument({
+            url, httpHeaders: headers, disableAutoFetch: true, rangeChunkSize: 262144,
+            // decoders and fonts pdf.js needs for scans (CCITT/JBIG2/JPEG 2000 images) and for text in the standard fonts; served by vite.config.ts
+            wasmUrl: PDFJS_ASSETS + 'wasm/', standardFontDataUrl: PDFJS_ASSETS + 'standard_fonts/', iccUrl: PDFJS_ASSETS + 'iccs/',
+        });
         let cancelled = false; // StrictMode / unmount destroys the task; its "Loading aborted" rejection is not an error
         task.promise.then(async d => {
             const p1 = await d.getPage(1);
