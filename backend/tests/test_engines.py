@@ -281,7 +281,7 @@ def test_neural_engines_run_one_page_at_a_time_and_tesseract_in_parallel():
         return eng.peak
     assert run(burst(Probe(serial=True))) == 1
     assert run(burst(Probe(serial=False))) > 1
-    assert [e.serial for e in local.engines()] == [False, True, True, True]
+    assert [e.serial for e in local.engines()] == [False, True, True, True, True]
 
 
 def test_warmup_reports_each_engine_and_signals_failure(capsys, monkeypatch):
@@ -394,7 +394,7 @@ def test_paddle_loads_with_a_home_folder_inside_the_app(monkeypatch, tmp_path):
 
 def test_engine_listing_names_every_engine():
     ids = [e["id"] for e in local.listing()]
-    assert ids == ["tesseract", "rapidocr", "paddleocr", "doctr"]
+    assert ids == ["tesseract", "rapidocr", "paddleocr", "doctr", "ocria"]
     missing = [e for e in local.listing() if not e["ready"]]
     assert all(e["status"] == "not_installed" and e["hint"] for e in missing)
     assert all(e["status"] == "ready" for e in local.listing() if e["ready"])
@@ -864,7 +864,7 @@ def test_engines_overview(client):
     r = client.get("/api/engines")
     assert r.status_code == 401
     body = client.get("/api/engines", headers=H).json()
-    assert [e["id"] for e in body["local_engines"]] == ["tesseract", "rapidocr", "paddleocr", "doctr"]
+    assert [e["id"] for e in body["local_engines"]] == ["tesseract", "rapidocr", "paddleocr", "doctr", "ocria"]
     assert {p["id"] for p in body["providers"]} == {"openai", "anthropic", "gemini", "ollama", "custom"}
     assert [s["id"] for s in body["strategies"]] == ["economy", "balanced", "accuracy", "custom"]
     assert body["local_only"] is False and body["defaults"]["plan"]["strategy"] in ("balanced", "accuracy")
@@ -1177,7 +1177,7 @@ def test_the_worker_loop_answers_frames_and_survives_an_engine_error():
 
 def test_only_the_engines_that_cannot_share_a_process_are_isolated(monkeypatch):
     from app.engines.ocr import isolated
-    assert {e.id: e.isolated for e in local.engines()} == {"tesseract": False, "rapidocr": False, "paddleocr": True, "doctr": True}
+    assert {e.id: e.isolated for e in local.engines()} == {"tesseract": False, "rapidocr": False, "paddleocr": True, "doctr": True, "ocria": True}
 
     class Heavy(local.Engine):
         id, label, isolated = "heavy", "Heavy", True
@@ -1352,3 +1352,54 @@ def test_local_reader_table_without_a_header_is_anchored_on_its_code_pattern_and
 def test_local_reader_does_not_invent_table_rows_from_other_lines():
     from app.services.extraction import local_reader
     assert local_reader.read_fields("Patient Name: Morgan Taylor\nSome free text here | and here", _template("daily_note"))["table_rows"] == []
+
+
+# ---- OCRia nano ---------------------------------------------------------------------------------------------------------------------------
+
+def _jpeg(w=1700, h=2200):
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (w, h), "white").save(buf, "JPEG")
+    return buf.getvalue()
+
+
+class _FakeParsed:
+    def __init__(self, items, width=612.0, height=792.0):
+        self.pages = [type("P", (), {"width": width, "height": height, "text_items": items})()]
+
+
+def _item(text, x, y, w, h, conf=0.99):
+    box = type("B", (), {"text": text, "x": x, "y": y, "width": w, "height": h})()
+    return type("I", (), {"text": text, "x": x, "y": y, "width": w, "height": h, "confidence": conf, "words": [box]})()
+
+
+def test_ocria_is_listed_but_never_a_default():
+    e = local.get("ocria")
+    assert e is not None and e.isolated and not e.calibrated
+    assert "ocria" not in plan.DEFAULT_ENGINES_LOCAL and "ocria" not in plan.DEFAULT_ENGINES_ESCALATE
+    assert "licence" in e.summary.lower()                       # the terms are shown where the engine is chosen
+
+
+def test_ocria_boxes_are_scaled_from_points_to_pixels():
+    e = local.get("ocria")
+    e._model = type("M", (), {"get": lambda self: type("L", (), {"parse": lambda s, path: _FakeParsed([_item("Total due", 61.2, 79.2, 122.4, 15.84)])})()})()
+    words = e._words(_jpeg())                                    # a 1700 x 2200 image of a 612 x 792 pt page: 1700/612 = 2.778 px per point
+    assert [w.text for w in words] == ["Total due"]
+    assert (round(words[0].x0), round(words[0].y0), round(words[0].x1), round(words[0].y1)) == (170, 220, 510, 264)
+    assert words[0].conf == 0.99
+
+
+def test_ocria_downloads_nothing_in_local_only_mode(monkeypatch, tmp_path):
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path))
+    monkeypatch.setenv("LOCAL_ONLY", "1")
+    monkeypatch.setitem(__import__("sys").modules, "liteparse", type("M", (), {"LiteParse": object, "models": type("Mo", (), {"pull": staticmethod(lambda *a, **k: (_ for _ in ()).throw(AssertionError("downloaded")))})()}))
+    home_before = {n: __import__("os").environ.get(n) for n in ("HOME", "USERPROFILE")}
+    try:
+        with pytest.raises(RuntimeError, match="local-only"):
+            local.OcriaNano._load()
+    finally:
+        for n, v in home_before.items():
+            if v is None:
+                __import__("os").environ.pop(n, None)
+            else:
+                __import__("os").environ[n] = v

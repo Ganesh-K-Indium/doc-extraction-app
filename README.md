@@ -59,8 +59,11 @@ cd frontend && npm install && cp .env.example .env && npm run dev
 | RapidOCR | `pip install rapidocr-onnxruntime` | about 100 MB | none: its models ship inside the package |
 | PaddleOCR | `pip install paddlepaddle paddleocr` | about 430 MB | downloads about 130 MB of models |
 | docTR | `pip install "python-doctr[torch]"` | about 630 MB (PyTorch) | downloads about 125 MB of models |
+| OCRia nano | `pip install liteparse` | about 75 MB of models | downloads them on first use |
 
-`pip` installs the code only. PaddleOCR and docTR fetch their models the first time they run, so "requirement already satisfied" says nothing about them. To see whether the models are on disk (this reads nothing and downloads nothing):
+OCRia nano (LlamaIndex) is the fastest of them, about 0.5 s a page, and on our degraded healthcare and filing pages it found about as many words as Tesseract in a third of the time. It is weaker on small form print, it returns whole lines (so a table's columns are not split apart), and it is not for handwriting. It is not in `requirements-ocr.txt` and never a default, because its licence is free for research, personal use and organisations under $2M in revenue and funding, and a document-extraction product that competes with LlamaParse needs a commercial licence: read it before turning it on.
+
+`pip` installs the code only. PaddleOCR, docTR and OCRia nano fetch their models the first time they run, so "requirement already satisfied" says nothing about them. To see whether the models are on disk (this reads nothing and downloads nothing):
 
 ```bash
 cd backend && python -m app.engines.warmup --status

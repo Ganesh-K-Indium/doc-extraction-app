@@ -59,7 +59,7 @@ export default function ExtractionPage() {
 
     const forms = useMemo(() => data?.fields?.forms ?? [], [data]);
     const engineNames = useMemo(() => {
-        const label: Record<string, string> = { tesseract: 'Tesseract', rapidocr: 'RapidOCR', paddleocr: 'PaddleOCR', doctr: 'docTR' };
+        const label: Record<string, string> = { tesseract: 'Tesseract', rapidocr: 'RapidOCR', paddleocr: 'PaddleOCR', doctr: 'docTR', ocria: 'OCRia nano' };
         const ids = (data?.pages?.pages ?? []).filter(pg => pg.source === 'ocr-local').map(pg => pg.reading?.engine).filter((e): e is string => !!e);
         return [...new Set(ids)].map(e => label[e] ?? e);
     }, [data]);

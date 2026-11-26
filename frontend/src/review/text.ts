@@ -5,7 +5,7 @@ export const READER_LABEL: Record<string, string> = {
     text_layer: 'embedded text, by code', ocr_dual: 'two vision readers', ocr_ladder: 'local OCR, with vision models if it was doubtful',
     ocr_local: 'local OCR on this server', text_layer_unverified: 'the scanner’s own text (unverified)',
 };
-const ENGINE: Record<string, string> = { tesseract: 'Tesseract', rapidocr: 'RapidOCR', paddleocr: 'PaddleOCR', doctr: 'docTR' };
+const ENGINE: Record<string, string> = { tesseract: 'Tesseract', rapidocr: 'RapidOCR', paddleocr: 'PaddleOCR', doctr: 'docTR', ocria: 'OCRia nano' };
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 
 export const pageRange = (p: number[]) => (p.length === 1 ? `page ${p[0]}` : `pages ${p[0]}–${p[p.length - 1]}`);

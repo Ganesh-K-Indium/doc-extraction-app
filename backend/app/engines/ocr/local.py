@@ -10,6 +10,7 @@ Engines
     rapidocr   PaddleOCR models on ONNX: light, fast on CPU, good on printed scans.  pip install rapidocr-onnxruntime
     paddleocr  PaddleOCR itself.                                                      pip install paddleocr
     doctr      docTR (PyTorch): strong on printed pages and tables.                    pip install python-doctr[torch]
+    ocria      OCRia nano (LlamaIndex, via LiteParse): tiny and very fast on a CPU.    pip install liteparse   (read its licence first)
 
 Only installed engines are offered. Nothing here sends anything off the machine.
 """
@@ -360,7 +361,7 @@ def assess_cross(reading: Reading, jpeg: Optional[bytes] = None) -> Verdict:
 # Inside the app's own data folder by default, so everything the backend needs travels with it: copy DATA_DIR (or MODELS_DIR) to
 # another server and the models go too. An explicit DOCTR_CACHE_DIR / PADDLE_PDX_CACHE_HOME still wins.
 
-APPROX_MB = {"paddleocr": 130, "doctr": 125}
+APPROX_MB = {"paddleocr": 130, "doctr": 125, "ocria": 75}
 
 
 def models_dir() -> Path:
@@ -369,7 +370,8 @@ def models_dir() -> Path:
 
 def model_folders() -> Dict[str, Path]:
     return {"paddleocr": Path(os.getenv("PADDLE_PDX_CACHE_HOME") or models_dir() / "paddlex") / "official_models",
-            "doctr": Path(os.getenv("DOCTR_CACHE_DIR") or models_dir() / "doctr") / "models"}
+            "doctr": Path(os.getenv("DOCTR_CACHE_DIR") or models_dir() / "doctr") / "models",
+            "ocria": models_dir() / "home" / ".cache" / "liteparse" / "models" / "ocria-nano"}
 
 
 def configure_caches() -> None:
@@ -668,7 +670,59 @@ class DocTR(Engine):
         return out
 
 
-_ENGINES: Dict[str, Engine] = {e.id: e for e in (Tesseract(), RapidOCR(), PaddleOCR(), DocTR())}
+class OcriaNano(Engine):
+    """OCRia-nano-1 (LlamaIndex), run through the LiteParse library: seven small ONNX models (8M parameters in all), about 0.5 s a page on a CPU.
+    On our degraded copies of healthcare and filing pages it found about as many words as Tesseract in a third of the time; it is weaker on
+    small form print and it is not for handwriting. LiteParse looks for its models under the home folder and reads that at every parse, so
+    the engine runs in a process of its own (isolated) and that process points its home inside the app's models folder, like private_home().
+    Licence: the model is under a modified Open RAIL-M licence, free for research, personal use and organisations under $2M in revenue and
+    funding; a product that competes with LlamaParse needs a commercial licence. It is therefore never on by default and not in requirements."""
+    calibrated = False
+    serial = True
+    isolated = True
+    id = "ocria"
+    label = "OCRia nano"
+    summary = ("Tiny, very fast CPU model from LlamaIndex (8M parameters, about 0.5 s a page). Not for handwriting or poor scans. "
+               "Its licence is free for research, personal use and small organisations; a product that competes with LlamaParse needs a commercial licence.")
+    install = "pip install liteparse"
+
+    def __init__(self):
+        self._model = _Lazy(self._load)
+
+    def available(self) -> bool:
+        return importlib.util.find_spec("liteparse") is not None
+
+    @staticmethod
+    def _load():
+        home = models_dir() / "home"                                 # this process is the engine's own, so its home can move for good
+        home.mkdir(parents=True, exist_ok=True)
+        for name in ("HOME", "USERPROFILE"):
+            os.environ[name] = str(home)
+        from liteparse import LiteParse, models
+        if not model_folders()["ocria"].is_dir() or not any(model_folders()["ocria"].iterdir()):
+            if config.local_only():
+                raise RuntimeError("OCRia nano's models are not on this server, and local-only mode downloads nothing.")
+            models.pull("ocria-nano", quiet=True)
+        return LiteParse(ocr_backend="ocria-nano", emit_word_boxes=True, quiet=True)
+
+    def _words(self, jpeg: bytes) -> List[Word]:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "page.jpg"
+            src.write_bytes(jpeg)
+            page = self._model.get().parse(str(src)).pages[0]
+        size = image_size(jpeg)
+        scale = (size[0] / page.width) if size and page.width else 1.0     # LiteParse answers in points; the page image is in pixels
+        out: List[Word] = []
+        for item in page.text_items:
+            boxes = item.words or [item]
+            for b in boxes:
+                text = (b.text or "").strip()
+                if text:
+                    out.append(Word(b.x * scale, b.y * scale, (b.x + b.width) * scale, (b.y + b.height) * scale, text, getattr(item, "confidence", None)))
+        return out
+
+
+_ENGINES: Dict[str, Engine] = {e.id: e for e in (Tesseract(), RapidOCR(), PaddleOCR(), DocTR(), OcriaNano())}
 
 
 def engines() -> List[Engine]:
